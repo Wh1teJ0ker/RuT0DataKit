@@ -10,7 +10,7 @@ import {
 
 const { Text } = Typography;
 
-// 6 个 nav item：4 active（mask/validate/export/rules）+ 2 disabled（log v0.1.1 / pcap v0.1.2）。
+// 6 个 nav item：5 active（mask/validate/export/rules/log v0.2.0）+ 1 disabled（pcap v0.3.0）。
 // 受控：selectedKeys 来自 state.activeView，onClick dispatch SET_VIEW。
 export default function Sidebar({ state, dispatch }) {
   const items = [
@@ -21,10 +21,9 @@ export default function Sidebar({ state, dispatch }) {
     {
       key: "log",
       icon: <ProfileOutlined />,
-      disabled: true,
       label: (
         <span>
-          日志扫描 <Text type="secondary" style={{ fontSize: 11 }}>v0.1.1</Text>
+          日志扫描 <Text type="secondary" style={{ fontSize: 11 }}>v0.2.0</Text>
         </span>
       ),
     },
@@ -34,7 +33,7 @@ export default function Sidebar({ state, dispatch }) {
       disabled: true,
       label: (
         <span>
-          流量分析 <Text type="secondary" style={{ fontSize: 11 }}>v0.1.2</Text>
+          流量分析 <Text type="secondary" style={{ fontSize: 11 }}>v0.3.0</Text>
         </span>
       ),
     },

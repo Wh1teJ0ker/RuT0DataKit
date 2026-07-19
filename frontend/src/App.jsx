@@ -7,6 +7,7 @@ import MaskView from "./components/MaskView.jsx";
 import ValidateView from "./components/ValidateView.jsx";
 import ExportView from "./components/ExportView.jsx";
 import RulesView from "./components/RulesView.jsx";
+import LogView from "./components/LogView.jsx";
 
 const { Sider, Content } = Layout;
 
@@ -28,6 +29,7 @@ export default function App() {
           {state.activeView === "validate" && <ValidateView state={state} dispatch={dispatch} />}
           {state.activeView === "export" && <ExportView state={state} dispatch={dispatch} />}
           {state.activeView === "rules" && <RulesView state={state} dispatch={dispatch} />}
+          {state.activeView === "log" && <LogView state={state} dispatch={dispatch} />}
         </Content>
       </Layout>
     </Layout>

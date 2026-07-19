@@ -5,7 +5,7 @@
 //! 状态策略：每个 command 独立重算（v0.1.0 最简），不在 command 间缓存
 //! `MaskResult`。若需缓存可后续引入 `tauri::State<Mutex<...>>`。
 //!
-//! 命令清单（共 17 个）：
+//! 命令清单（共 20 个）：
 //! - `select_file` / `detect_source_type` / `run_mask` / `export_masked_csv`：
 //!   v0.1.0 原命令（4 个），保留不破坏。
 //! - `load_preview` / `apply_rules` / `export_selected_csv`：T0-11 新增（3 个），
@@ -22,14 +22,23 @@
 //!   `list_validate_op_types`：T0-22 新增（4 个），对接 T0-21 的抽象算子
 //!   `MaskOp` / `ValidateOp` + 预置库 + `apply_mask_op` / `apply_validate_op`
 //!   公共 API，为前端 RulesView 的「试运行」按钮与下拉源提供后端能力。
+//! - `preview_mask_rule_value` / `preview_validate_rule_value`：
+//!   T0-23 新增（2 个），直接对用户输入值跑算子，规则管理试运行不再依赖
+//!   已导入文件的首行。
+//! - `scan_log_file`：T2-5 新增（1 个），v0.2.0 日志扫描 GUI 入口：读 .log
+//!   → 跑 core `log_scan::scan_log`（签名引擎 + 弱口令 grep + 敏感扫描）
+//!   → 一次 IPC 返回 `{ entries, report }`，前端 LogView 同时拿到原始日志
+//!   与 findings/summary，避免再开一条 read_log_file 命令。
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::path::Path;
 
+use ruT0_data_kit_core::log::LogReader;
+use ruT0_data_kit_core::logsign::SignatureEngine;
 use ruT0_data_kit_core::pipeline::{
-    detect_type, mask_pipeline, mask_pipeline_columns, mask_pipeline_selected, validate_pipeline,
-    SourceType,
+    detect_type, log_scan::scan_log, mask_pipeline, mask_pipeline_columns,
+    mask_pipeline_selected, validate_pipeline, SourceType,
 };
 use ruT0_data_kit_core::readers::{CsvReader, SourceReader, XlsxReader};
 use ruT0_data_kit_core::report::csv_report::{build_csv_mask_report, write_masked_csv};
@@ -39,6 +48,7 @@ use ruT0_data_kit_core::rules::{
     list_validate_op_types as core_list_validate_op_types, load_default_mask_ruleset,
     load_ruleset, FieldRule, MaskOp, RuleSet, ValidateOp, ValidatorRegistry,
 };
+use ruT0_data_kit_core::scan::DefaultSensitiveScan;
 use serde_json::{json, Value};
 use tauri::AppHandle;
 use tauri_plugin_dialog::DialogExt;
@@ -588,4 +598,37 @@ fn write_xlsx(headers: &[String], rows: &[Vec<String>], out_path: &str) -> Resul
     }
     wb.save(out_path).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// T2-5 新增命令：日志扫描（v0.2.0）
+// ─────────────────────────────────────────────────────────────────────
+
+/// 读取 .log 文件并跑日志扫描 pipeline（签名引擎 + 弱口令 grep + 敏感扫描），
+/// 一次返回 `{ entries, report }`。
+///
+/// - `entries`：core `LogReader::read` 解析出的 `Vec<LogEntry>`，前端用于
+///   原始日志表渲染。
+/// - `report`：core `log_scan::scan_log` 产出的 `Report`，含 findings +
+///   summary（total_lines / sqli_hits / weak_password_hits /
+///   sensitive_hits / top_attack_ips）。
+///
+/// 单命令返回两份数据避免再开 `read_log_file`：v0.2.0 fixture 数据量小
+/// （1856 行），一次 IPC 体积可控。敏感扫描复用 `load_default_mask_ruleset`
+/// 加载的 RuleSet（其 validators 为空时 sensitive findings 为空，这是可接受的，
+/// HANDOFF 提到 sensitive 可空）。
+#[tauri::command]
+pub fn scan_log_file(path: String) -> Result<Value, String> {
+    let reader = LogReader::new().map_err(|e| e.to_string())?;
+    let entries = reader.read(Path::new(&path)).map_err(|e| e.to_string())?;
+    let engine = SignatureEngine::new().map_err(|e| e.to_string())?;
+    let scan = DefaultSensitiveScan::new();
+    let rules = load_default_mask_ruleset().unwrap_or_default();
+    let report = scan_log(&entries, &engine, &scan, &rules);
+    let report_value = serde_json::to_value(&report).map_err(|e| e.to_string())?;
+    let entries_value = serde_json::to_value(&entries).map_err(|e| e.to_string())?;
+    Ok(json!({
+        "entries": entries_value,
+        "report": report_value,
+    }))
 }

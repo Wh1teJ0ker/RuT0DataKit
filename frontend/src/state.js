@@ -15,6 +15,11 @@ export const initialState = {
   maskedSummary: null,
   // 校验结果
   validateResult: null, // { headers, rows, valid_matrix, summary }
+  // 日志扫描结果（v0.2.0）：logEntries 为原始日志条目，logReport 为扫描报告。
+  // 切到其他 view 再切回不丢数据（与 maskedRows/validateResult 同策略）。
+  logEntries: [], // Vec<LogEntry>
+  logReport: null, // Report 或 null
+  logLoading: false,
   // 规则（全局规则库）：RulesView 管理，独立于文件导入。
   // MaskView/ValidateView 不直接写入这里；脱敏/校验应用时用
   // maskOverrides/validateOverrides 优先 + 全局 rules 兜底合并。
@@ -83,6 +88,18 @@ export function appReducer(state, action) {
     case "SET_VALIDATE": {
       const { validateResult } = action;
       return { ...state, validateResult };
+    }
+    case "SET_LOG_ENTRIES": {
+      const { logEntries } = action;
+      return { ...state, logEntries: logEntries || [] };
+    }
+    case "SET_LOG_REPORT": {
+      const { logReport } = action;
+      return { ...state, logReport };
+    }
+    case "SET_LOG_LOADING": {
+      const { logLoading } = action;
+      return { ...state, logLoading };
     }
     case "SET_RULES": {
       const { rules } = action;

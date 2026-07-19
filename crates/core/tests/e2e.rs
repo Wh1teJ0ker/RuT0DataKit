@@ -34,13 +34,23 @@
 //!    通用算子契约。
 //! 23. `validate_op_algorithm_and_guard_equivalence`：algorithm + regex_with_guard
 //!    算子契约 + apply/build 等价。
+//!
+//! v0.2.0 日志切片新增（T2-6）：
+//! 24. `log_parse_full`：LogReader 读 access.log，断言 1860 行全解析 + line_no 连续。
+//! 25. `log_scan_full`：SignatureEngine + DefaultSensitiveScan + 默认 RuleSet 跑
+//!    scan_log，断言 Report.kind=="log_scan"、SQLi > 1000、弱口令 ≥ 4、
+//!    4 类新签名（union/extractvalue/sleep/tautology）各 ≥ 1 命中。
+//! 26. `log_signatures_6_categories`：6 条 LogEntry 各触发 1 类签名，各配反例。
 
 mod common;
 
 use std::collections::HashSet;
 
+use ruT0_data_kit_core::log::LogReader;
+use ruT0_data_kit_core::logsign::SignatureEngine;
 use ruT0_data_kit_core::pipeline::detect_type;
 use ruT0_data_kit_core::pipeline::columns::mask_pipeline_columns;
+use ruT0_data_kit_core::pipeline::log_scan::scan_log;
 use ruT0_data_kit_core::pipeline::mask::mask_pipeline;
 use ruT0_data_kit_core::pipeline::mask::mask_pipeline_selected;
 use ruT0_data_kit_core::pipeline::validate::validate_pipeline;
@@ -49,6 +59,7 @@ use ruT0_data_kit_core::readers::{CsvReader, Records, SourceReader, XlsxReader};
 use ruT0_data_kit_core::rules::{
     load_default_mask_ruleset, load_ruleset, FieldRule, MaskRule, RuleSet,
 };
+use ruT0_data_kit_core::scan::DefaultSensitiveScan;
 use serde_yml::Value;
 use std::collections::HashMap;
 
@@ -1235,4 +1246,185 @@ fn validate_op_algorithm_and_guard_equivalence() {
             "apply_validate_op vs build_validator on {input:?}",
         );
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// v0.2.0 日志切片全链路 e2e（T2-6 新增）
+// ─────────────────────────────────────────────────────────────────────
+//
+// 24. `log_parse_full`：LogReader 读 tests/fixtures/samples/log/access.log，
+//     断言 1860 行全解析成功、line_no 1..=1860 连续递增、每行 ip 非空。
+// 25. `log_scan_full`：SignatureEngine + DefaultSensitiveScan + 默认
+//     RuleSet 跑 scan_log，断言 Report.kind=="log_scan"、SQLi 命中 > 1000、
+//     弱口令命中 ≥ 4、4 类新签名（union/extractvalue/sleep/tautology）
+//     各至少命中 1 次。
+// 26. `log_signatures_6_categories`：手工构造 6 条 LogEntry，每条触发 1 类
+//     签名，断言 SignatureEngine 各产 ≥1 hit；并各配 1 条反例（不命中）。
+
+/// v0.2.0 验收项 24：access.log 全 1860 行 100% 解析成功。
+#[test]
+fn log_parse_full() {
+    let path = common::fixtures_dir().join("log/access.log");
+    let r = LogReader::new().expect("LogReader");
+    let entries = r.read(&path).expect("read access.log");
+    // 文件行数
+    let file_lines = std::fs::read_to_string(&path).unwrap().lines().count();
+    assert_eq!(entries.len(), file_lines, "all lines parsed");
+    assert_eq!(entries.len(), 1860, "fixture has 1860 lines (v0.2.0 追加 4 行后)");
+    // line_no 连续递增
+    for (i, e) in entries.iter().enumerate() {
+        assert_eq!(e.line_no, i + 1, "line_no sequential at index {i}");
+        assert!(!e.ip.is_empty(), "ip non-empty at line {}", e.line_no);
+    }
+}
+
+/// v0.2.0 验收项 25：scan_log 全链路跑通 access.log，验证 summary 与 findings。
+#[test]
+fn log_scan_full() {
+    let path = common::fixtures_dir().join("log/access.log");
+    let r = LogReader::new().expect("LogReader");
+    let entries = r.read(&path).expect("read access.log");
+    assert_eq!(entries.len(), 1860);
+
+    let eng = SignatureEngine::default();
+    let scan = DefaultSensitiveScan::default();
+    // 默认 RuleSet：validators 为空 → 敏感扫描段不产 finding，专注 SQLi + 弱口令。
+    let rules = RuleSet {
+        validators: vec![],
+        maskers: vec![],
+    };
+    let report = scan_log(&entries, &eng, &scan, &rules);
+
+    // Report 基本字段
+    assert_eq!(report.kind, "log_scan");
+    assert_eq!(report.source, "log");
+
+    // summary 必为 mapping 且含 total_lines / sqli_hits / weak_password_hits
+    let m = report
+        .summary
+        .as_mapping()
+        .expect("summary is mapping");
+    assert_eq!(
+        m.get("total_lines").and_then(|v| v.as_u64()),
+        Some(1860),
+        "total_lines == 1860",
+    );
+
+    let sqli_hits = m
+        .get("sqli_hits")
+        .and_then(|v| v.as_u64())
+        .expect("sqli_hits present");
+    // fixture 含大量 SQLi 攻击行（T2-1 fixture 已有大量命中 + T2-6 追加 4 行）
+    assert!(
+        sqli_hits > 1000,
+        "sqli_hits should be > 1000, got {sqli_hits}",
+    );
+
+    let wp_hits = m
+        .get("weak_password_hits")
+        .and_then(|v| v.as_u64())
+        .expect("weak_password_hits present");
+    // access.log 含大量 guest/admin/123456 等弱口令对，至少 4 条命中
+    assert!(
+        wp_hits >= 4,
+        "weak_password_hits should be >= 4, got {wp_hits}",
+    );
+
+    // 4 类新签名（T2-6 追加 fixture 覆盖：union/extractvalue/sleep/tautology）
+    // 各至少 1 次 SQLi finding（按 rule_id 去重计数）。
+    let sqli_findings: Vec<&ruT0_data_kit_core::report::Finding> = report
+        .findings
+        .iter()
+        .filter(|f| f.r#type == "sqli")
+        .collect();
+    let has_rule = |rid: &str| sqli_findings.iter().any(|f| f.value == rid);
+    assert!(has_rule("sqli_union"), "union signature must hit at least once");
+    assert!(has_rule("sqli_error_based"), "error_based signature must hit at least once");
+    assert!(has_rule("sqli_time_based"), "time_based signature must hit at least once");
+    assert!(has_rule("sqli_tautology"), "tautology signature must hit at least once");
+
+    // top_attack_ips 字段存在且为 sequence，长度 ≤ 5
+    let top = m
+        .get("top_attack_ips")
+        .and_then(|v| v.as_sequence())
+        .expect("top_attack_ips present");
+    assert!(top.len() <= 5, "top_attack_ips truncated to 5");
+}
+
+/// v0.2.0 验收项 26：6 类签名各至少 1 正例 + 1 反例。
+///
+/// 正例（decoded query value 形态，与 sqli_signatures.yaml pattern 对齐）：
+/// - blind_binary: `1' or ascii(substr((database()),1,1))>79#`
+/// - union:         `1 union select 1,2,3`
+/// - error_based:   `1 and extractvalue(1,concat(0x7e,version()))`
+/// - time_based:    `1 and sleep(5)`
+/// - tautology:     `1 or 1=1`
+/// - comment:       `1'--`
+///
+/// 反例（正常请求，无注入特征）：每类配一条，断言该 rule_id 不命中。
+#[test]
+fn log_signatures_6_categories() {
+    use ruT0_data_kit_core::log::LogEntry;
+
+    fn mk(line_no: usize, query: &str) -> LogEntry {
+        LogEntry {
+            line_no,
+            ip: "10.0.0.9".to_string(),
+            timestamp: "10/Oct/2023:13:55:36 +0000".to_string(),
+            method: "GET".to_string(),
+            path: "/news.php".to_string(),
+            query: Some(query.to_string()),
+            status: 200,
+            size: Some(100),
+            user_agent: "curl/7.88.0".to_string(),
+            raw: format!("GET /news.php?{query} HTTP/1.1"),
+        }
+    }
+
+    let eng = SignatureEngine::default();
+    // 6 类正例
+    let positives: &[(&str, &str)] = &[
+        ("sqli_blind_binary", "id=1' or ascii(substr((database()),1,1))>79#"),
+        ("sqli_union", "id=1 union select 1,2,3"),
+        ("sqli_error_based", "id=1 and extractvalue(1,concat(0x7e,version()))"),
+        ("sqli_time_based", "id=1 and sleep(5)"),
+        ("sqli_tautology", "id=1 or 1=1"),
+        ("sqli_comment", "id=1'--"),
+    ];
+    for (i, (rid, q)) in positives.iter().enumerate() {
+        let e = mk(i + 1, q);
+        let hits = eng.scan_log_entry(&e);
+        assert!(
+            hits.iter().any(|h| h.rule_id == *rid),
+            "positive for {rid} must hit, hits={:?}",
+            hits.iter().map(|h| &h.rule_id).collect::<Vec<_>>(),
+        );
+    }
+
+    // 6 类反例：构造一个无任何注入特征的正常 query，断言所有 6 类均不命中。
+    let normal = mk(100, "q=hello+world&page=1&sort=asc");
+    let hits = eng.scan_log_entry(&normal);
+    assert!(
+        hits.is_empty(),
+        "normal request must produce no signature hits, got {:?}",
+        hits.iter().map(|h| &h.rule_id).collect::<Vec<_>>(),
+    );
+
+    // 额外反例：union 单独「select」关键字不构成 union 注入。
+    let sel_only = mk(101, "kind=select-all");
+    assert!(
+        eng.scan_log_entry(&sel_only)
+            .iter()
+            .all(|h| h.rule_id != "sqli_union"),
+        "select keyword alone must not trigger union",
+    );
+
+    // 额外反例：单独 `or 1` 不构成 `or 数字=数字` 恒真。
+    let or_only = mk(102, "x=or 1");
+    assert!(
+        eng.scan_log_entry(&or_only)
+            .iter()
+            .all(|h| h.rule_id != "sqli_tautology"),
+        "or 1 alone must not trigger tautology",
+    );
 }

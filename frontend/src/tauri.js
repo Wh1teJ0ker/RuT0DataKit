@@ -121,3 +121,15 @@ export async function listMaskOpTypes() {
 export async function listValidateOpTypes() {
   return tauriInvoke("list_validate_op_types");
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// T2-5 新增命令封装：日志扫描（v0.2.0）
+// 参数名 camelCase，由 Tauri 自动转 snake_case 传到 Rust 端。
+// ─────────────────────────────────────────────────────────────────────
+
+// 读取 .log 并跑日志扫描 pipeline，一次返回 { entries, report }。
+//   - entries：LogEntry 数组，前端用于原始日志表渲染。
+//   - report：含 findings + summary（total_lines/sqli_hits/.../top_attack_ips）。
+export async function scanLogFile(path) {
+  return tauriInvoke("scan_log_file", { path });
+}

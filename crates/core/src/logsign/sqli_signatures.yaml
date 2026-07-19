@@ -1,0 +1,59 @@
+# v0.2.0 内置 SQLi 签名库（6 类）。
+#
+# 每条规则字段：
+#   rule_id         唯一标识
+#   category        命中类别（用于 SignatureHit.category）
+#   pattern         主正则（regex crate 兼容语法，禁用 look-around）
+#   enabled         是否启用
+#   context_anchor  可选：额外锚点正则列表，必须全部同时命中才算命中
+#                   （用于抑制 `or`/`--`/`#` 等弱信号的误报）
+#   description     人类可读说明
+#
+# 匹配目标为 LogEntry 解码后的 query value 文本 + path（T2-1 parse_query
+# 已做双重 URL 解码），故 pattern 一律按 decoded 形态编写（直接用 `#`、
+# `'`、空格，而非 `%23` / `%27` / `%20`）。
+#
+# 6 类覆盖：盲注二分 / UNION / 报错 / 时间盲注 / 恒真 / 注释符。
+
+- rule_id: sqli_blind_binary
+  category: blind_sql_injection
+  pattern: '\bascii\s*\(\s*substr\s*\('
+  enabled: true
+  context_anchor:
+    - '#'
+    - '\bor\s+'
+  description: 盲注二分法：ascii(substr(...)) 形态 + 末尾 # 注释 + or 条件
+
+- rule_id: sqli_union
+  category: union_injection
+  pattern: '\bunion\b.*\bselect\b'
+  enabled: true
+  description: UNION 注入：union ... select 联合查询
+
+- rule_id: sqli_error_based
+  category: error_injection
+  pattern: '(extractvalue|updatexml|floor\(rand)'
+  enabled: true
+  description: 报错注入：extractvalue / updatexml / floor(rand()) 报错回显
+
+- rule_id: sqli_time_based
+  category: time_injection
+  pattern: '\b(sleep|benchmark|pg_sleep)\s*\('
+  enabled: true
+  description: 时间盲注：sleep() / benchmark() / pg_sleep() 延时函数
+
+- rule_id: sqli_tautology
+  category: tautology_injection
+  pattern: '\b(or|and)\s+\d+\s*=\s*\d+'
+  enabled: true
+  context_anchor:
+    - '\b(or|and)\b'
+  description: 恒真条件：or/and 数字=数字（如 1=1）
+
+- rule_id: sqli_comment
+  category: comment_injection
+  pattern: '(--|#|/\*)'
+  enabled: true
+  context_anchor:
+    - '[''"]'
+  description: 注释符注入：-- / # / /* 且上下文含引号，抑制正常 URL 片段误报
