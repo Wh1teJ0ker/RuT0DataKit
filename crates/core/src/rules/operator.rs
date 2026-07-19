@@ -1,0 +1,998 @@
+//! 抽象可扩展的算子模型：`MaskOp` / `ValidateOp` 枚举 + 统一 dispatch。
+//!
+//! v0.1.0 重构：把所有脱敏 / 校验逻辑收敛为通用算子模型，**只保留 4 个脱敏
+//! 通用算子 + 3 个校验通用算子，删除所有预置别名**（用户要求「只做规则模版」）。
+//! - 脱敏：[`MaskOp::Template`] / [`MaskOp::SplitTemplate`] /
+//!   [`MaskOp::RegexReplace`] / [`MaskOp::ConstReplace`]
+//! - 校验：[`ValidateOp::Regex`] / [`ValidateOp::Algorithm`] /
+//!   [`ValidateOp::RegexWithGuard`]
+//!
+//! 每条规则的所有参数均由调用方通过 `MaskRule.params` / `FieldRule.params`
+//! 显式提供（keep_prefix / keep_suffix / mask_char / min_len / max_len / cjk /
+//! pattern / replacement / match_mode / algo / guard / prefix_set / prefix /
+//! message 等）。[`MaskOp::from_rule`] / [`ValidateOp::from_rule`] 仅按通用算子
+//! 名 + params 构造，未知名返回 `None`。
+//!
+//! 对外暴露 [`apply_mask_op`] / [`apply_validate_op`] 公共函数，供前端试运行与
+//! 下拉源使用。`MaskOp` 自身 impl [`crate::maskers::Masker`]，`ValidateOp` impl
+//! [`crate::validators::Validator`]，可直接作为 `Box<dyn Masker>` /
+//! `Box<dyn Validator>` 注入 pipeline。
+
+use std::collections::HashMap;
+
+use regex::Regex;
+use serde_yml::Value;
+
+use crate::rules::types::FieldRule;
+use crate::maskers::Masker;
+use crate::validators::{ValidationResult, Validator};
+
+/// 正则替换的匹配模式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatchMode {
+    /// 替换所有匹配子串（对应 `Regex::replace_all`）。
+    All,
+    /// 仅处理第一个匹配：若 `replacement == "$0"` 则提取首个匹配子串原文，
+    /// 否则按 `Regex::replace` 替换首个匹配。
+    First,
+}
+
+/// 通用模板脱敏算子：保留前 `keep_prefix` 字符 + 后 `keep_suffix` 字符，
+/// 中间替换为 `mask_char`。
+///
+/// - `mask_min_len`：脱敏段至少插入多少个 `mask_char`（实际脱敏段长度 =
+///   `max(原中间长度, mask_min_len)`）。
+/// - `min_len` / `max_len`：值总字符数（按 `char` 计）不在
+///   `[min_len, max_len]` 区间时原样返回（guard）。`None` 表示该侧不限制。
+/// - `cjk`：`true` 时跳过 `keep_prefix` / `keep_suffix`，改走 NameMask/EmailMask
+///   同款分支（n=0 空 / n=1 原样 / n=2 `首*` / n>=3 `首+*(n-2)+末`），用于复现
+///   旧实现的 2 字不保留末位语义。`false` 时走通用 keep_prefix/keep_suffix 模板。
+///
+/// 与旧 `CustomMask` / `IdCardMask` / `PhoneMask` / `BankCardMask` /
+/// `CustomerIdMask` / `NameMask` 行为等价。
+#[derive(Debug, Clone, PartialEq)]
+pub struct TemplateOp {
+    pub keep_prefix: usize,
+    pub keep_suffix: usize,
+    pub mask_char: char,
+    pub mask_min_len: usize,
+    pub min_len: Option<usize>,
+    pub max_len: Option<usize>,
+    /// `true` 时切换到 CJK 姓名/邮箱本地部分同款分支（见结构体 doc）。
+    pub cjk: bool,
+}
+
+/// 切分模板脱敏算子：按 `separator` 把值切成多段，对 `segment_index` 段应用
+/// `inner` 算子，其余段保持原样后重新拼接。
+///
+/// 用于 `email_mask`：`separator="@"`，`segment_index=0`（本地部分），
+/// `inner=Template{keep_prefix=1, keep_suffix=1, mask_char='*', mask_min_len=1}`。
+#[derive(Debug, Clone, PartialEq)]
+pub struct SplitTemplateOp {
+    pub separator: String,
+    pub segment_index: usize,
+    pub inner: Box<TemplateOp>,
+}
+
+/// 正则替换脱敏算子。
+///
+/// - `pattern` 缺失或非法时退化为原值返回（不 panic）。
+/// - `match_mode == All`：替换所有匹配（`replace_all`）。
+/// - `match_mode == First` 且 `replacement == "$0"`：返回第一个匹配子串原文
+///   （等价旧 `regex_extract`）。
+/// - `match_mode == First` 且 `replacement != "$0"`：替换首个匹配
+///   （`replace`）。
+#[derive(Debug, Clone)]
+pub struct RegexReplaceOp {
+    pub pattern: Option<String>,
+    pub replacement: String,
+    pub match_mode: MatchMode,
+    // 预编译缓存：构造时尝试编译，运行时直接用。
+    re: Option<Regex>,
+}
+
+impl PartialEq for RegexReplaceOp {
+    fn eq(&self, other: &Self) -> bool {
+        self.pattern == other.pattern
+            && self.replacement == other.replacement
+            && self.match_mode == other.match_mode
+    }
+}
+
+/// 常量替换脱敏算子：对任意输入返回固定字符串 `with`。
+///
+/// `with == ""` 时等价于旧 `delete`。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConstReplaceOp {
+    pub with: String,
+}
+
+impl RegexReplaceOp {
+    /// 公开构造函数：自动尝试编译 `pattern`，非法或缺失时 `re=None`（运行时原值返回）。
+    pub fn new(
+        pattern: Option<String>,
+        replacement: String,
+        match_mode: MatchMode,
+    ) -> Self {
+        let re = pattern.as_ref().and_then(|p| Regex::new(p).ok());
+        Self {
+            pattern,
+            replacement,
+            match_mode,
+            re,
+        }
+    }
+}
+
+/// 收敛后的通用脱敏算子枚举。
+#[derive(Debug, Clone, PartialEq)]
+pub enum MaskOp {
+    Template(TemplateOp),
+    SplitTemplate(SplitTemplateOp),
+    RegexReplace(RegexReplaceOp),
+    ConstReplace(ConstReplaceOp),
+}
+
+impl MaskOp {
+    /// 从 `MaskRule` 构造 `MaskOp`。
+    ///
+    /// v0.1.0 重构后只识别 4 个通用算子名（无预置别名）：
+    /// - `template`：keep_prefix / keep_suffix / mask_char / mask_min_len /
+    ///   min_len / max_len / cjk
+    /// - `split_template`：separator / segment_index + 内层 Template 全部参数
+    ///   （keep_prefix / keep_suffix / mask_char / mask_min_len / min_len /
+    ///   max_len / cjk，扁平化传入）
+    /// - `regex_replace`：pattern / replacement / match_mode
+    ///   （`match_mode` 取 `"all"` 或 `"first"`，缺省 `"all"`）
+    /// - `const_replace`：with
+    ///
+    /// 未知名返回 `None`，由调用方决定如何报错。
+    pub fn from_rule(
+        name: &str,
+        params: Option<&HashMap<String, Value>>,
+    ) -> Option<Self> {
+        let params = params.cloned().unwrap_or_default();
+        Some(match name {
+            "template" => MaskOp::Template(template_from_params(&params)),
+            "split_template" => MaskOp::SplitTemplate(split_template_from_params(&params)),
+            "regex_replace" => MaskOp::RegexReplace(regex_replace_from_params(
+                &params,
+                parse_match_mode(&params).unwrap_or(MatchMode::All),
+            )),
+            "const_replace" => MaskOp::ConstReplace(ConstReplaceOp {
+                with: params
+                    .get("with")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+            }),
+            _ => return None,
+        })
+    }
+}
+
+impl Masker for MaskOp {
+    fn mask(&self, value: &str) -> String {
+        apply_mask_op(self, value)
+    }
+}
+
+/// 对 `value` 应用 [`MaskOp`]，返回脱敏后的字符串。
+pub fn apply_mask_op(op: &MaskOp, value: &str) -> String {
+    match op {
+        MaskOp::Template(t) => apply_template(t, value),
+        MaskOp::SplitTemplate(s) => apply_split_template(s, value),
+        MaskOp::RegexReplace(r) => apply_regex_replace(r, value),
+        MaskOp::ConstReplace(c) => c.with.clone(),
+    }
+}
+
+fn apply_template(t: &TemplateOp, value: &str) -> String {
+    let chars: Vec<char> = value.chars().collect();
+    let n = chars.len();
+    // guard：长度不匹配原样返回。
+    if let Some(min) = t.min_len {
+        if n < min {
+            return value.to_string();
+        }
+    }
+    if let Some(max) = t.max_len {
+        if n > max {
+            return value.to_string();
+        }
+    }
+    // cjk 分支：复现旧 NameMask 行为（n=0 空、n=1 原样、n=2 `首*`、n>=3 `首+*(n-2)+末`）。
+    if t.cjk {
+        return match n {
+            0 => String::new(),
+            1 => value.to_string(),
+            2 => format!("{}*", chars[0]),
+            _ => {
+                let head = chars[0];
+                let tail = chars[n - 1];
+                let stars = "*".repeat(n - 2);
+                format!("{head}{stars}{tail}")
+            }
+        };
+    }
+    let head_end = t.keep_prefix.min(n);
+    let tail_start = n.saturating_sub(t.keep_suffix);
+    // 保留段重叠（含 kp+ks==n 边界：此时中间段长度为 0，仍按规格
+    // 「至少插入 mask_min_len 个 mask_char，仅输出脱敏段」处理，避免
+    // 错误地拼接 head + mask + 空 tail 产生形如 "李四海*" 的输出）。
+    if tail_start <= head_end {
+        let mask: String = std::iter::repeat(t.mask_char).take(t.mask_min_len).collect();
+        return mask;
+    }
+    let mid_len = tail_start - head_end;
+    let mask_len = mid_len.max(t.mask_min_len);
+    let mask: String = std::iter::repeat(t.mask_char).take(mask_len).collect();
+    let head: String = chars[..head_end].iter().collect();
+    let tail: String = chars[tail_start..].iter().collect();
+    format!("{head}{mask}{tail}")
+}
+
+fn apply_split_template(s: &SplitTemplateOp, value: &str) -> String {
+    // 使用 rfind 以与旧 email 行为一致（多个分隔符时取最后一个）。
+    let sep = s.separator.as_str();
+    let idx = match value.rfind(sep) {
+        Some(i) => i,
+        None => return value.to_string(),
+    };
+    let (head, tail_with_sep) = value.split_at(idx);
+    // tail_with_sep 起始即为 separator。
+    let segments_before = if s.segment_index == 0 {
+        // 对第一段应用 inner，其余段（含 separator 之后内容）保持原样。
+        let masked = apply_template(&s.inner, head);
+        return format!("{masked}{tail_with_sep}");
+    } else {
+        head
+    };
+    // segment_index > 0 时：把 head 按 separator 切分（最多 segment_index+1 段），
+    // 对指定段应用 inner，其它段保持原样。
+    let parts: Vec<&str> = segments_before.split(sep).collect();
+    if s.segment_index >= parts.len() {
+        return value.to_string();
+    }
+    let target = parts[s.segment_index];
+    let masked_target = apply_template(&s.inner, target);
+    let mut rebuilt = String::new();
+    for (i, p) in parts.iter().enumerate() {
+        if i > 0 {
+            rebuilt.push_str(sep);
+        }
+        if i == s.segment_index {
+            rebuilt.push_str(&masked_target);
+        } else {
+            rebuilt.push_str(p);
+        }
+    }
+    rebuilt.push_str(tail_with_sep);
+    rebuilt
+}
+
+fn apply_regex_replace(r: &RegexReplaceOp, value: &str) -> String {
+    let Some(re) = r.re.as_ref() else {
+        return value.to_string();
+    };
+    match r.match_mode {
+        MatchMode::All => re.replace_all(value, r.replacement.as_str()).into_owned(),
+        MatchMode::First => {
+            if r.replacement == "$0" {
+                // 提取首个匹配子串原文。
+                match re.find(value) {
+                    Some(m) => m.as_str().to_string(),
+                    None => value.to_string(),
+                }
+            } else {
+                re.replace(value, r.replacement.as_str()).into_owned()
+            }
+        }
+    }
+}
+
+fn template_from_params(params: &HashMap<String, Value>) -> TemplateOp {
+    TemplateOp {
+        keep_prefix: parse_usize(params, "keep_prefix").unwrap_or(0),
+        keep_suffix: parse_usize(params, "keep_suffix").unwrap_or(0),
+        mask_char: params
+            .get("mask_char")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.chars().next())
+            .unwrap_or('*'),
+        mask_min_len: parse_usize(params, "mask_min_len").unwrap_or(1),
+        min_len: parse_usize(params, "min_len"),
+        max_len: parse_usize(params, "max_len"),
+        cjk: parse_bool(params, "cjk").unwrap_or(false),
+    }
+}
+
+/// 从 params 构造 `SplitTemplateOp`。
+///
+/// 内层 Template 的参数扁平化传入（与外层共用同一 params 表）。`separator`
+/// 缺省为 `"@"`，`segment_index` 缺省为 0，便于邮箱等常见场景零配置。
+fn split_template_from_params(params: &HashMap<String, Value>) -> SplitTemplateOp {
+    let separator = params
+        .get("separator")
+        .and_then(|v| v.as_str())
+        .unwrap_or("@")
+        .to_string();
+    let segment_index = parse_usize(params, "segment_index").unwrap_or(0);
+    let inner = template_from_params(params);
+    SplitTemplateOp {
+        separator,
+        segment_index,
+        inner: Box::new(inner),
+    }
+}
+
+fn regex_replace_from_params(
+    params: &HashMap<String, Value>,
+    match_mode: MatchMode,
+) -> RegexReplaceOp {
+    let pattern = params
+        .get("pattern")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let replacement = params
+        .get("replacement")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let re = pattern.as_ref().and_then(|p| Regex::new(p).ok());
+    RegexReplaceOp {
+        pattern,
+        replacement,
+        match_mode,
+        re,
+    }
+}
+
+/// 解析 `match_mode` 参数：`"all"`（缺省）或 `"first"`。
+fn parse_match_mode(params: &HashMap<String, Value>) -> Option<MatchMode> {
+    match params.get("match_mode")? {
+        Value::String(s) => match s.to_lowercase().as_str() {
+            "all" => Some(MatchMode::All),
+            "first" => Some(MatchMode::First),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn parse_usize(params: &HashMap<String, Value>, key: &str) -> Option<usize> {
+    match params.get(key)? {
+        Value::Number(n) => n.as_u64().map(|n| n as usize),
+        Value::String(s) => s.parse().ok(),
+        _ => None,
+    }
+}
+
+fn parse_bool(params: &HashMap<String, Value>, key: &str) -> Option<bool> {
+    match params.get(key)? {
+        Value::Bool(b) => Some(*b),
+        Value::String(s) => match s.to_lowercase().as_str() {
+            "true" | "1" | "yes" => Some(true),
+            "false" | "0" | "no" => Some(false),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+// ===== ValidateOp =====
+
+/// 内置算法校验种类：委托现有具体 validator struct。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AlgoKind {
+    IdCard,
+    BankCard,
+}
+
+/// RegexWithGuard 守卫种类：phone 号段白名单 / mac 前缀匹配。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GuardKind {
+    /// 手机号号段白名单。`prefix_set == "ctf"` 用 CTF 虚假号段集，
+    /// 其它值（含缺省）用真实运营商号段集。
+    PhonePrefix { prefix_set: String },
+    /// MAC 地址前缀守卫。`prefix == None` 时不做前缀校验。
+    MacPrefix { prefix: Option<String> },
+}
+
+/// 正则校验算子：按 `pattern` 整段 `is_match`，可选空值 guard 与 message。
+#[derive(Debug, Clone)]
+pub struct RegexOp {
+    pub pattern: String,
+    pub message: Option<String>,
+    /// 非空 guard：值为空时返回 `empty_message`（若 `Some`）。
+    pub empty_message: Option<String>,
+    re: Option<Regex>,
+}
+
+impl PartialEq for RegexOp {
+    fn eq(&self, other: &Self) -> bool {
+        self.pattern == other.pattern
+            && self.message == other.message
+            && self.empty_message == other.empty_message
+    }
+}
+
+impl RegexOp {
+    /// 构造一个 `RegexOp`。`pattern` 非法时 `re=None`，运行时一律返回 fail。
+    pub fn new(
+        pattern: impl Into<String>,
+        message: Option<String>,
+        empty_message: Option<String>,
+    ) -> Self {
+        let pattern: String = pattern.into();
+        let re = Regex::new(&pattern).ok();
+        Self {
+            pattern,
+            message,
+            empty_message,
+            re,
+        }
+    }
+}
+
+/// 算法校验算子：委托内置具体 validator struct（IdCard / BankCard）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AlgorithmOp {
+    pub algo: AlgoKind,
+}
+
+/// 守卫 + 正则校验算子：先过守卫（phone 号段 / mac 前缀），再过正则。
+#[derive(Debug, Clone)]
+pub struct RegexWithGuardOp {
+    pub guard: GuardKind,
+    pub pattern: String,
+    pub message: Option<String>,
+    // 守卫+正则算子目前委托旧 validator struct 实现，预留 re 字段供未来纯算法实现使用。
+    #[allow(dead_code)]
+    re: Option<Regex>,
+}
+
+impl PartialEq for RegexWithGuardOp {
+    fn eq(&self, other: &Self) -> bool {
+        self.guard == other.guard
+            && self.pattern == other.pattern
+            && self.message == other.message
+    }
+}
+
+impl RegexWithGuardOp {
+    pub fn new(
+        guard: GuardKind,
+        pattern: impl Into<String>,
+        message: Option<String>,
+    ) -> Self {
+        let pattern: String = pattern.into();
+        let re = Regex::new(&pattern).ok();
+        Self {
+            guard,
+            pattern,
+            message,
+            re,
+        }
+    }
+}
+
+/// 收敛后的通用校验算子枚举。
+#[derive(Debug, Clone, PartialEq)]
+pub enum ValidateOp {
+    Regex(RegexOp),
+    Algorithm(AlgorithmOp),
+    RegexWithGuard(RegexWithGuardOp),
+}
+
+impl ValidateOp {
+    /// 从 `FieldRule` 构造 `ValidateOp`。
+    ///
+    /// v0.1.0 重构后只识别 3 个通用算子名（无预置别名）：
+    /// - `regex`：pattern / message / empty_message（空值 guard，可空）。
+    ///   优先级低于 `rule.regex`：当 `rule.regex` 存在时直接构造 `Regex` 算子
+    ///   （pattern=rule.regex），与旧行为一致。
+    /// - `algorithm`：`algo` 参数取 `"idcard"` / `"bankcard"`（不区分大小写），
+    ///   缺省 `"idcard"`。
+    /// - `regex_with_guard`：`guard` 参数取 `"phone"` / `"mac"`（不区分大小写），
+    ///   缺省 `"phone"`；其余参数 `pattern` / `prefix_set` / `prefix` /
+    ///   `message` 从 params / rule 同名字段读取。
+    ///
+    /// 未知名返回 `None`，由调用方决定如何报错。
+    pub fn from_rule(rule: &FieldRule) -> Option<Self> {
+        // 1) rule.regex 存在 → Regex 算子（优先级最高，保留旧兜底语义）。
+        if let Some(pattern) = rule.regex.as_ref() {
+            let op = RegexOp::new(
+                pattern.clone(),
+                rule.message.clone(),
+                None,
+            );
+            return Some(ValidateOp::Regex(op));
+        }
+        // 2) 按 rule.validator 名匹配通用算子。
+        let params = rule.params.clone().unwrap_or_default();
+        Some(match rule.validator.as_str() {
+            "regex" => {
+                let pattern = params
+                    .get("pattern")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let empty_message = params
+                    .get("empty_message")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                ValidateOp::Regex(RegexOp::new(
+                    pattern,
+                    rule.message.clone().or_else(|| {
+                        params
+                            .get("message")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string())
+                    }),
+                    empty_message,
+                ))
+            }
+            "algorithm" => {
+                let algo = params
+                    .get("algo")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_lowercase())
+                    .filter(|s| s == "bankcard")
+                    .map(|_| AlgoKind::BankCard)
+                    .unwrap_or(AlgoKind::IdCard);
+                ValidateOp::Algorithm(AlgorithmOp { algo })
+            }
+            "regex_with_guard" => {
+                let guard_name = params
+                    .get("guard")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_lowercase())
+                    .unwrap_or_else(|| "phone".to_string());
+                let pattern = params
+                    .get("pattern")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let guard = match guard_name.as_str() {
+                    "mac" => {
+                        let prefix = params
+                            .get("prefix")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                        GuardKind::MacPrefix { prefix }
+                    }
+                    _ => {
+                        // 缺省 / "phone" 走号段白名单分支。
+                        let prefix_set = params
+                            .get("prefix_set")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("real")
+                            .to_string();
+                        GuardKind::PhonePrefix { prefix_set }
+                    }
+                };
+                ValidateOp::RegexWithGuard(RegexWithGuardOp::new(
+                    guard,
+                    pattern,
+                    rule.message.clone().or_else(|| {
+                        params
+                            .get("message")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string())
+                    }),
+                ))
+            }
+            _ => return None,
+        })
+    }
+}
+
+impl Validator for ValidateOp {
+    fn validate(&self, value: &str) -> ValidationResult {
+        apply_validate_op(self, value)
+    }
+}
+
+/// 对 `value` 应用 [`ValidateOp`]，返回校验结果。
+pub fn apply_validate_op(op: &ValidateOp, value: &str) -> ValidationResult {
+    match op {
+        ValidateOp::Regex(r) => apply_regex(r, value),
+        ValidateOp::Algorithm(a) => apply_algorithm(a, value),
+        ValidateOp::RegexWithGuard(g) => apply_regex_with_guard(g, value),
+    }
+}
+
+fn apply_regex(r: &RegexOp, value: &str) -> ValidationResult {
+    let v = value.trim();
+    if let Some(msg) = &r.empty_message {
+        if v.is_empty() {
+            return ValidationResult::fail(msg.clone());
+        }
+    }
+    let Some(re) = r.re.as_ref() else {
+        return ValidationResult::fail(
+            r.message
+                .clone()
+                .unwrap_or_else(|| "regex does not match".to_string()),
+        );
+    };
+    if re.is_match(v) {
+        ValidationResult::ok()
+    } else {
+        ValidationResult::fail(
+            r.message
+                .clone()
+                .unwrap_or_else(|| "regex does not match".to_string()),
+        )
+    }
+}
+
+fn apply_algorithm(a: &AlgorithmOp, value: &str) -> ValidationResult {
+    use std::collections::HashMap;
+    match a.algo {
+        AlgoKind::IdCard => crate::validators::idcard::IdCardValidator::new(HashMap::new())
+            .validate(value),
+        AlgoKind::BankCard => {
+            crate::validators::bankcard::BankCardValidator::new(HashMap::new()).validate(value)
+        }
+    }
+}
+
+fn apply_regex_with_guard(g: &RegexWithGuardOp, value: &str) -> ValidationResult {
+    match &g.guard {
+        GuardKind::PhonePrefix { prefix_set } => {
+            use std::collections::HashMap;
+            // 委托旧 PhoneValidator：它内部已含正则 + 号段白名单 + 消息。
+            let mut params = HashMap::new();
+            params.insert(
+                "prefix_set".to_string(),
+                Value::String(prefix_set.clone()),
+            );
+            crate::validators::phone::PhoneValidator::new(params).validate(value)
+        }
+        GuardKind::MacPrefix { prefix } => {
+            use std::collections::HashMap;
+            let mut params = HashMap::new();
+            if let Some(p) = prefix {
+                params.insert("prefix".to_string(), Value::String(p.clone()));
+            }
+            crate::validators::mac::MacValidator::new(params).validate(value)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn template_idcard_equivalence() {
+        let op = MaskOp::Template(TemplateOp {
+            keep_prefix: 6,
+            keep_suffix: 4,
+            mask_char: '*',
+            mask_min_len: 8,
+            min_len: Some(18),
+            max_len: Some(18),
+            cjk: false,
+        });
+        assert_eq!(apply_mask_op(&op, "110101199001011234"), "110101********1234");
+        // 非 18 位原样返回
+        assert_eq!(apply_mask_op(&op, "11010119900101"), "11010119900101");
+    }
+
+    #[test]
+    fn regex_replace_all_phone() {
+        let op = MaskOp::RegexReplace(RegexReplaceOp {
+            pattern: Some(r"(\d{3})\d{4}(\d{4})".into()),
+            replacement: "$1****$2".into(),
+            match_mode: MatchMode::All,
+            re: Regex::new(r"(\d{3})\d{4}(\d{4})").ok(),
+        });
+        assert_eq!(apply_mask_op(&op, "13812345678"), "138****5678");
+    }
+
+    #[test]
+    fn regex_extract_first_match() {
+        let op = MaskOp::RegexReplace(RegexReplaceOp {
+            pattern: Some(r"\d{11}".into()),
+            replacement: "$0".into(),
+            match_mode: MatchMode::First,
+            re: Regex::new(r"\d{11}").ok(),
+        });
+        assert_eq!(apply_mask_op(&op, "tel:13812345678"), "13812345678");
+        assert_eq!(apply_mask_op(&op, "no digits"), "no digits");
+    }
+
+    #[test]
+    fn split_template_email() {
+        let op = MaskOp::SplitTemplate(SplitTemplateOp {
+            separator: "@".into(),
+            segment_index: 0,
+            inner: Box::new(TemplateOp {
+                keep_prefix: 1,
+                keep_suffix: 1,
+                mask_char: '*',
+                mask_min_len: 1,
+                min_len: None,
+                max_len: None,
+                // 用 cjk=true 分支复现旧 EmailMask 的 n=2 `首*` 行为。
+                cjk: true,
+            }),
+        });
+        assert_eq!(apply_mask_op(&op, "zhangsan@example.com"), "z******n@example.com");
+        assert_eq!(apply_mask_op(&op, "zs@x.com"), "z*@x.com");
+        assert_eq!(apply_mask_op(&op, "z@x.com"), "z@x.com");
+        assert_eq!(apply_mask_op(&op, "notanemail"), "notanemail");
+    }
+
+    #[test]
+    fn const_replace_delete_and_replace() {
+        let del = MaskOp::ConstReplace(ConstReplaceOp {
+            with: String::new(),
+        });
+        assert_eq!(apply_mask_op(&del, "anything"), "");
+        let rep = MaskOp::ConstReplace(ConstReplaceOp {
+            with: "REDACTED".into(),
+        });
+        assert_eq!(apply_mask_op(&rep, "anything"), "REDACTED");
+    }
+
+    #[test]
+    fn validate_regex_preset_email() {
+        let op = ValidateOp::Regex(RegexOp::new(
+            r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$",
+            Some("email format invalid".into()),
+            None,
+        ));
+        assert!(apply_validate_op(&op, "zhangsan@example.com").valid);
+        assert!(!apply_validate_op(&op, "invalid").valid);
+    }
+
+    #[test]
+    fn validate_algorithm_idcard() {
+        let op = ValidateOp::Algorithm(AlgorithmOp {
+            algo: AlgoKind::IdCard,
+        });
+        assert!(apply_validate_op(&op, "286071197501111126").valid);
+        assert!(!apply_validate_op(&op, "801615200409127668").valid);
+    }
+
+    /// v0.1.0 重构：`from_rule` 按通用算子名 + params 直接构造，不再有预置别名。
+    #[test]
+    fn mask_op_from_rule_template_with_params() {
+        // template + 全部 params → 与旧 idcard_mask 预置等价。
+        let mut params = HashMap::new();
+        params.insert("keep_prefix".into(), Value::Number(6.into()));
+        params.insert("keep_suffix".into(), Value::Number(4.into()));
+        params.insert("mask_char".into(), Value::String("*".into()));
+        params.insert("mask_min_len".into(), Value::Number(8.into()));
+        params.insert("min_len".into(), Value::Number(18.into()));
+        params.insert("max_len".into(), Value::Number(18.into()));
+        params.insert("cjk".into(), Value::Bool(false));
+        let op = MaskOp::from_rule("template", Some(&params)).expect("template op");
+        assert_eq!(apply_mask_op(&op, "110101199001011234"), "110101********1234");
+        assert_eq!(apply_mask_op(&op, "11010119900101"), "11010119900101");
+
+        // 未知名返回 None
+        assert!(MaskOp::from_rule("idcard_mask", None).is_none());
+        assert!(MaskOp::from_rule("custom", None).is_none());
+    }
+
+    #[test]
+    fn mask_op_from_rule_split_template_with_params() {
+        // split_template + 参数 → 与旧 email_mask 预置等价。
+        let mut params = HashMap::new();
+        params.insert("separator".into(), Value::String("@".into()));
+        params.insert("segment_index".into(), Value::Number(0.into()));
+        params.insert("keep_prefix".into(), Value::Number(1.into()));
+        params.insert("keep_suffix".into(), Value::Number(1.into()));
+        params.insert("mask_char".into(), Value::String("*".into()));
+        params.insert("mask_min_len".into(), Value::Number(1.into()));
+        params.insert("cjk".into(), Value::Bool(true));
+        let op = MaskOp::from_rule("split_template", Some(&params)).expect("split_template op");
+        assert_eq!(apply_mask_op(&op, "zhangsan@example.com"), "z******n@example.com");
+        assert_eq!(apply_mask_op(&op, "zs@x.com"), "z*@x.com");
+        assert_eq!(apply_mask_op(&op, "notanemail"), "notanemail");
+    }
+
+    #[test]
+    fn mask_op_from_rule_regex_replace_with_match_mode() {
+        // match_mode=first + replacement="$0" → 提取首个匹配（等价旧 regex_extract）。
+        let mut params = HashMap::new();
+        params.insert("pattern".into(), Value::String(r"\d{11}".into()));
+        params.insert("replacement".into(), Value::String("$0".into()));
+        params.insert("match_mode".into(), Value::String("first".into()));
+        let op = MaskOp::from_rule("regex_replace", Some(&params)).expect("regex_replace first");
+        assert_eq!(apply_mask_op(&op, "tel:13812345678"), "13812345678");
+
+        // match_mode=all + replacement → 替换全部。
+        let mut params = HashMap::new();
+        params.insert("pattern".into(), Value::String(r"(\d{3})\d{4}(\d{4})".into()));
+        params.insert("replacement".into(), Value::String("$1****$2".into()));
+        params.insert("match_mode".into(), Value::String("all".into()));
+        let op = MaskOp::from_rule("regex_replace", Some(&params)).expect("regex_replace all");
+        assert_eq!(apply_mask_op(&op, "13812345678"), "138****5678");
+    }
+
+    #[test]
+    fn mask_op_from_rule_const_replace_with_empty() {
+        // const_replace + with="" → 等价 delete。
+        let mut params = HashMap::new();
+        params.insert("with".into(), Value::String("".into()));
+        let op = MaskOp::from_rule("const_replace", Some(&params)).expect("const_replace empty");
+        assert_eq!(apply_mask_op(&op, "secret"), "");
+
+        // const_replace + with="REDACTED"
+        let mut params = HashMap::new();
+        params.insert("with".into(), Value::String("REDACTED".into()));
+        let op = MaskOp::from_rule("const_replace", Some(&params)).expect("const_replace redacted");
+        assert_eq!(apply_mask_op(&op, "anything"), "REDACTED");
+    }
+
+    #[test]
+    fn validate_op_from_rule_regex_with_params() {
+        // regex 算子从 params.pattern 构造。
+        let mut params = HashMap::new();
+        params.insert(
+            "pattern".into(),
+            Value::String(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$".into()),
+        );
+        params.insert("message".into(), Value::String("email format invalid".into()));
+        let rule = FieldRule {
+            field: "x".into(),
+            validator: "regex".into(),
+            params: Some(params),
+            regex: None,
+            message: None,
+            description: None,
+        };
+        let op = ValidateOp::from_rule(&rule).expect("regex op");
+        assert!(matches!(op, ValidateOp::Regex(_)));
+        assert!(apply_validate_op(&op, "zhangsan@example.com").valid);
+        assert!(!apply_validate_op(&op, "invalid").valid);
+    }
+
+    #[test]
+    fn validate_op_from_rule_algorithm_with_algo_param() {
+        // algorithm 算子从 params.algo 构造。
+        for (algo_str, kind) in [
+            ("idcard", AlgoKind::IdCard),
+            ("bankcard", AlgoKind::BankCard),
+            ("IDCARD", AlgoKind::IdCard),
+            ("BankCard", AlgoKind::BankCard),
+        ] {
+            let mut params = HashMap::new();
+            params.insert("algo".into(), Value::String(algo_str.into()));
+            let rule = FieldRule {
+                field: "x".into(),
+                validator: "algorithm".into(),
+                params: Some(params),
+                regex: None,
+                message: None,
+                description: None,
+            };
+            let op = ValidateOp::from_rule(&rule).expect("algorithm op");
+            match &op {
+                ValidateOp::Algorithm(a) => assert_eq!(a.algo, kind, "algo {algo_str}"),
+                _ => panic!("expected Algorithm"),
+            }
+        }
+
+        // algo 缺省 → IdCard
+        let rule = FieldRule {
+            field: "x".into(),
+            validator: "algorithm".into(),
+            params: None,
+            regex: None,
+            message: None,
+            description: None,
+        };
+        let op = ValidateOp::from_rule(&rule).expect("algorithm default");
+        assert!(matches!(op, ValidateOp::Algorithm(AlgorithmOp { algo: AlgoKind::IdCard })));
+
+        // 未知名返回 None
+        let rule = FieldRule {
+            field: "x".into(),
+            validator: "idcard".into(),
+            params: None,
+            regex: None,
+            message: None,
+            description: None,
+        };
+        assert!(ValidateOp::from_rule(&rule).is_none());
+    }
+
+    #[test]
+    fn validate_op_from_rule_regex_with_guard_params() {
+        // guard=phone
+        let mut params = HashMap::new();
+        params.insert("guard".into(), Value::String("phone".into()));
+        params.insert("pattern".into(), Value::String(r"^\d{11}$".into()));
+        params.insert("prefix_set".into(), Value::String("real".into()));
+        let rule = FieldRule {
+            field: "x".into(),
+            validator: "regex_with_guard".into(),
+            params: Some(params),
+            regex: None,
+            message: None,
+            description: None,
+        };
+        let op = ValidateOp::from_rule(&rule).expect("guard phone op");
+        assert!(matches!(op, ValidateOp::RegexWithGuard(_)));
+        assert!(apply_validate_op(&op, "13812345678").valid);
+        assert!(!apply_validate_op(&op, "12345").valid);
+
+        // guard=mac + prefix
+        let mut params = HashMap::new();
+        params.insert("guard".into(), Value::String("mac".into()));
+        params.insert("pattern".into(), Value::String(r"^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$".into()));
+        params.insert("prefix".into(), Value::String("AA:BB".into()));
+        let rule = FieldRule {
+            field: "x".into(),
+            validator: "regex_with_guard".into(),
+            params: Some(params),
+            regex: None,
+            message: None,
+            description: None,
+        };
+        let op = ValidateOp::from_rule(&rule).expect("guard mac op");
+        assert!(matches!(op, ValidateOp::RegexWithGuard(_)));
+        assert!(apply_validate_op(&op, "AA:BB:CC:DD:EE:FF").valid);
+        assert!(!apply_validate_op(&op, "notamac").valid);
+    }
+}
+
+#[cfg(test)]
+mod bug_repro_tests {
+    use super::*;
+
+    fn t(kp: usize, ks: usize, mml: usize, cjk: bool) -> TemplateOp {
+        TemplateOp {
+            keep_prefix: kp,
+            keep_suffix: ks,
+            mask_char: '*',
+            mask_min_len: mml,
+            min_len: None,
+            max_len: None,
+            cjk,
+        }
+    }
+
+    #[test]
+    fn repro_lisihai_variants() {
+        // 回归验证：kp+ks==n 边界（如 kp=3,ks=0,n=3）以前会输出 "李四海*"，
+        // 现在应走重叠分支，输出纯脱敏段 "*"。
+        for kp in 0..=3 {
+            for ks in 0..=3 {
+                for mml in 0..=3 {
+                    for cjk in [false, true] {
+                        let op = MaskOp::Template(t(kp, ks, mml, cjk));
+                        let out = apply_mask_op(&op, "李四海");
+                        assert_ne!(
+                            out, "李四海*",
+                            "kp={kp} ks={ks} mml={mml} cjk={cjk} 不应输出 \"李四海*\""
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn template_kp_plus_ks_equals_n_outputs_only_mask() {
+        // kp=3, ks=0, n=3 → 中间段长度为 0，应仅输出 mask_min_len 个 *。
+        let op = MaskOp::Template(t(3, 0, 1, false));
+        assert_eq!(apply_mask_op(&op, "李四海"), "*");
+        // kp=2, ks=1, n=3 → 同样 kp+ks==n，仅输出脱敏段。
+        let op = MaskOp::Template(t(2, 1, 2, false));
+        assert_eq!(apply_mask_op(&op, "abc"), "**");
+        // kp=1, ks=2, n=3 → 仅输出脱敏段。
+        let op = MaskOp::Template(t(1, 2, 1, false));
+        assert_eq!(apply_mask_op(&op, "abc"), "*");
+        // ASCII 长串：kp+ks==n 的边界（n=18, kp+ks=18, mml=8 → 仅脱敏段 8 个 *）。
+        let op = MaskOp::Template(t(6, 12, 8, false));
+        assert_eq!(apply_mask_op(&op, "110101199001011234"), "********");
+    }
+}

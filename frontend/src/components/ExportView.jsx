@@ -1,0 +1,300 @@
+import React, { useMemo } from "react";
+import {
+  Card,
+  Select,
+  Table,
+  Button,
+  Checkbox,
+  Space,
+  Typography,
+  App as AntApp,
+} from "antd";
+import { ArrowUpOutlined, ArrowDownOutlined, DownloadOutlined } from "@ant-design/icons";
+import { saveDialog, exportRecordsCsv, exportRecordsXlsx } from "../tauri.js";
+import { PREVIEW_ROW_LIMIT } from "../state.js";
+
+const { Text } = Typography;
+
+// 数据导出视图：源数据 Select（脱敏后 / 校验后 / 原始）+ 行过滤 Select（仅校验源）+
+// 格式 Select（CSV / XLSX）+ 导出按钮。主体为单一 antd Table：表头内含
+// Checkbox（勾选导出列）+ 上下移按钮（调序），单元格直接预览数据。
+// 未勾选的列仍渲染单元格（让用户看到取消勾选的效果），导出时只写 exportColumns。
+export default function ExportView({ state, dispatch }) {
+  const { message } = AntApp.useApp();
+  const {
+    headers,
+    rows,
+    maskedRows,
+    validateResult,
+    rules,
+    filePath,
+    columnOrder,
+    exportColumns,
+    exportFormat,
+    exportSource,
+    validateFilter,
+    loading,
+    actionHint,
+  } = state;
+
+  const sourceOptions = [
+    { label: "脱敏后数据", value: "masked", disabled: !maskedRows },
+    { label: "校验后数据", value: "validate", disabled: !validateResult },
+    { label: "原始数据", value: "raw", disabled: !filePath },
+  ];
+
+  const filterOptions = [
+    { label: "全部行", value: "all" },
+    { label: "仅合法行", value: "valid" },
+    { label: "仅非法行", value: "invalid" },
+  ];
+
+  const formatOptions = [
+    { label: "CSV", value: "csv" },
+    { label: "XLSX", value: "xlsx" },
+  ];
+
+  const moveColumn = (from, to) => {
+    if (to < 0 || to >= columnOrder.length) return;
+    const next = [...columnOrder];
+    const [item] = next.splice(from, 1);
+    next.splice(to, 0, item);
+    dispatch({ type: "SET_COLUMN_ORDER", columnOrder: next });
+  };
+
+  const toggleColumn = (col, checked) => {
+    const next = checked
+      ? [...exportColumns, col]
+      : exportColumns.filter((c) => c !== col);
+    dispatch({ type: "SET_EXPORT_COLUMNS", exportColumns: next });
+  };
+
+  // 根据当前 exportSource 计算预览源数据行。
+  // - raw：原始行；masked：脱敏后行；validate：校验结果行（可按 valid/invalid 过滤）。
+  const sourceRows = useMemo(
+    function computeSourceRows() {
+      if (exportSource === "raw") return rows || [];
+      if (exportSource === "masked") return maskedRows || [];
+      if (exportSource === "validate") {
+        if (!validateResult) return [];
+        const vrows = validateResult.rows || [];
+        if (validateFilter === "all") return vrows;
+        const matrix = validateResult.valid_matrix || [];
+        return vrows.filter((_, i) => {
+          const rowValid = matrix[i] || [];
+          const allValid = rowValid.every((v) => v !== false);
+          const anyInvalid = rowValid.some((v) => v === false);
+          if (validateFilter === "valid") return allValid;
+          if (validateFilter === "invalid") return anyInvalid;
+          return true;
+        });
+      }
+      return [];
+    },
+    [exportSource, rows, maskedRows, validateResult, validateFilter]
+  );
+
+  // Table dataSource：截断 PREVIEW_ROW_LIMIT 行，按 columnOrder 顺序转对象数组。
+  const dataSource = useMemo(
+    () =>
+      sourceRows.slice(0, PREVIEW_ROW_LIMIT).map((row, idx) => {
+        const obj = { key: idx };
+        for (const h of columnOrder) {
+          const c = headers.indexOf(h);
+          obj[h] = c >= 0 ? row[c] : "";
+        }
+        return obj;
+      }),
+    [sourceRows, columnOrder, headers]
+  );
+
+  // Table columns：遍历 columnOrder，title 内含 Checkbox + 上下移按钮。
+  const columns = useMemo(
+    () =>
+      columnOrder.map((h, idx) => ({
+        key: h,
+        dataIndex: h,
+        ellipsis: true,
+        width: 200,
+        title: (
+          <Space size="small" wrap>
+            <Checkbox
+              checked={exportColumns.includes(h)}
+              onChange={(e) => toggleColumn(h, e.target.checked)}
+            >
+              {h}
+            </Checkbox>
+            <Button
+              size="small"
+              type="text"
+              disabled={idx === 0}
+              icon={<ArrowUpOutlined />}
+              onClick={() => moveColumn(idx, idx - 1)}
+            />
+            <Button
+              size="small"
+              type="text"
+              disabled={idx === columnOrder.length - 1}
+              icon={<ArrowDownOutlined />}
+              onClick={() => moveColumn(idx, idx + 1)}
+            />
+          </Space>
+        ),
+      })),
+    [columnOrder, exportColumns]
+  );
+
+  // 计算导出参数：rulesJson + selectedRowIndices。
+  // 对「原始数据」源传空规则集避免脱敏；校验源按行过滤筛选行索引。
+  const computeExportArgs = () => {
+    let rulesJson;
+    let selectedRowIndices = null;
+    if (exportSource === "raw") {
+      rulesJson = JSON.stringify({ maskers: [], validators: [] });
+    } else {
+      rulesJson = JSON.stringify(rules);
+    }
+    if (exportSource === "validate" && validateResult) {
+      const matrix = validateResult.valid_matrix || [];
+      const total = (validateResult.rows || []).length;
+      const idx = [];
+      for (let i = 0; i < total; i++) {
+        const rowValid = matrix[i] || [];
+        const allValid = rowValid.every((v) => v !== false);
+        const anyInvalid = rowValid.some((v) => v === false);
+        if (validateFilter === "all") {
+          idx.push(i);
+        } else if (validateFilter === "valid" && allValid) {
+          idx.push(i);
+        } else if (validateFilter === "invalid" && anyInvalid) {
+          idx.push(i);
+        }
+      }
+      selectedRowIndices = idx;
+    }
+    return { rulesJson, selectedRowIndices };
+  };
+
+  const handleExport = async () => {
+    if (!filePath) {
+      message.warning("请先导入文件");
+      return;
+    }
+    if (exportColumns.length === 0) {
+      message.warning("请至少勾选一列");
+      return;
+    }
+    if (exportSource === "masked" && !maskedRows) {
+      message.warning("脱敏结果不存在，请先在脱敏视图应用规则");
+      return;
+    }
+    if (exportSource === "validate" && !validateResult) {
+      message.warning("校验结果不存在，请先运行校验");
+      return;
+    }
+    const { rulesJson, selectedRowIndices } = computeExportArgs();
+    const ext = exportFormat === "xlsx" ? "xlsx" : "csv";
+    const defaultName = `export_${Date.now()}.${ext}`;
+    const outPath = await saveDialog(defaultName, ext);
+    if (!outPath) {
+      return;
+    }
+    dispatch({ type: "SET_LOADING", loading: true });
+    dispatch({ type: "SET_HINT", actionHint: "正在导出..." });
+    try {
+      const args = [
+        filePath,
+        rulesJson,
+        exportColumns,
+        columnOrder,
+        selectedRowIndices,
+        outPath,
+      ];
+      if (exportFormat === "xlsx") {
+        await exportRecordsXlsx(...args);
+      } else {
+        await exportRecordsCsv(...args);
+      }
+      dispatch({ type: "SET_HINT", actionHint: `已导出到 ${outPath}` });
+    } catch (e) {
+      message.error(`导出失败: ${e}`);
+      dispatch({ type: "SET_HINT", actionHint: `导出失败: ${e}` });
+    } finally {
+      dispatch({ type: "SET_LOADING", loading: false });
+    }
+  };
+
+  return (
+    <Card title="数据导出" styles={{ body: { padding: 12 } }}>
+      <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+        <Space size="middle" wrap>
+          <span>
+            <Text type="secondary" style={{ fontSize: 12, marginRight: 8 }}>
+              源数据
+            </Text>
+            <Select
+              value={exportSource}
+              options={sourceOptions}
+              onChange={(v) =>
+                dispatch({ type: "SET_EXPORT_SOURCE", exportSource: v })
+              }
+              style={{ minWidth: 180 }}
+            />
+          </span>
+          {exportSource === "validate" ? (
+            <span>
+              <Text type="secondary" style={{ fontSize: 12, marginRight: 8 }}>
+                行过滤
+              </Text>
+              <Select
+                value={validateFilter}
+                options={filterOptions}
+                onChange={(v) =>
+                  dispatch({ type: "SET_VALIDATE_FILTER", validateFilter: v })
+                }
+                style={{ minWidth: 160 }}
+              />
+            </span>
+          ) : null}
+          <span>
+            <Text type="secondary" style={{ fontSize: 12, marginRight: 8 }}>
+              格式
+            </Text>
+            <Select
+              value={exportFormat}
+              options={formatOptions}
+              onChange={(v) =>
+                dispatch({ type: "SET_EXPORT_FORMAT", exportFormat: v })
+              }
+              style={{ minWidth: 120 }}
+            />
+          </span>
+          <Button
+            type="primary"
+            icon={<DownloadOutlined />}
+            loading={loading}
+            onClick={handleExport}
+          >
+            导出
+          </Button>
+        </Space>
+
+        <Table
+          size="small"
+          pagination={false}
+          scroll={{ y: 420, x: "max-content" }}
+          sticky
+          columns={columns}
+          dataSource={dataSource}
+          locale={{ emptyText: "请先导入文件并选择源数据" }}
+        />
+
+        <div>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            {actionHint}
+          </Text>
+        </div>
+      </Space>
+    </Card>
+  );
+}

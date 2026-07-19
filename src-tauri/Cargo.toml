@@ -1,0 +1,27 @@
+[package]
+name = "ruT0-data-kit"
+version = "0.1.0"
+edition = "2021"
+description = "RuT0DataKit Tauri GUI"
+authors = ["RuT0DataKit"]
+license = "MIT"
+
+# 独立 manifest，不纳入 crates/ workspace 成员（避免 edition/binary 冲突）。
+# 通过 path dep 引用 ruT0-data-kit-core。空 [workspace] table 声明独立 workspace。
+[workspace]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+ruT0-data-kit-core = { path = "../crates/core" }
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yml = "0.0.12"
+rust_xlsxwriter = "0"
+csv = "1"
+
+[features]
+default = []

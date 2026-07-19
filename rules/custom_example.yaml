@@ -1,0 +1,28 @@
+# custom_example.yaml — 演示 template 通用脱敏算子的参数
+#
+# v0.1.0 重构后：旧 `custom` masker 已归并为通用算子 `template`。
+# 参数说明：
+#   keep_prefix / keep_suffix  保留首尾字符数
+#   mask_char                  替换中间的字符
+#   mask_min_len               脱敏段至少插入多少个 mask_char
+#   min_len / max_len          可选：值总字符数不在区间内时原样返回
+#   cjk                        true 走 CJK 姓名/邮箱本地部分分支（默认 false）
+maskers:
+  - field: customer_id
+    masker: template
+    params:
+      keep_prefix: 2
+      keep_suffix: 2
+      mask_char: "#"
+      mask_min_len: 4
+      cjk: false
+  - field: phone
+    masker: template
+    params:
+      keep_prefix: 3
+      keep_suffix: 4
+      mask_char: "*"
+      mask_min_len: 4
+      min_len: 11
+      max_len: 11
+      cjk: false

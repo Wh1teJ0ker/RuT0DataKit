@@ -1,0 +1,33 @@
+# Rust
+/target
+**/target
+*.rs.bk
+
+# Tauri
+/src-tauri/target
+/src-tauri/Cargo.lock
+/src-tauri/gen
+
+# Frontend
+/frontend/node_modules
+/frontend/dist
+/frontend/.env
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.Spotlight-V100
+.Trashes
+
+# Editor / IDE
+.idea/
+.vscode/
+*.iml
+.fleet/
+.zcode/
+
+# OS misc
+Thumbs.db
