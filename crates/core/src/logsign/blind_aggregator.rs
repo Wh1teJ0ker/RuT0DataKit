@@ -13,33 +13,41 @@
 //! - `body_size` 取 `LogEntry.size`（`Option<u64>`，`None` 跳过该 entry）。
 //! - `source_ip` = `LogEntry.ip.clone()`，用于区分不同注入源。
 //!
-//! ## 真假方向（双簇自动判定）
+//! ## 真假方向（每位置独立判定 + 跨位置众数）
 //!
 //! 盲注二分探针在「条件成立」与「不成立」两种响应下，HTTP body 字节数
-//! 不同（靶机通常在条件成立时走不同分支导致响应长度变化）。true 探针
-//! 覆盖大部分 thr 区间（除越界末位外每个字符都要扫一遍），故其在 group
-//! 内出现频次显著高于 false 探针。
+//! 不同（靶机通常在条件成立时走不同分支导致响应长度变化）。
 //!
-//! 据此 `group_true_size` 在「混合位置」（同位置内 body_size 不全同，
-//! 即该位置同时有 true/false 探针）上取 body_size 众数，自动适配「条件
-//! 成立→body 更小」或「条件成立→body 更大」两种方向。只在混合位置上
-//! 统计，避免 beyond_end / unresolved_all_true 等单簇位置投票压倒 true 簇
-//! （如某位置全 false body 投票盖过真正的 true_size）。
-//! - fixture（`access.log` line 19-24，`database()` 第 1 字符 'p'=112）：
-//!   pos 1 混合位置中 true body=862 出现 4 次，false body=875 出现 2 次 →
-//!   众数 862 → 与 v0.2.2 `min(body_size)` 等价，向后兼容。
-//! - 反向场景（true body=900 / false body=850）：混合位置众数 900 自动判为
-//!   true_size，无需改算法。
+//! **不**用「全位置 body_size 众数」判 true_size：fixture 第 4 个 read_target
+//! `select group_concat(id,0x7e,username,0x7e,idcard) from person_data` 上
+//! false 探针频次（737）可高于 true 探针频次（669），全位置众数会误判到
+//! false 簇（875），使第 4 RT 退化为全 `?`。
 //!
-//! 并列频次（极少见，两簇等频）取较小者，偏向 fixture 真假方向
-//! （true 通常 body 更小）。无混合位置时退化到 `min(body_size)`（v0.2.2
-//! 行为，不破坏 fixture），仍能区分 all-true / all-false（见聚合算法）。
+//! 实际算法：对每个「混合位置」（同 char_position 内 body_size 不全同，
+//! 即同时有 true/false 探针），独立判该位置的 true 簇 = **出现在最低
+//! threshold 一侧的 body_size**（thr 越低越可能 `ascii > thr` 成立 → true）。
+//! 这对 fixture（true body=862=min）每位置取 862，对反向场景
+//! （true body=900=max）每位置取 900，方向自动适配，无需写死 min/max。
+//! 再跨混合位置对 true 簇标识取众数（并列取较小者，偏向 fixture 方向）。
+//!
+//! 单簇位置（beyond_end / unresolved_all_true）不参与 true_size 选举，
+//! 避免 all-false 位置投票压倒真正的 true 簇（HANDOFF risks 指出的退化场景）。
+//! 无混合位置时退化到 `min(body_size)`（v0.2.2 行为，不破坏 fixture）。
+//!
+//! - fixture（`access.log`，4 个 read_target）：每混合位置 true 簇 = 862，
+//!   众数 → 862（与 v0.2.2 `min(body_size)` 等价，向后兼容）。
+//! - 反向场景（true body=900 / false body=850）：每混合位置 true 簇 = 900
+//!   （低 thr 侧），众数 → 900，无需改算法。
+//!
+//! 并列频次（两簇等频）取较小者，偏向 fixture 真假方向（true 通常 body 更
+//! 小）。无混合位置时退化到 `min(body_size)`（v0.2.2 行为，不破坏 fixture），
+//! 仍能区分 all-true / all-false（见聚合算法）。
 //!
 //! ## 聚合算法
 //!
 //! 对每个 `(read_target, source_ip)` 分组：
-//! 1. `group_true_size = mode(body_size)`（条件成立响应 body，众数取较小
-//!    者并列偏向）。
+//! 1. `group_true_size = mode_per_position_true_size`（每混合位置判 true 簇，
+//!    跨位置取众数，并列取较小者偏向）。
 //! 2. 按 `char_position` 子分组。
 //! 3. 每个位置：
 //!    - 全同 body 且 == group_true_size → `unresolved_all_true`（ascii 大于
@@ -226,13 +234,17 @@ impl BlindAggregator {
 
         let mut results: Vec<AggregatedResult> = Vec::with_capacity(groups.len());
         for ((read_target, _source_ip), group_probes) in groups {
-            // group_true_size = 全位置 body_size 众数（条件成立响应 body）。
-            // 双簇自动判定：只在「混合位置」（同位置内 body_size 不全同，即
-            // 既有 true 又有 false 探针的位置）上统计 body_size 频次取众数，
-            // 避免 beyond_end / unresolved_all_true 等单簇位置投票压倒 true
-            // 簇（HANDOFF risks 指出的退化场景）。无混合位置时退化到
-            // `min(body_size)`（v0.2.2 行为，不破坏 fixture）。并列取较小者。
-            let group_true_size = mode_body_size_from_mixed_positions(&group_probes);
+            // group_true_size = 每混合位置独立判 true 簇，跨位置取众数
+            // （并列取较小者偏向 fixture 方向）。
+            // 双簇自动判定：每个「混合位置」（同位置内 body_size 不全同，即
+            // 既有 true 又有 false 探针）独立判该位置 true 簇 = 出现在最低
+            // threshold 一侧的 body_size（thr 越低越可能 ascii>thr 成立）。
+            // 这对 fixture（true body=min）每位置取 min，对反向场景（true
+            // body=max）每位置取 max，方向自动适配，无需写死 min/max。
+            // 再跨混合位置对 true 簇标识取众数。单簇位置（beyond_end /
+            // unresolved_all_true）不参与，避免 all-false 位置投票压倒
+            // true 簇。无混合位置时退化到 `min(body_size)`（v0.2.2 行为）。
+            let group_true_size = mode_per_position_true_size(&group_probes);
 
             // 按 char_position 子分组。
             let mut by_pos: HashMap<u32, Vec<&BlindProbe>> = HashMap::new();
@@ -324,38 +336,53 @@ impl Default for BlindAggregator {
     }
 }
 
-/// 统计「混合位置」body_size 众数作为 true_size 标识。
+/// 每混合位置独立判 true 簇，跨位置对 true 簇标识取众数作为 true_size。
 ///
-/// 双簇自动判定：只在「同位置内 body_size 不全同」（即该位置既有 true 又有
-/// false 探针，能直接区分真假簇）的位置上统计 body_size 频次取众数。这避免
-/// beyond_end / unresolved_all_true 等单簇位置投票压倒真正的 true 簇
-/// （HANDOFF risks 指出的退化场景：如某位置全部 false body 投票可能盖过
-/// 真正的 true_size）。
+/// 算法：
+/// 1. 对每个「混合位置」（同 char_position 内 body_size 不全同，即既有 true
+///    又有 false 探针，能直接区分真假簇），独立判该位置的 true 簇 = 出现在
+///    最低 threshold 一侧的 body_size（thr 越低越可能 `ascii > thr` 成立 →
+///    true）。这对 fixture（true body=min）每位置取 min，对反向场景
+///    （true body=max）每位置取 max，方向自动适配，无需写死 min/max。
+/// 2. 收集所有混合位置的 true 簇标识，取众数（并列取较小者，偏向 fixture
+///    真假方向 true 通常 body 更小）作为 `group_true_size`。
+/// 3. 单簇位置（beyond_end / unresolved_all_true）不参与 true_size 选举，
+///    避免 all-false 位置投票压倒真正的 true 簇（HANDOFF risks 指出的退化
+///    场景）。
+/// 4. 无混合位置时退化到 `min(body_size)`（v0.2.2 行为，不破坏 fixture）。
+///    探针为空时返回 0。
 ///
-/// 取众数而非 min/max：true 探针在混合位置中覆盖大部分 thr 区间（除
-/// 越界末位外），故众数即 true_size。并列频次取较小者（true 通常 body 更
-/// 小，与 v0.2.2 fixture 方向一致；反向场景下众数仍指向 true 簇，仅同频
-/// 时偏向 fixture 方向）。
-///
-/// 退化路径：无混合位置（全部位置都单簇）时退化到 `min(body_size)`，
-/// 与 v0.2.2 行为一致（不破坏 fixture：fixture 的 pos 1 是混合位置，
-/// 众数法与 min 等价）。探针为空时返回 0。
-fn mode_body_size_from_mixed_positions(probes: &[&BlindProbe]) -> u64 {
+/// 为什么不取「全位置 body_size 众数」：fixture 第 4 RT 上 false 探针频次
+/// （737）可高于 true（669），全位置众数会误判到 false 簇（875），使第 4
+/// RT 退化为全 `?`。每位置独立判 true 簇避开此问题（每位置 true 簇 = 862，
+/// 众数 → 862）。
+fn mode_per_position_true_size(probes: &[&BlindProbe]) -> u64 {
     // 按 char_position 聚合。
-    let mut by_pos: HashMap<u32, Vec<u64>> = HashMap::new();
+    let mut by_pos: HashMap<u32, Vec<&BlindProbe>> = HashMap::new();
     for p in probes {
-        by_pos.entry(p.char_position).or_default().push(p.body_size);
+        by_pos.entry(p.char_position).or_default().push(p);
     }
-    // 只保留「混合位置」：该位置 body_size 不全同（pos_min != pos_max）。
+    // 对每个混合位置（body_size 不全同），独立判该位置 true 簇 = 出现在
+    // 最低 threshold 一侧的 body_size。
     let mut freq: HashMap<u64, u32> = HashMap::new();
-    for bodies in by_pos.values() {
-        let bmin = *bodies.iter().min().unwrap_or(&0);
-        let bmax = *bodies.iter().max().unwrap_or(&0);
-        if bmin != bmax {
-            for b in bodies {
-                *freq.entry(*b).or_insert(0) += 1;
-            }
+    for pos_probes in by_pos.values() {
+        let bmin = pos_probes.iter().map(|p| p.body_size).min().unwrap_or(0);
+        let bmax = pos_probes.iter().map(|p| p.body_size).max().unwrap_or(0);
+        if bmin == bmax {
+            // 单簇位置：不参与 true_size 选举。
+            continue;
         }
+        // 该位置 true 簇 = 出现在最低 threshold 一侧的 body_size。
+        // thr 越低越可能 ascii > thr 成立（探针为真）→ 那个 body 即 true 簇。
+        let min_thr = pos_probes.iter().map(|p| p.threshold).min().expect("non-empty");
+        // 取最低 threshold 对应的 body_size（若有多个同 thr 取众数再任取）。
+        let true_body_at_pos = pos_probes
+            .iter()
+            .filter(|p| p.threshold == min_thr)
+            .map(|p| p.body_size)
+            .next()
+            .expect("non-empty");
+        *freq.entry(true_body_at_pos).or_insert(0) += 1;
     }
     if freq.is_empty() {
         // 无混合位置 → 退化到 min(body_size)（v0.2.2 行为）。
@@ -718,11 +745,13 @@ mod tests {
         );
     }
 
-    /// mode_body_size_from_mixed_positions 单测：只在混合位置上取众数，
+    /// mode_per_position_true_size 单测：每混合位置独立判 true 簇（出现在
+    /// 最低 threshold 一侧的 body_size），跨位置对 true 簇标识取众数；
     /// 并列频次取较小者；无混合位置退化到 min(body_size)。
     #[test]
     fn mode_body_size_picks_smaller_on_tie() {
-        // 两个混合位置（pos 1）：body 862 与 875 各 1 次 → 并列取 862。
+        // 混合位置 pos 1：thr=1 body=875、thr=2 body=862。
+        // min thr=1 → 该位置 true 簇 = 875。无并列，返回 875。
         let mk_probe = |pos: u32, thr: u32, body: u64| BlindProbe {
             read_target: "x".to_string(),
             char_position: pos,
@@ -734,16 +763,22 @@ mod tests {
         let p1 = mk_probe(1, 1, 875);
         let p2 = mk_probe(1, 2, 862);
         let probes: Vec<&BlindProbe> = vec![&p1, &p2];
-        assert_eq!(mode_body_size_from_mixed_positions(&probes), 862);
+        assert_eq!(mode_per_position_true_size(&probes), 875);
 
-        // 同一混合位置（pos 1）中 body 900 出现 3 次 > 850 出现 1 次 → 900。
-        let mut many: Vec<BlindProbe> = Vec::new();
-        for i in 0..3 {
-            many.push(mk_probe(1, i, 900));
-        }
-        many.push(mk_probe(1, 99, 850));
-        let many_refs: Vec<&BlindProbe> = many.iter().collect();
-        assert_eq!(mode_body_size_from_mixed_positions(&many_refs), 900);
+        // 反向场景：pos 1 中 thr=1 body=900、thr=99 body=850。
+        // min thr=1 → true 簇 = 900。
+        let p3 = mk_probe(1, 1, 900);
+        let p4 = mk_probe(1, 99, 850);
+        let probes2: Vec<&BlindProbe> = vec![&p3, &p4];
+        assert_eq!(mode_per_position_true_size(&probes2), 900);
+
+        // 两个混合位置（pos 1 与 pos 2），各自 true 簇 = 862 → 众数 862。
+        let p_a = mk_probe(1, 1, 862);
+        let p_b = mk_probe(1, 99, 875);
+        let p_c = mk_probe(2, 1, 862);
+        let p_d = mk_probe(2, 99, 875);
+        let probes3: Vec<&BlindProbe> = vec![&p_a, &p_b, &p_c, &p_d];
+        assert_eq!(mode_per_position_true_size(&probes3), 862);
 
         // 无混合位置（pos 1 全 850，pos 2 全 900）→ 退化到 min=850。
         let p_a = mk_probe(1, 1, 850);
@@ -752,7 +787,7 @@ mod tests {
         let p_d = mk_probe(2, 2, 900);
         let no_mixed: Vec<&BlindProbe> = vec![&p_a, &p_b, &p_c, &p_d];
         assert_eq!(
-            mode_body_size_from_mixed_positions(&no_mixed),
+            mode_per_position_true_size(&no_mixed),
             850,
             "no mixed positions → fallback to min(body_size)"
         );

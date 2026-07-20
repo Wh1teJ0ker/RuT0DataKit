@@ -1438,6 +1438,52 @@ fn log_scan_full() {
         col_result.contains("id,username,password"),
         "column_name decoded contains id,username,password, got {col_result}",
     );
+
+    // T3-1 第二轮修复：断言第 4 个 read_target
+    // `group_concat(id,0x7e,username,0x7e,idcard)` 的聚合结果。
+    // 0x7e 字面量解码为 '~' 分隔符，decoded_string 应含 `1~lisi~` 形态
+    // （攻击者盲注读取 person_data 表的 id/username/idcard 字段）。
+    let rt4 = blind_agg
+        .iter()
+        .find_map(|v| {
+            let m = v.as_mapping()?;
+            let rt = m.get("read_target").and_then(|t| t.as_str()).unwrap_or("");
+            if rt.contains("group_concat(id,0x7e") {
+                Some(m)
+            } else {
+                None
+            }
+        })
+        .expect("group_concat(id,0x7e,...) aggregation present");
+    let rt4_decoded = rt4
+        .get("decoded_string")
+        .and_then(|s| s.as_str())
+        .unwrap_or("");
+    let rt4_sep = rt4
+        .get("separator_char")
+        .and_then(|s| s.as_str())
+        .map(|c| c.chars().next().unwrap_or('\0'));
+    let rt4_resolved = rt4
+        .get("resolved_chars")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    assert_eq!(
+        rt4_sep,
+        Some('~'),
+        "4th RT separator_char must be '~' (0x7e decoded), got {rt4_sep:?}",
+    );
+    assert!(
+        rt4_decoded.starts_with("1~"),
+        "4th RT decoded_string must start with '1~', got {rt4_decoded}",
+    );
+    assert!(
+        rt4_decoded.contains("~lisi~"),
+        "4th RT decoded_string must contain '~lisi~', got {rt4_decoded}",
+    );
+    assert!(
+        rt4_resolved > 0,
+        "4th RT resolved_chars must be > 0, got {rt4_resolved}",
+    );
 }
 
 /// v0.2.0 验收项 26：6 类签名各至少 1 正例 + 1 反例。
