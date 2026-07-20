@@ -36,9 +36,10 @@ use std::path::Path;
 
 use ruT0_data_kit_core::log::LogReader;
 use ruT0_data_kit_core::logsign::SignatureEngine;
+use ruT0_data_kit_core::pcap::PcapReader;
 use ruT0_data_kit_core::pipeline::{
     detect_type, log_scan::scan_log, mask_pipeline, mask_pipeline_columns,
-    mask_pipeline_selected, validate_pipeline, SourceType,
+    mask_pipeline_selected, scan_pcap, validate_pipeline, SourceType,
 };
 use ruT0_data_kit_core::readers::{CsvReader, SourceReader, XlsxReader};
 use ruT0_data_kit_core::report::csv_report::{build_csv_mask_report, write_masked_csv};
@@ -631,4 +632,72 @@ pub fn scan_log_file(path: String) -> Result<Value, String> {
         "entries": entries_value,
         "report": report_value,
     }))
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// v0.3.0 pcap 扫描命令
+// ─────────────────────────────────────────────────────────────────────
+
+/// 读取 .pcap/.pcapng 文件并跑流量扫描 pipeline（tshark 子进程 + 双重 URL 解码
+/// + base64 字段解码 + 敏感扫描），一次返回 `{ entries, report }`。
+///
+/// - `entries`：core `pcap::PcapReader::read` 解析出的 `Vec<HttpRequest>`，
+///   前端用于原始 HTTP 请求表渲染。
+/// - `report`：core `pipeline::scan_pcap` 产出的 `Report`，含 findings +
+///   summary（total_requests / sensitive_hits / decoded_fragments /
+///   top_src_ips）。
+///
+/// tshark 缺失时返回 `CoreError::DependencyMissing("tshark")`，前端 PcapView
+/// 据此 `message.error` 弹提示并禁用按钮。fixture 是 5000 POST × JSON body
+/// 单字段 base64，敏感扫描规则集与日志扫描一致（idcard/phone/name 三类）。
+#[tauri::command]
+pub fn scan_pcap_file(path: String) -> Result<Value, String> {
+    let requests = PcapReader::read(Path::new(&path)).map_err(|e| e.to_string())?;
+    let scan = DefaultSensitiveScan::new();
+    let rules = pcap_sensitive_ruleset();
+    let report = scan_pcap(Path::new(&path), &scan, &rules).map_err(|e| e.to_string())?;
+    let report_value = serde_json::to_value(&report).map_err(|e| e.to_string())?;
+    let entries_value = serde_json::to_value(&requests).map_err(|e| e.to_string())?;
+    Ok(json!({
+        "entries": entries_value,
+        "report": report_value,
+    }))
+}
+
+/// v0.3.0 pcap 默认敏感扫描规则集：idcard / phone / name 三类内置 validator。
+///
+/// 与日志扫描口径对齐：fixture 仅含 PII（身份证 / 中文姓名 / 手机号），不跑
+/// SQLi 签名（v0.3.0 scope）。返回独立 RuleSet，不污染 mask 视图用的
+/// `load_default_mask_ruleset`。
+fn pcap_sensitive_ruleset() -> RuleSet {
+    use ruT0_data_kit_core::rules::FieldRule;
+    RuleSet {
+        validators: vec![
+            FieldRule {
+                field: "id_card".into(),
+                validator: "idcard".into(),
+                params: None,
+                regex: None,
+                message: None,
+                description: None,
+            },
+            FieldRule {
+                field: "phone".into(),
+                validator: "phone".into(),
+                params: None,
+                regex: None,
+                message: None,
+                description: None,
+            },
+            FieldRule {
+                field: "name".into(),
+                validator: "name".into(),
+                params: None,
+                regex: None,
+                message: None,
+                description: None,
+            },
+        ],
+        maskers: vec![],
+    }
 }

@@ -1939,3 +1939,103 @@ fn log_decoded_query_plus_decode() {
         decoded_pct,
     );
 }
+
+/// T3-3 E2E：pcap 全链扫描。
+///
+/// 仅在本机有 tshark 时跑（`cargo test -- --ignored pcap`）。fixture 是
+/// `tests/fixtures/samples/pcap/data.pcapng`，5000 条 POST，每条 body 是
+/// JSON 且字段值单独 base64，自动解码后应能命中 idcard/phone/name 等敏感项。
+#[test]
+#[ignore]
+fn pcap_scan_full() {
+    use ruT0_data_kit_core::pipeline::scan_pcap;
+    use ruT0_data_kit_core::rules::FieldRule;
+
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("tests/fixtures/samples/pcap/data.pcapng");
+    let scan = DefaultSensitiveScan::new();
+    // 构造敏感扫描规则集：idcard / phone / name 三类内置 validator
+    // （与 log_scan 全链路测试保持一致的口径）。
+    let rules = RuleSet {
+        validators: vec![
+            FieldRule {
+                field: "id_card".into(),
+                validator: "idcard".into(),
+                params: None,
+                regex: None,
+                message: None,
+                description: None,
+            },
+            FieldRule {
+                field: "phone".into(),
+                validator: "phone".into(),
+                params: None,
+                regex: None,
+                message: None,
+                description: None,
+            },
+            FieldRule {
+                field: "name".into(),
+                validator: "name".into(),
+                params: None,
+                regex: None,
+                message: None,
+                description: None,
+            },
+        ],
+        maskers: vec![],
+    };
+    let report = scan_pcap(&path, &scan, &rules).expect("tshark required for this test");
+
+    assert_eq!(report.kind, "pcap_scan");
+    let m = report
+        .summary
+        .as_mapping()
+        .expect("summary must be mapping");
+    let total = m
+        .get("total_requests")
+        .and_then(|v| v.as_u64())
+        .expect("total_requests present");
+    assert!(
+        total >= 5000,
+        "expected >=5000 requests, got {total}"
+    );
+    let sens = m
+        .get("sensitive_hits")
+        .and_then(|v| v.as_u64())
+        .expect("sensitive_hits present");
+    assert!(
+        sens >= 4000,
+        "expected >=4000 sensitive findings, got {sens}"
+    );
+    // 必须命中 idcard 类型（fixture 含身份证）
+    let types: HashSet<&str> = report
+        .findings
+        .iter()
+        .map(|f| f.r#type.as_str())
+        .collect();
+    assert!(types.contains("idcard"), "must find idcard, got {types:?}");
+    assert!(
+        types.contains("name") || types.contains("phone"),
+        "must find name or phone, got {types:?}"
+    );
+    // location 必须是 frame:N 格式
+    assert!(
+        report
+            .findings
+            .iter()
+            .all(|f| f.location
+                .as_deref()
+                .map(|s| s.starts_with("frame:"))
+                .unwrap_or(false)),
+        "all findings must have frame: location"
+    );
+    // top_src_ips 至少有 1 条（fixture 全部 POST 来自 172.16.38.133）
+    let top = m
+        .get("top_src_ips")
+        .and_then(|v| v.as_sequence())
+        .expect("top_src_ips present");
+    assert!(!top.is_empty(), "top_src_ips must not be empty");
+}

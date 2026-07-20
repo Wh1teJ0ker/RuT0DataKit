@@ -384,9 +384,6 @@ export default function LogView({ state, dispatch }) {
             >
               {state.filePath || "未选择文件"}
             </Text>
-            {state.sourceType === "log" && (
-              <Tag color="geekblue">类型: log</Tag>
-            )}
           </Space>
         </Card>
 

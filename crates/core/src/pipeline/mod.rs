@@ -8,11 +8,13 @@
 pub mod columns;
 pub mod log_scan;
 pub mod mask;
+pub mod pcap_scan;
 pub mod validate;
 
 pub use columns::mask_pipeline_columns;
 pub use log_scan::scan_log;
 pub use mask::{mask_pipeline, mask_pipeline_selected, MaskResult, MaskSummary};
+pub use pcap_scan::scan_pcap;
 pub use validate::{validate_pipeline, ValidateResult, ValidateSummary};
 
 use std::path::Path;

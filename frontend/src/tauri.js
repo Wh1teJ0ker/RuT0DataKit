@@ -133,3 +133,16 @@ export async function listValidateOpTypes() {
 export async function scanLogFile(path) {
   return tauriInvoke("scan_log_file", { path });
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// T3-4 新增命令封装：流量分析（v0.3.0）
+// 参数名 camelCase，由 Tauri 自动转 snake_case 传到 Rust 端。
+// ─────────────────────────────────────────────────────────────────────
+
+// 读取 .pcap/.pcapng 并跑流量扫描 pipeline，一次返回 { entries, report }。
+//   - entries：HttpRequest 数组，前端用于原始 HTTP 请求表渲染。
+//   - report：含 findings + summary（total_requests/sensitive_hits/
+//     decoded_fragments/top_src_ips）。tshark 缺失时抛错，前端弹提示。
+export async function scanPcapFile(path) {
+  return tauriInvoke("scan_pcap_file", { path });
+}

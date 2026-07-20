@@ -1,4 +1,4 @@
-import { Menu, Typography } from "antd";
+import { Menu } from "antd";
 import {
   SafetyCertificateOutlined,
   CheckCircleOutlined,
@@ -8,9 +8,7 @@ import {
   WifiOutlined,
 } from "@ant-design/icons";
 
-const { Text } = Typography;
-
-// 6 个 nav item：5 active（mask/validate/export/rules/log v0.2.0）+ 1 disabled（pcap v0.3.0）。
+// 6 个 nav item：6 active（mask/validate/export/rules/log/pcap）。
 // 受控：selectedKeys 来自 state.activeView，onClick dispatch SET_VIEW。
 export default function Sidebar({ state, dispatch }) {
   const items = [
@@ -21,21 +19,12 @@ export default function Sidebar({ state, dispatch }) {
     {
       key: "log",
       icon: <ProfileOutlined />,
-      label: (
-        <span>
-          日志扫描 <Text type="secondary" style={{ fontSize: 11 }}>v0.2.0</Text>
-        </span>
-      ),
+      label: "日志扫描",
     },
     {
       key: "pcap",
       icon: <WifiOutlined />,
-      disabled: true,
-      label: (
-        <span>
-          流量分析 <Text type="secondary" style={{ fontSize: 11 }}>v0.3.0</Text>
-        </span>
-      ),
+      label: "流量分析",
     },
   ];
 

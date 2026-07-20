@@ -20,6 +20,11 @@ export const initialState = {
   logEntries: [], // Vec<LogEntry>
   logReport: null, // Report 或 null
   logLoading: false,
+  // 流量分析结果（v0.3.0）：pcapEntries 为原始 HTTP 请求，pcapReport 为扫描报告。
+  // 与 log 状态同策略，跨视图不丢。
+  pcapEntries: [],
+  pcapReport: null,
+  pcapLoading: false,
   // 规则（全局规则库）：RulesView 管理，独立于文件导入。
   // MaskView/ValidateView 不直接写入这里；脱敏/校验应用时用
   // maskOverrides/validateOverrides 优先 + 全局 rules 兜底合并。
@@ -100,6 +105,18 @@ export function appReducer(state, action) {
     case "SET_LOG_LOADING": {
       const { logLoading } = action;
       return { ...state, logLoading };
+    }
+    case "SET_PCAP_ENTRIES": {
+      const { pcapEntries } = action;
+      return { ...state, pcapEntries: pcapEntries || [] };
+    }
+    case "SET_PCAP_REPORT": {
+      const { pcapReport } = action;
+      return { ...state, pcapReport };
+    }
+    case "SET_PCAP_LOADING": {
+      const { pcapLoading } = action;
+      return { ...state, pcapLoading };
     }
     case "SET_RULES": {
       const { rules } = action;

@@ -4,11 +4,12 @@
 全部处理在本地完成，不上传任何样本或规则。本仓库面向数据安全竞赛与红队场景中的
 "敏感数据快速清洗 / 解析" 需求，不依赖 Python 运行时。
 
-> **当前状态：v0.2.4 日志扫描盲注聚合数据库格式还原（T4-1 ~ T4-4 全部 verified_complete，已 release_complete）。** v0.2.4 在 v0.2.3 三轴优化的基础上，把盲注聚合结果从「逐 read_target 卡片」升级为「按数据库格式还原」：
-> - **后端结构 + 算法（T4-1）**：`blind_aggregator` 新增 `ReconstructedDatabase` / `ReconstructedTable` / `ReconstructedRow` 三结构 + `BlindAggregator::reconstruct_database` 关联函数，三步算法：Step1 把每个 `AggregatedResult` 的 `read_target` 按 4 类模式分类（`schema`=database() / `table_list`=group_concat(table_name) from information_schema.tables / `column_list`=group_concat(column_name) ... where table_name='X' / `row_data`=group_concat(col1,0xNN,col2,...) from <table>；未匹配进 `unmatched_results`）；Step2 拼装 schema/tables/columns/rows（schema 直填 → table_list 解码表名按 `table_name='T'` 谓词匹配 column_list 全量列 → 按 `from T` 匹配 row_data 解析行：`,` split 行 + `column_separator`（`0xNN` 解码）split 列 → 投影到全量列，未 fetch 列 `None`）；Step3 unmatched 兜底。
-> - **pipeline 透传（T4-2）**：`scan_log` 末尾调 `reconstruct_database` 塞 `Report.extra.reconstructed_database`（与 `blind_aggregation` 并列，向后兼容 v0.2.3）。fixture 4 类探针自动还原：schema="person" / 1 表 person_data / 7 列 / ≥2 行 / row[0].id=Some("1")。
-> - **GUI 显示（T4-3）**：LogView 段 ③.5 之前新增段 ③.5a「还原数据库视图」Card——antd `Table` 按表渲染（全量列做表头，未 fetch 单元格显示 `-`）+ unmatched 兜底列表 + 空态 Empty；段 ③.5 改名「原始聚合明细」保留既有逐 read_target 卡片作兜底。
-> `blind_aggregation` 数组保留不动，新增 `reconstructed_database` 键；新字段 `schema`（Option）/ `column_separator`（Option）均 `#[serde(skip_serializing_if)]`，向后兼容 v0.2.3。版本状态约定见 `docs/04-版本标准.md`。
+> **当前状态：v0.3.0 流量包处理切片（T3-1 ~ T3-5 全部 verified_complete，已 release_complete）。** v0.3.0 在 v0.2.4 日志盲注聚合数据库还原的基础上，新增 pcap 流量包敏感数据提取切片：
+> - **tshark 子进程 + HttpRequest 提取（T3-1）**：`crates/core/src/pcap/reader.rs::PcapReader::read` 调系统 `tshark`（`-Y "http.request" -T fields -e frame.number -e ip.src -e ip.dst -e http.request.method -e http.host -e http.request.uri -e http.file_data -e http.user_agent -E separator=\t -E occurrence=f`）→ TSV → `HttpRequest { frame_no, src_ip, dst_ip, method, host, uri, body, user_agent }`；`http.file_data` hex 串经手写 `hex_to_bytes` → `String::from_utf8_lossy`；tshark 缺失返回 `CoreError::DependencyMissing("tshark")`，不 panic。fixture `data.pcapng`（60290 帧 / 5000 HTTP POST）解出 ≥5000 HttpRequest。
+> - **解码（T3-2）**：`decoder.rs` 提供 `decode_url_twice`（独立实现避免循环依赖）+ `try_decode_base64_field`（手写 b64 decode，charset/length/printable_ratio 三重防误伤，UTF-8 only，GBK 留 v0.3.1+）+ `extract_decoded_fields`（JSON / form-urlencoded / 纯文本三降级，对每字段值递归 base64 解码）+ `reassemble_base64` 规则兜底。fixture 第一条 POST body 解出 7 字段全对（username=chenyong / name=付里夏旋 / idcard=506051200109055743 / phone=74733385248 / address=黑龙江省哈尔滨市通河县三站镇377号159室）。
+> - **扫描（T3-3）**：`scanner.rs::PcapScanner::scan` 复用 `DefaultSensitiveScan`，对每个 HttpRequest 拼装 `scan_text`（uri 双重 URL 解码 + body 解码出的字段值）→ 敏感扫描 → 每个 Finding 填 `location=frame:N` + `context={method} {host} -> {src_ip}`；产出 `Report { kind: "pcap_scan", summary: { total_requests, sensitive_hits, decoded_fragments, top_src_ips }, findings, extra: Value::Null }`。pipeline 新增 `pcap_scan` 薄包装；e2e `pcap_scan_full` 断言 ≥4000 sensitive hits 全绿。
+> - **命令 + GUI（T3-4）**：Tauri 新增 `scan_pcap_file` 命令（一次 IPC 返回 `{ entries, report }`）；`PcapView.jsx` 四段布局（① 导入 `.pcap/.pcapng` / ② 原始 HTTP 表 / ③ summary + top_src_ips Tag / ④ Findings 表 type Tag 着色）；侧栏 pcap 项启用；tshark 缺失 `message.error("流量分析需要系统 tshark，请先安装 Wireshark CLI (brew install wireshark)")`。
+> 仅敏感扫描，不做 SQLi 签名（fixture 无 SQLi）；`kind="pcap_scan"` 新增，向后兼容 v0.2.4。版本状态约定见 `docs/04-版本标准.md`。
 
 ## 功能
 
@@ -20,7 +21,7 @@
 | v0.2.2 | 日志扫描盲注二分序列自动聚合还原 flag + GUI 盲注聚合结果卡片 | 已发布 v0.2.2 |
 | v0.2.3 | 盲注三轴优化：true_size 众数算法 + equality/length 类型 + GUI kind Tag/separator 高亮/Collapse 位置明细 | 已发布 v0.2.3 |
 | v0.2.4 | 盲注聚合数据库格式还原：ReconstructedDatabase 交叉关联 4 类 read_target + GUI antd Table 按表渲染全量列 | 已发布 v0.2.4 |
-| v0.3.0（规划） | pcap 流量包敏感数据提取（依赖系统 tshark） | 规划中 |
+| v0.3.0 | pcap 流量包敏感数据提取（tshark 子进程 + HTTP 字段提取 + 双重 URL 解码 + 自动 base64 字段解码 + 敏感扫描 + PcapView 四段 GUI） | 已发布 v0.3.0 |
 
 v0.1.0 已落地：
 - core pipeline：`detect_type` → `SourceReader` → `mask_pipeline` / `mask_pipeline_selected`（行选择，向后兼容）/ `mask_pipeline_columns`（列勾选） → `validate_pipeline`（校验） → `write_masked_csv` / `export_records_csv` / `export_records_xlsx`
@@ -74,6 +75,13 @@ v0.2.4 日志扫描盲注聚合数据库格式还原已落地：
 - **GUI 显示（T4-3）**：LogView 段 ③.5 之前新增段 ③.5a「还原数据库视图」Card——顶部 Descriptions（schema `<Text code>` + 表数 + unmatched 数）；每张 `ReconstructedTable` 一个 inner Card + antd `Table`（全量列做表头，未 fetch 单元格 `render: v => v ?? <Text type="secondary">-</Text>` 显示 `-`）+ extra（`column_separator` volcano Tag + `row_data_columns` Tooltip「已 fetch N/M 列」+ 探针 Tag）；unmatched 非空时下方 `Divider` + 简版列表（read_target + decoded_string copyable）；空态 `Empty`（「无法还原为数据库结构」）。段 ③.5 改名「原始聚合明细」保留既有逐 read_target 卡片作兜底（kind Tag / separator 高亮 / Collapse+Table 位置明细全部不动），数据源 `blindAggregation` 不变。
 - **向后兼容**：`blind_aggregation` 数组保留不动；新增 `reconstructed_database` 键 + 新结构字段 `schema`（Option）/ `column_separator`（Option）均 `#[serde(skip_serializing_if)]`。
 - **已知简化**：行切分依赖 group_concat 默认分隔符 `,`（fixture idcard 数字无 `,`）；`group_concat SEPARATOR 'X'` 子句解析、三层+嵌套正则、UNION 报错聚合 / 时间盲注聚合留 v0.3.0+。
+
+v0.3.0 流量包处理切片已落地：
+- **tshark 子进程 + HttpRequest 提取（T3-1）**：`crates/core/src/pcap/reader.rs::PcapReader::read(path)` 调系统 `tshark`（`-Y "http.request" -T fields -e frame.number -e ip.src -e ip.dst -e http.request.method -e http.host -e http.request.uri -e http.file_data -e http.user_agent -E separator=\t -E occurrence=f`）→ TSV 按行 split → 每行按 `\t` split 8 字段 → `HttpRequest { frame_no, src_ip, dst_ip, method, host, uri, body: Option<String>, user_agent }`；`http.file_data` hex 串经手写 `hex_to_bytes`（不引入 `hex` crate，empty/奇数长度/非法字符三边界处理）→ `String::from_utf8_lossy`。tshark 缺失：`Command::new("tshark").arg("--version")` 探测失败 → `CoreError::DependencyMissing("tshark")`，不 panic。fixture `tests/fixtures/samples/pcap/data.pcapng`（9.4MB / 60290 帧 / 5000 HTTP POST）解出 ≥5000 HttpRequest。
+- **解码（T3-2）**：`crates/core/src/pcap/decoder.rs` 提供 4 公开函数：`decode_url_twice`（独立实现，不依赖 log 模块，避免循环依赖）；`try_decode_base64_field`（手写 `b64_decode`，不引入 `base64` crate；要求 `length≥4` + `length%4==0` + charset ⊂ `[A-Za-z0-9+/=]` + `printable_ratio≥0.8` 三重防误伤；UTF-8 only，GBK 留 v0.3.1+）；`extract_decoded_fields`（三降级：① `serde_json::from_str` 解析 Object 每字段值递归 base64 → ② form-urlencoded `&`/`=` split → ③ 纯文本整体当 `_body` 字段）；`reassemble_base64`（规则化兜底，fixture 每 POST body 单独 base64 不需要，保留接口供 CTF 分块场景）。`crates/core/Cargo.toml` 新增 `serde_json = "1"` 依赖。fixture 第一条 POST body 解出 7 字段全对：username=chenyong / name=付里夏旋 / sex=女 / birth=20010905 / idcard=506051200109055743 / phone=74733385248 / address=黑龙江省哈尔滨市通河县三站镇377号159室。
+- **扫描 + pipeline + e2e（T3-3）**：`crates/core/src/pcap/scanner.rs::PcapScanner::scan(path, scan, rules)` 复用 `DefaultSensitiveScan`，对每个 HttpRequest 拼装 `scan_text = decode_url_twice(uri)` + body 经 `extract_decoded_fields` 解出的非空字段值（累加 `decoded_fragments`）→ `scan.scan(&scan_text, rules)` → 每个 Finding 填 `location=Some("frame:{frame_no}")` + `context=Some("{method} {host} -> {src_ip}")` + `extra=None` → 累加 `sensitive_hits` + `ip_counts: HashMap`；产出 `Report { source, kind: "pcap_scan", summary: { total_requests, sensitive_hits, decoded_fragments, top_src_ips（按 hits 倒序取前 5，每项 {ip, hits}） }, findings, extra: Value::Null }`。`pipeline/pcap_scan.rs::scan_pcap` 薄包装透传。e2e `pcap_scan_full`（`#[ignore]`，本机 tshark 在场手动跑）断言 ≥4000 sensitive hits + kind=="pcap_scan" + 含 idcard 类型全绿。
+- **命令 + GUI（T3-4）**：Tauri 新增 `scan_pcap_file(path) -> Result<Value, String>` 命令（一次 IPC 返回 `{ entries: Vec<HttpRequest>, report: Report }`，避免二次调用）；`main.rs` `generate_handler!` 注册（共 21 命令）；`pcap_sensitive_ruleset()` 独立 helper 返回 idcard/phone/name validators RuleSet（不污染 mask view 的 `load_default_mask_ruleset`，其 validators 空）。前端 `PcapView.jsx` 四段布局（镜像 LogView）：① 导入 `.pcap/.pcapng`（`select_file` → `detect_source_type === "pcap"` 校验 → `scanPcapFile`）；② 原始 HTTP 表（pageSize 50，body slice 200 预览）；③ 扫描按钮 + summary Descriptions + top_src_ips volcano Tag；④ Findings 表（type Tag 按 `TAG_COLOR_BY_TYPE` 着色：idcard=purple / phone=blue / bankcard=magenta / email=cyan / mac=geekblue / username=gold / name=green）。state 加 `pcapEntries` / `pcapReport` / `pcapLoading`；`Sidebar.jsx` 删除 pcap `disabled: true`，6 项全 active。tshark 缺失：`msg.includes("tshark") || msg.includes("DependencyMissing")` → `message.error("流量分析需要系统 tshark，请先安装 Wireshark CLI (brew install wireshark)")`。0 emoji / 0 原生 select 保持。
+- **仅敏感扫描，不做 SQLi 签名**（fixture 无 SQLi）；`kind="pcap_scan"` 新增，向后兼容 v0.2.4（旧 `csv_mask` / `log_scan` kind 不破）。
 
 ## 安装
 
@@ -220,7 +228,7 @@ cargo tauri dev
 | v0.2.2 | 日志扫描盲注二分序列自动聚合还原 flag + GUI 盲注聚合结果卡片 | 已发布 v0.2.2 |
 | v0.2.3 | 盲注三轴优化：true_size 众数算法 + equality/length 类型 + GUI kind Tag/separator 高亮/Collapse 位置明细 | 已发布 v0.2.3 |
 | v0.2.4 | 盲注聚合数据库格式还原：ReconstructedDatabase 交叉关联 4 类 read_target + GUI antd Table 按表渲染全量列 | 已发布 v0.2.4 |
-| v0.3.0 | pcap 流量包敏感数据提取（依赖 tshark） | 规划中 |
+| v0.3.0 | pcap 流量包敏感数据提取（tshark 子进程 + HTTP 字段提取 + 双重 URL 解码 + 自动 base64 字段解码 + 敏感扫描 + PcapView 四段 GUI） | 已发布 v0.3.0 |
 
 版本判定标准见 `docs/04-版本标准.md`。
 

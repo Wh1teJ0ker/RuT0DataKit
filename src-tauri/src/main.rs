@@ -26,6 +26,7 @@ fn main() {
             commands::list_mask_op_types,
             commands::list_validate_op_types,
             commands::scan_log_file,
+            commands::scan_pcap_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running RuT0DataKit GUI");

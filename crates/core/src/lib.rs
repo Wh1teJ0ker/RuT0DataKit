@@ -4,11 +4,14 @@
 //! 以及 T0-5 新增的 readers / report 模块，以及 T0-6 新增的 scan 模块。
 //! v0.2.0 新增 log 模块（CLF/Nginx Combined 访问日志解析）与 logsign 模块
 //! （SQLi 签名引擎，6 类内置 YAML 签名）。
+//! v0.3.0 新增 pcap 模块（tshark 子进程 + HTTP 字段提取 + base64 重组 +
+//! 敏感扫描，产出 `kind="pcap_scan"` 报告）。
 
 pub mod error;
 pub mod log;
 pub mod logsign;
 pub mod maskers;
+pub mod pcap;
 pub mod pipeline;
 pub mod readers;
 pub mod report;
