@@ -6,7 +6,7 @@ locally — no samples or rules are ever uploaded. This repository targets the
 "sensitive-data quick sanitization / parsing" needs in data-security contests and
 red-team workflows, and does not depend on a Python runtime.
 
-> **Current status: v0.2.0 log-processing slice (T2-1 ~ T2-5 verified_complete, T2-6 closure complete pending Release QA).** v0.2.0 builds on the v0.1.0 four-function navigation + abstract-operator rule engine by adding a log-processing slice: CLF access-log parsing (`LogReader` + `LogEntry` + `parse_query` with double URL decoding) + SQLi attack signature engine (`SignatureEngine` + 6 built-in signature classes: blind_binary / union / error_based / time_based / tautology / comment + `context_anchor` anchors to suppress false positives) + log-scan pipeline (`scan_log` combining signatures + weak-password grep + `DefaultSensitiveScan`, producing `Report(kind=log_scan)` with summary fields total_lines / sqli_hits / weak_password_hits / sensitive_hits / top_attack_ips) + signature engine load/reload (`load_builtin_signatures` / `load_signatures_from_str` / `SignatureEngine::from_rules`, with runtime `enabled` toggle) + GUI "Log Scan" entry activated (sidebar tab flipped from disabled to active; pcap still greyed out pending v0.3.0). The v0.1.0 base (four-function GUI + abstract operators + dual-state separation + Template boundary BUG fix) is preserved and backward compatible. See `docs/04-版本标准.md`
+> **Current status: v0.2.1 log-processing slice semantic enhancement (T2-7 ~ T2-10 verified_complete, T2-11 closure complete pending Release QA).** v0.2.1 enhances the v0.2.0 log-processing slice with SQLi payload semantic parsing and field restoration: `parse_query` now follows the form-urlencoded standard (`+`→space then double `%XX` decode) + `LogEntry` gains `decoded_path` / `decoded_query` / `decoded_ua` fields (consumed directly by the signature engine and GUI); a `payload_parser` module (`crates/core/src/logsign/payload_parser.rs`) performs 6-class structured semantic parsing on the decoded payload after a hit (blind_boolean / union / error / time / tautology / comment), producing a `ParsedPayload` (with read_target / char_position / union_columns / sleep_seconds + a human-readable `summary`); `SignatureHit.parsed_payload` is auto-filled when `scan_log_entry` produces a hit; a `Finding.extra` field (`Option<serde_yml::Value>`, `skip_serializing_if = "Option::is_none"`, backward compatible) serializes the `ParsedPayload` into sqli findings; 6-class signature pattern variants (`union all select` / `exp(~...)` / `floor(rand(0)*2)`); GUI LogView findings table gains "Parse Result" / "Read Target" columns + the raw-log table gains three decoded columns. The v0.2.0 base (CLF parsing + SQLi 6-class signatures + scan_log pipeline + GUI log entry) is preserved and backward compatible. See `docs/04-版本标准.md`
 > for the version status convention.
 
 ## Features
@@ -14,7 +14,8 @@ red-team workflows, and does not depend on a Python runtime.
 | Version | Capability | Status |
 | --- | --- | --- |
 | v0.1.0 | CSV / XLSX tabular data masking + validation + export + rule management (four-function GUI) | Released v0.1.0 |
-| v0.2.0 | Log-file parsing + SQLi signature scanning + weak-password / sensitive-field scanning | In progress (T2-1~T2-5 verified_complete, T2-6 closure in progress) |
+| v0.2.0 | Log-file parsing + SQLi signature scanning + weak-password / sensitive-field scanning | Released v0.2.0 |
+| v0.2.1 | SQLi payload semantic parsing (6 classes) + field restoration (query/path/UA) + `+` decoding | In progress (T2-7~T2-10 verified_complete, T2-11 closure in progress) |
 | v0.3.0 (planned) | Sensitive-data extraction from pcap captures (depends on system `tshark`) | Planned |
 
 What v0.1.0 ships:
@@ -42,6 +43,14 @@ What v0.2.0 adds (log-processing slice):
 - **Log-scan pipeline**: `crates/core/src/pipeline/log_scan.rs`: `scan_log` combines SignatureEngine + weak-password grep (`WEAK_KEYWORDS`: password / passwd / admin / 123456 / root / qwerty, etc.) + `DefaultSensitiveScan` (reuses the v0.1.0 `SensitiveScan` trait), producing the unified `Report(kind="log_scan")`; `summary` carries `total_lines` / `sqli_hits` / `weak_password_hits` / `sensitive_hits` / `top_attack_ips` (sorted by hit count, truncated to 5).
 - **GUI log entry activated**: src-tauri `scan_log` command; frontend sidebar "Log Scan" flipped from disabled to active; pcap still greyed out (v0.3.0).
 - **Observability**: log-scan results reuse the unified `Report` / `Finding` serde structure, so the frontend can serialize and render them.
+
+What v0.2.1 adds (log-processing slice semantic enhancement):
+- **`parse_query` `+` decoding + decoded fields**: `parse_query` now follows the form-urlencoded standard (`+`→space then double `%XX` decode); `LogEntry` gains `decoded_path` / `decoded_query` / `decoded_ua` fields, filled once by `parse_line` and consumed directly by the signature engine and GUI (v0.2.0 only decoded `%XX` and not `+`; v0.2.1 switches to the standard form-urlencoded behavior).
+- **SQLi payload semantic parsing**: `crates/core/src/logsign/payload_parser.rs`: `parse_payload(decoded_text) -> Option<ParsedPayload>` performs 6-class structured semantic parsing on the decoded payload after a hit (blind_boolean / union / error / time / tautology / comment), extracting read_target / char_position / compared_ascii / comparator / union_columns / sleep_seconds + a human-readable `summary`.
+- **`SignatureHit.parsed_payload`**: `scan_log_entry` calls `parse_payload` on the hit text segment when producing a hit; `None` when nothing parses.
+- **`Finding.extra` passthrough**: `Finding` gains `extra: Option<serde_yml::Value>` (`skip_serializing_if = "Option::is_none"`, backward compatible); the `scan_log` pipeline serializes the sqli hit's `parsed_payload` into `Finding.extra` so the frontend can render "Parse Result" / "Read Target" columns; weak_password / sensitive / csv_mask scenarios have `extra=None`.
+- **6-class signature pattern variants**: `sqli_union` now accepts `union all select`; `sqli_error_based` now accepts `exp(~...)` / `floor(rand(0)*2)` error-based variants.
+- **GUI LogView decoded columns + parse-result/read-target columns**: the raw-log table gains `decoded_path` / `decoded_query` / `decoded_ua` columns; the findings table gains "Parse Result" (`ParsedPayload.summary`) and "Read Target" (`read_target`) columns.
 
 ## Installation
 
@@ -187,7 +196,8 @@ cargo tauri dev
 | Version | Target capability | Current status |
 | --- | --- | --- |
 | v0.1.0 | CSV / XLSX masking + validation + export + rule management (four-function GUI) + Tauri GUI | Released v0.1.0 |
-| v0.2.0 | Log-file parsing + SQLi signature scanning + weak-password / sensitive-field scanning | In progress (T2-6 closure in progress) |
+| v0.2.0 | Log-file parsing + SQLi signature scanning + weak-password / sensitive-field scanning | Released v0.2.0 |
+| v0.2.1 | SQLi payload semantic parsing (6 classes) + field restoration (query/path/UA) + `+` decoding | In progress (T2-11 closure in progress) |
 | v0.3.0 | Sensitive-data extraction from pcap (depends on tshark) | Planned |
 
 See `docs/04-版本标准.md` for the version acceptance criteria.

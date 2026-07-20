@@ -4,14 +4,15 @@
 全部处理在本地完成，不上传任何样本或规则。本仓库面向数据安全竞赛与红队场景中的
 "敏感数据快速清洗 / 解析" 需求，不依赖 Python 运行时。
 
-> **当前状态：v0.2.0 日志处理切片（T2-1 ~ T2-5 已 verified_complete，T2-6 收尾完成待 Release QA）。** v0.2.0 在 v0.1.0 四功能导航 + 抽象算子规则引擎基础上新增日志处理切片：CLF 访问日志解析（`LogReader` + `LogEntry` + `parse_query` 双重 URL 解码）+ SQLi 攻击签名引擎（`SignatureEngine` + 6 类内置签名：blind_binary / union / error_based / time_based / tautology / comment + `context_anchor` 锚点抑制误报）+ 日志扫描 pipeline（`scan_log` 组合签名 + 弱口令 grep + `DefaultSensitiveScan`，产出 `Report(kind=log_scan)`，summary 含 total_lines / sqli_hits / weak_password_hits / sensitive_hits / top_attack_ips）+ 签名引擎装载/重载（`load_builtin_signatures` / `load_signatures_from_str` / `SignatureEngine::from_rules`，支持运行时 `enabled` 开关）+ GUI「日志扫描」入口激活（侧边栏由 disabled 切 active，pcap 仍置灰待 v0.3.0）。v0.1.0 底座（四功能 GUI + 抽象算子 + 双 state 分离 + Template 边界 BUG 修复）保持不变并向后兼容。版本状态约定见 `docs/04-版本标准.md`。
+> **当前状态：v0.2.1 日志处理切片语义增强（T2-7 ~ T2-10 已 verified_complete，T2-11 收尾完成待 Release QA）。** v0.2.1 在 v0.2.0 日志处理切片基础上增强 SQLi payload 语义解析与字段还原：`parse_query` 按 form-urlencoded 标准 `+`→space 再双重 `%XX` 解码 + `LogEntry` 新增 `decoded_path` / `decoded_query` / `decoded_ua` 字段（供签名引擎与 GUI 直接消费已解码文本）；`payload_parser` 模块（`crates/core/src/logsign/payload_parser.rs`）对命中后的 decoded payload 做 6 类结构化语义解析（blind_boolean / union / error / time / tautology / comment），产出 `ParsedPayload`（含 read_target / char_position / union_columns / sleep_seconds + 人类可读 `summary`）；`SignatureHit.parsed_payload` 在 `scan_log_entry` 产 hit 时自动填充；`Finding.extra` 字段（`Option<serde_yml::Value>`，`skip_serializing_if = "Option::is_none"` 向后兼容）把 `ParsedPayload` 序列化透传进 sqli finding；6 类签名 pattern 扩变体（`union all select` / `exp(~...)` / `floor(rand(0)*2)`）；GUI LogView findings 表新增「解析结果」/「读取目标」列 + 原始日志表新增 decoded 三列。v0.2.0 底座（CLF 解析 + SQLi 6 类签名 + scan_log pipeline + GUI 日志入口）保持不变并向后兼容。版本状态约定见 `docs/04-版本标准.md`。
 
 ## 功能
 
 | 版本 | 能力 | 状态 |
 | --- | --- | --- |
 | v0.1.0 | CSV / XLSX 表格数据脱敏 + 校验 + 导出 + 规则管理（四功能 GUI） | 已发布 v0.1.0 |
-| v0.2.0 | 日志文件解析 + SQLi 攻击签名扫描 + 弱口令 / 敏感字段扫描 | 开发中（T2-1~T2-5 verified_complete，T2-6 收尾中） |
+| v0.2.0 | 日志文件解析 + SQLi 攻击签名扫描 + 弱口令 / 敏感字段扫描 | 已发布 v0.2.0 |
+| v0.2.1 | SQLi payload 语义解析（6 类）+ 字段还原（query/path/UA）+ `+` 解码 | 开发中（T2-7~T2-10 verified_complete，T2-11 收尾中） |
 | v0.3.0（规划） | pcap 流量包敏感数据提取（依赖系统 tshark） | 规划中 |
 
 v0.1.0 已落地：
@@ -39,6 +40,14 @@ v0.2.0 日志处理切片已落地：
 - **日志扫描 pipeline**：`crates/core/src/pipeline/log_scan.rs`：`scan_log` 组合 SignatureEngine + 弱口令 grep（`WEAK_KEYWORDS`：password / passwd / admin / 123456 / root / qwerty 等）+ `DefaultSensitiveScan`（复用 v0.1.0 `SensitiveScan` trait），产出统一 `Report(kind="log_scan")`；`summary` 含 `total_lines` / `sqli_hits` / `weak_password_hits` / `sensitive_hits` / `top_attack_ips`（按命中次数排序，截断到 5 个）。
 - **GUI 日志入口激活**：src-tauri `scan_log` 命令；frontend 侧边栏「日志扫描」由 disabled 切 active；pcap 仍置灰（v0.3.0）。
 - **可观测性**：日志扫描结果与脱敏共用统一 `Report` / `Finding` serde 结构，前端可序列化展示。
+
+v0.2.1 日志处理切片语义增强已落地：
+- **`parse_query` `+` 解码 + decoded 字段**：`parse_query` 按 form-urlencoded 标准 `+`→space 再双重 `%XX` 解码；`LogEntry` 新增 `decoded_path` / `decoded_query` / `decoded_ua` 字段，`parse_line` 一次性填充，供签名引擎与 GUI 直接消费已解码文本（v0.2.0 口径只解 `%XX` 不解 `+`，v0.2.1 起改为标准 form-urlencoded）。
+- **SQLi payload 语义解析**：`crates/core/src/logsign/payload_parser.rs`：`parse_payload(decoded_text) -> Option<ParsedPayload>` 对命中后的 decoded payload 做 6 类结构化语义解析（blind_boolean / union / error / time / tautology / comment），提取 read_target / char_position / compared_ascii / comparator / union_columns / sleep_seconds + 人类可读 `summary`。
+- **`SignatureHit.parsed_payload`**：`scan_log_entry` 产 hit 时对命中文本段调 `parse_payload` 填充，未解析到为 `None`。
+- **`Finding.extra` 透传**：`Finding` 新增 `extra: Option<serde_yml::Value>`（`skip_serializing_if = "Option::is_none"`，向后兼容）；`scan_log` pipeline 把 sqli hit 的 `parsed_payload` 序列化透传进 `Finding.extra`，供前端展示「解析结果」/「读取目标」列；weak_password / sensitive / csv_mask 场景 `extra=None`。
+- **6 类签名 pattern 扩变体**：`sqli_union` 兼容 `union all select`；`sqli_error_based` 兼容 `exp(~...)` / `floor(rand(0)*2)` 报错注入变体。
+- **GUI LogView decoded 列 + 解析结果/读取目标列**：原始日志表新增 `decoded_path` / `decoded_query` / `decoded_ua` 列；findings 表新增「解析结果」（`ParsedPayload.summary`）+「读取目标」（`read_target`）列。
 
 ## 安装
 
@@ -180,7 +189,8 @@ cargo tauri dev
 | 版本 | 目标能力 | 当前状态 |
 | --- | --- | --- |
 | v0.1.0 | CSV / XLSX 脱敏 + 校验 + 导出 + 规则管理（四功能 GUI）+ Tauri GUI | 已发布 v0.1.0 |
-| v0.2.0 | 日志文件解析 + SQLi 攻击签名扫描 + 弱口令 / 敏感字段扫描 | 开发中（T2-6 收尾中） |
+| v0.2.0 | 日志文件解析 + SQLi 攻击签名扫描 + 弱口令 / 敏感字段扫描 | 已发布 v0.2.0 |
+| v0.2.1 | SQLi payload 语义解析（6 类）+ 字段还原（query/path/UA）+ `+` 解码 | 开发中（T2-11 收尾中） |
 | v0.3.0 | pcap 流量包敏感数据提取（依赖 tshark） | 规划中 |
 
 版本判定标准见 `docs/04-版本标准.md`。
