@@ -1372,6 +1372,72 @@ fn log_scan_full() {
         .and_then(|v| v.as_sequence())
         .expect("top_attack_ips present");
     assert!(top.len() <= 5, "top_attack_ips truncated to 5");
+
+    // v0.2.2（T2-13）：盲注聚合结果在 report.extra.blind_aggregation。
+    // fixture access.log 含 database() / group_concat(table_name) /
+    // group_concat(column_name) 的二分探针序列，预期还原出：
+    // - database() → "person"
+    // - group_concat(table_name) → "person_data"
+    // - group_concat(column_name) → 含 "id,username,password"
+    let extra = report.extra.as_mapping().expect("extra is mapping");
+    let blind_agg = extra
+        .get("blind_aggregation")
+        .and_then(|v| v.as_sequence())
+        .expect("blind_aggregation present");
+    assert!(
+        !blind_agg.is_empty(),
+        "blind_aggregation non-empty for fixture",
+    );
+
+    // database() → "person"
+    let db_result = blind_agg
+        .iter()
+        .find_map(|v| {
+            let m = v.as_mapping()?;
+            if m.get("read_target").and_then(|t| t.as_str()) == Some("database()") {
+                Some(m.get("decoded_string").and_then(|s| s.as_str()).unwrap_or(""))
+            } else {
+                None
+            }
+        })
+        .expect("database() aggregation present");
+    assert_eq!(db_result, "person", "database() decoded to person");
+
+    // group_concat(table_name) → "person_data"
+    let tbl_result = blind_agg
+        .iter()
+        .find_map(|v| {
+            let m = v.as_mapping()?;
+            let rt = m.get("read_target").and_then(|t| t.as_str()).unwrap_or("");
+            if rt.contains("group_concat(table_name)") {
+                Some(m.get("decoded_string").and_then(|s| s.as_str()).unwrap_or(""))
+            } else {
+                None
+            }
+        })
+        .expect("group_concat(table_name) aggregation present");
+    assert_eq!(
+        tbl_result, "person_data",
+        "table_name decoded to person_data",
+    );
+
+    // group_concat(column_name) → 含 "id,username,password"
+    let col_result = blind_agg
+        .iter()
+        .find_map(|v| {
+            let m = v.as_mapping()?;
+            let rt = m.get("read_target").and_then(|t| t.as_str()).unwrap_or("");
+            if rt.contains("group_concat(column_name)") {
+                Some(m.get("decoded_string").and_then(|s| s.as_str()).unwrap_or(""))
+            } else {
+                None
+            }
+        })
+        .expect("group_concat(column_name) aggregation present");
+    assert!(
+        col_result.contains("id,username,password"),
+        "column_name decoded contains id,username,password, got {col_result}",
+    );
 }
 
 /// v0.2.0 验收项 26：6 类签名各至少 1 正例 + 1 反例。

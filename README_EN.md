@@ -6,7 +6,7 @@ locally — no samples or rules are ever uploaded. This repository targets the
 "sensitive-data quick sanitization / parsing" needs in data-security contests and
 red-team workflows, and does not depend on a Python runtime.
 
-> **Current status: v0.2.1 log-processing slice semantic enhancement (T2-7 ~ T2-10 verified_complete, T2-11 closure complete pending Release QA).** v0.2.1 enhances the v0.2.0 log-processing slice with SQLi payload semantic parsing and field restoration: `parse_query` now follows the form-urlencoded standard (`+`→space then double `%XX` decode) + `LogEntry` gains `decoded_path` / `decoded_query` / `decoded_ua` fields (consumed directly by the signature engine and GUI); a `payload_parser` module (`crates/core/src/logsign/payload_parser.rs`) performs 6-class structured semantic parsing on the decoded payload after a hit (blind_boolean / union / error / time / tautology / comment), producing a `ParsedPayload` (with read_target / char_position / union_columns / sleep_seconds + a human-readable `summary`); `SignatureHit.parsed_payload` is auto-filled when `scan_log_entry` produces a hit; a `Finding.extra` field (`Option<serde_yml::Value>`, `skip_serializing_if = "Option::is_none"`, backward compatible) serializes the `ParsedPayload` into sqli findings; 6-class signature pattern variants (`union all select` / `exp(~...)` / `floor(rand(0)*2)`); GUI LogView findings table gains "Parse Result" / "Read Target" columns + the raw-log table gains three decoded columns. The v0.2.0 base (CLF parsing + SQLi 6-class signatures + scan_log pipeline + GUI log entry) is preserved and backward compatible. See `docs/04-版本标准.md`
+> **Current status: v0.2.2 log-scan blind-binary-sequence aggregation/flag recovery (T2-12 ~ T2-14 verified_complete, T2-15 closure complete pending Release QA).** v0.2.2 adds cross-entry boolean-blind binary-sequence aggregation/recovery on top of the v0.2.1 single-payload semantic parsing: a `blind_aggregator` module (`crates/core/src/logsign/blind_aggregator.rs`) clusters binary probes sharing the same `(read_target, source_ip)` by `char_position`, auto-decides the true/false direction from `LogEntry.size` (HTTP response body byte count) using `true_size = min(body_size)` (fixture-specific assumption), and reconstructs the full string read by the blind injection (flag, e.g. `database()`=`"person"` / `table_name`=`"person_data"` / `column_name` contains `id,username,password`); an embedded nested regex `(?:[^()]|\([^()]*\))*` consumes a single `(...)` layer; `Report.extra` changes from `Value::Null` to `Value::Mapping({blind_aggregation: [...]})` in a backward-compatible way; GUI LogView gains a "Blind-Aggregation Result" card (antd inner Card + Text copyable restored string + probe count + source IPs + position-detail Tooltip + Empty empty state). The v0.2.1 base (single-payload `parsed_payload` semantic parsing + decoded fields + `Finding.extra` passthrough) is preserved and backward compatible. See `docs/04-版本标准.md`
 > for the version status convention.
 
 ## Features
@@ -15,7 +15,8 @@ red-team workflows, and does not depend on a Python runtime.
 | --- | --- | --- |
 | v0.1.0 | CSV / XLSX tabular data masking + validation + export + rule management (four-function GUI) | Released v0.1.0 |
 | v0.2.0 | Log-file parsing + SQLi signature scanning + weak-password / sensitive-field scanning | Released v0.2.0 |
-| v0.2.1 | SQLi payload semantic parsing (6 classes) + field restoration (query/path/UA) + `+` decoding | In progress (T2-7~T2-10 verified_complete, T2-11 closure in progress) |
+| v0.2.1 | SQLi payload semantic parsing (6 classes) + field restoration (query/path/UA) + `+` decoding | Released v0.2.1 |
+| v0.2.2 | Log-scan boolean-blind binary-sequence aggregation/flag recovery + GUI blind-aggregation result card | In progress (T2-12~T2-14 verified_complete, T2-15 closure in progress) |
 | v0.3.0 (planned) | Sensitive-data extraction from pcap captures (depends on system `tshark`) | Planned |
 
 What v0.1.0 ships:
@@ -51,6 +52,13 @@ What v0.2.1 adds (log-processing slice semantic enhancement):
 - **`Finding.extra` passthrough**: `Finding` gains `extra: Option<serde_yml::Value>` (`skip_serializing_if = "Option::is_none"`, backward compatible); the `scan_log` pipeline serializes the sqli hit's `parsed_payload` into `Finding.extra` so the frontend can render "Parse Result" / "Read Target" columns; weak_password / sensitive / csv_mask scenarios have `extra=None`.
 - **6-class signature pattern variants**: `sqli_union` now accepts `union all select`; `sqli_error_based` now accepts `exp(~...)` / `floor(rand(0)*2)` error-based variants.
 - **GUI LogView decoded columns + parse-result/read-target columns**: the raw-log table gains `decoded_path` / `decoded_query` / `decoded_ua` columns; the findings table gains "Parse Result" (`ParsedPayload.summary`) and "Read Target" (`read_target`) columns.
+
+What v0.2.2 adds (log-scan blind-binary-sequence aggregation):
+- **blind_aggregator module**: `crates/core/src/logsign/blind_aggregator.rs`: `BlindAggregator::collect_from_entries` runs an embedded regex to extract `ascii(substr((<read_target>),N,1))<cmp><thr>` binary probes; groups by `(read_target, source_ip)` and sub-groups by `char_position`; auto-clusters the true/false direction from `LogEntry.size` (HTTP response body byte count) using `true_size = min(body_size)` (fixture-specific assumption: true-condition responses have a smaller body); stops concatenation at the first `beyond_end`, reconstructing the full flag string (e.g. `database()`=`"person"` / `table_name`=`"person_data"` / `column_name` contains `id,username,password`).
+- **BlindProbe / PositionDetail / AggregatedResult structures**: `read_target` / `char_position` / `threshold` / `body_size` / `source_ip` / `line_no` / `decoded_char` / `ascii_val` / `true_size` / `probe_count` / `status` (`resolved` / `unresolved_all_true` / `beyond_end` / `insufficient_probes`) / `decoded_string` / `resolved_chars` / `unresolved_chars` / `beyond_end_positions` / `position_details`.
+- **Embedded nested regex**: regex crate has no look-around, so `read_target` inner nested parens are consumed by `(?:[^()]|\([^()]*\))*` for a single `(...)` layer (e.g. `database()` / `group_concat(table_name)`); multi-layer nesting is not supported (known simplification).
+- **Report.extra.blind_aggregation passthrough**: `scan_log` serializes `Vec<AggregatedResult>` into `Report.extra` as `Value::Mapping({blind_aggregation: [...]})`; with no blind probes, `extra` is still a Mapping with an empty array; backward compatible (v0.2.1 `Finding.extra: Option<Value>` behavior unchanged).
+- **GUI LogView blind-aggregation result card**: a new section ③.5 below the findings table reads `Report.extra.blind_aggregation` and renders an antd inner Card + `Typography.Text` copyable restored string (one-click copy flag) + probe count + source IPs + position-detail Tooltip + an `Empty` empty state.
 
 ## Installation
 
@@ -197,7 +205,8 @@ cargo tauri dev
 | --- | --- | --- |
 | v0.1.0 | CSV / XLSX masking + validation + export + rule management (four-function GUI) + Tauri GUI | Released v0.1.0 |
 | v0.2.0 | Log-file parsing + SQLi signature scanning + weak-password / sensitive-field scanning | Released v0.2.0 |
-| v0.2.1 | SQLi payload semantic parsing (6 classes) + field restoration (query/path/UA) + `+` decoding | In progress (T2-11 closure in progress) |
+| v0.2.1 | SQLi payload semantic parsing (6 classes) + field restoration (query/path/UA) + `+` decoding | Released v0.2.1 |
+| v0.2.2 | Log-scan boolean-blind binary-sequence aggregation/flag recovery + GUI blind-aggregation result card | In progress (T2-15 closure in progress) |
 | v0.3.0 | Sensitive-data extraction from pcap (depends on tshark) | Planned |
 
 See `docs/04-版本标准.md` for the version acceptance criteria.

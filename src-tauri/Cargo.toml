@@ -1,6 +1,6 @@
 [package]
 name = "ruT0-data-kit"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 description = "RuT0DataKit Tauri GUI"
 authors = ["RuT0DataKit"]

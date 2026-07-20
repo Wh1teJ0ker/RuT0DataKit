@@ -4,7 +4,7 @@
 全部处理在本地完成，不上传任何样本或规则。本仓库面向数据安全竞赛与红队场景中的
 "敏感数据快速清洗 / 解析" 需求，不依赖 Python 运行时。
 
-> **当前状态：v0.2.1 日志处理切片语义增强（T2-7 ~ T2-10 已 verified_complete，T2-11 收尾完成待 Release QA）。** v0.2.1 在 v0.2.0 日志处理切片基础上增强 SQLi payload 语义解析与字段还原：`parse_query` 按 form-urlencoded 标准 `+`→space 再双重 `%XX` 解码 + `LogEntry` 新增 `decoded_path` / `decoded_query` / `decoded_ua` 字段（供签名引擎与 GUI 直接消费已解码文本）；`payload_parser` 模块（`crates/core/src/logsign/payload_parser.rs`）对命中后的 decoded payload 做 6 类结构化语义解析（blind_boolean / union / error / time / tautology / comment），产出 `ParsedPayload`（含 read_target / char_position / union_columns / sleep_seconds + 人类可读 `summary`）；`SignatureHit.parsed_payload` 在 `scan_log_entry` 产 hit 时自动填充；`Finding.extra` 字段（`Option<serde_yml::Value>`，`skip_serializing_if = "Option::is_none"` 向后兼容）把 `ParsedPayload` 序列化透传进 sqli finding；6 类签名 pattern 扩变体（`union all select` / `exp(~...)` / `floor(rand(0)*2)`）；GUI LogView findings 表新增「解析结果」/「读取目标」列 + 原始日志表新增 decoded 三列。v0.2.0 底座（CLF 解析 + SQLi 6 类签名 + scan_log pipeline + GUI 日志入口）保持不变并向后兼容。版本状态约定见 `docs/04-版本标准.md`。
+> **当前状态：v0.2.2 日志扫描盲注二分序列聚合还原（T2-12 ~ T2-14 已 verified_complete，T2-15 收尾完成待 Release QA）。** v0.2.2 在 v0.2.1 SQLi payload 单条语义解析基础上新增跨 entry 布尔盲注二分序列聚合还原：`blind_aggregator` 模块（`crates/core/src/logsign/blind_aggregator.rs`）对一批同源（同 `read_target` + 同 `source_ip`）的盲注二分探针按 `char_position` 聚类，基于 `LogEntry.size`（HTTP 响应 body 字节数）自动判定真假方向（`true_size = min(body_size)`，fixture-specific 假设），还原出被盲注读取的完整字符串（flag，如 `database()`=`"person"` / `table_name`=`"person_data"` / `column_name` 含 `id,username,password`）；自带嵌套正则 `(?:[^()]|\([^()]*\))*` 吃单层 `(...)`；`Report.extra` 由 `Value::Null` → `Value::Mapping({blind_aggregation: [...]})` 向后兼容；GUI LogView 新增「盲注聚合结果」卡片（antd inner Card + Text copyable 还原串 + 探针数 + 来源 IP + 位置明细 Tooltip + 空态 Empty）。v0.2.1 底座（parsed_payload 单条语义解析 + decoded 字段 + Finding.extra 透传）保持不变并向后兼容。版本状态约定见 `docs/04-版本标准.md`。
 
 ## 功能
 
@@ -12,7 +12,8 @@
 | --- | --- | --- |
 | v0.1.0 | CSV / XLSX 表格数据脱敏 + 校验 + 导出 + 规则管理（四功能 GUI） | 已发布 v0.1.0 |
 | v0.2.0 | 日志文件解析 + SQLi 攻击签名扫描 + 弱口令 / 敏感字段扫描 | 已发布 v0.2.0 |
-| v0.2.1 | SQLi payload 语义解析（6 类）+ 字段还原（query/path/UA）+ `+` 解码 | 开发中（T2-7~T2-10 verified_complete，T2-11 收尾中） |
+| v0.2.1 | SQLi payload 语义解析（6 类）+ 字段还原（query/path/UA）+ `+` 解码 | 已发布 v0.2.1 |
+| v0.2.2 | 日志扫描盲注二分序列自动聚合还原 flag + GUI 盲注聚合结果卡片 | 开发中（T2-12~T2-14 verified_complete，T2-15 收尾中） |
 | v0.3.0（规划） | pcap 流量包敏感数据提取（依赖系统 tshark） | 规划中 |
 
 v0.1.0 已落地：
@@ -48,6 +49,13 @@ v0.2.1 日志处理切片语义增强已落地：
 - **`Finding.extra` 透传**：`Finding` 新增 `extra: Option<serde_yml::Value>`（`skip_serializing_if = "Option::is_none"`，向后兼容）；`scan_log` pipeline 把 sqli hit 的 `parsed_payload` 序列化透传进 `Finding.extra`，供前端展示「解析结果」/「读取目标」列；weak_password / sensitive / csv_mask 场景 `extra=None`。
 - **6 类签名 pattern 扩变体**：`sqli_union` 兼容 `union all select`；`sqli_error_based` 兼容 `exp(~...)` / `floor(rand(0)*2)` 报错注入变体。
 - **GUI LogView decoded 列 + 解析结果/读取目标列**：原始日志表新增 `decoded_path` / `decoded_query` / `decoded_ua` 列；findings 表新增「解析结果」（`ParsedPayload.summary`）+「读取目标」（`read_target`）列。
+
+v0.2.2 日志扫描盲注二分序列聚合还原已落地：
+- **blind_aggregator 模块**：`crates/core/src/logsign/blind_aggregator.rs`：`BlindAggregator::collect_from_entries` 跑自带正则抽 `ascii(substr((<read_target>),N,1))<cmp><thr>` 形态二分探针；按 `(read_target, source_ip)` 分组 + `char_position` 子分组；基于 `LogEntry.size`（HTTP 响应 body 字节数）自动聚类真假方向（`true_size = min(body_size)`，fixture-specific 假设：条件成立响应 body 更小）；首个 `beyond_end` 即停止拼接，还原出完整 flag 字符串（如 `database()`=`"person"` / `table_name`=`"person_data"` / `column_name` 含 `id,username,password`）。
+- **BlindProbe / PositionDetail / AggregatedResult 结构**：`read_target` / `char_position` / `threshold` / `body_size` / `source_ip` / `line_no` / `decoded_char` / `ascii_val` / `true_size` / `probe_count` / `status`（`resolved` / `unresolved_all_true` / `beyond_end` / `insufficient_probes`）/ `decoded_string` / `resolved_chars` / `unresolved_chars` / `beyond_end_positions` / `position_details`。
+- **自带嵌套正则**：regex crate 无 look-around，`read_target` 内层嵌套括号用 `(?:[^()]|\([^()]*\))*` 吃单层 `(...)`（如 `database()` / `group_concat(table_name)`）；多层嵌套不支持（已知简化）。
+- **Report.extra.blind_aggregation 透传**：`scan_log` 末尾把 `Vec<AggregatedResult>` 序列化进 `Report.extra` 的 `Value::Mapping({blind_aggregation: [...]})`；无盲注探针时 extra 仍为含空数组的 Mapping；向后兼容（v0.2.1 `Finding.extra: Option<Value>` 既有行为不破）。
+- **GUI LogView 盲注聚合结果卡片**：findings 表下方新增段 ③.5，读 `Report.extra.blind_aggregation` 渲染 antd inner Card + `Typography.Text` copyable 还原串（一键复制 flag）+ 探针数 + 来源 IP + 位置明细 Tooltip + 空态 `Empty`。
 
 ## 安装
 
@@ -190,7 +198,8 @@ cargo tauri dev
 | --- | --- | --- |
 | v0.1.0 | CSV / XLSX 脱敏 + 校验 + 导出 + 规则管理（四功能 GUI）+ Tauri GUI | 已发布 v0.1.0 |
 | v0.2.0 | 日志文件解析 + SQLi 攻击签名扫描 + 弱口令 / 敏感字段扫描 | 已发布 v0.2.0 |
-| v0.2.1 | SQLi payload 语义解析（6 类）+ 字段还原（query/path/UA）+ `+` 解码 | 开发中（T2-11 收尾中） |
+| v0.2.1 | SQLi payload 语义解析（6 类）+ 字段还原（query/path/UA）+ `+` 解码 | 已发布 v0.2.1 |
+| v0.2.2 | 日志扫描盲注二分序列自动聚合还原 flag + GUI 盲注聚合结果卡片 | 开发中（T2-15 收尾中） |
 | v0.3.0 | pcap 流量包敏感数据提取（依赖 tshark） | 规划中 |
 
 版本判定标准见 `docs/04-版本标准.md`。

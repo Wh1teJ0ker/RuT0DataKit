@@ -164,6 +164,8 @@ export default function LogView({ state, dispatch }) {
   // summary 取自 report.summary（serde_yml::Mapping → JSON 对象）。
   const summary = state.logReport?.summary || null;
   const topAttackIps = summary?.top_attack_ips || [];
+  // 段 ③.5 盲注聚合结果：来自 T2-13 report.extra.blind_aggregation。
+  const blindAggregation = state.logReport?.extra?.blind_aggregation || [];
 
   // 段 ④ findings 表：分页 50。
   const findingsData = useMemo(() => {
@@ -381,6 +383,70 @@ export default function LogView({ state, dispatch }) {
               />
             )}
           </Spin>
+        </Card>
+
+        {/* 段 ③.5 盲注聚合结果 */}
+        <Card
+          title="盲注聚合结果"
+          styles={{ body: { padding: 12 } }}
+          extra={
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              共 {blindAggregation.length} 组
+            </Text>
+          }
+        >
+          {blindAggregation.length === 0 ? (
+            <Empty description="无盲注二分序列可聚合" />
+          ) : (
+            <Space direction="vertical" size="small" style={{ width: "100%" }}>
+              {blindAggregation.map((r, idx) => (
+                <Card
+                  key={idx}
+                  size="small"
+                  type="inner"
+                  title={<Text code>{r.read_target}</Text>}
+                  extra={
+                    <Tag color="red">
+                      {r.resolved_chars}/{r.resolved_chars + r.unresolved_chars}{" "}
+                      已解
+                    </Tag>
+                  }
+                >
+                  <Descriptions size="small" column={2}>
+                    <Descriptions.Item label="还原结果">
+                      <Text strong copyable>
+                        {r.decoded_string || "(空)"}
+                      </Text>
+                    </Descriptions.Item>
+                    <Descriptions.Item label="探针数">
+                      <Text>{r.probe_count}</Text>
+                    </Descriptions.Item>
+                    <Descriptions.Item label="来源 IP">
+                      {r.source_ips && r.source_ips.length > 0 ? (
+                        <Space size="small" wrap>
+                          {r.source_ips.map((ip) => (
+                            <Tag key={ip}>{ip}</Tag>
+                          ))}
+                        </Space>
+                      ) : (
+                        <Text type="secondary">无</Text>
+                      )}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="位置明细">
+                      <Tooltip
+                        title={JSON.stringify(r.position_details, null, 2)}
+                      >
+                        <Text type="secondary">
+                          {r.resolved_chars} 已解 / {r.beyond_end_positions}{" "}
+                          越界 / {r.unresolved_chars} 未解
+                        </Text>
+                      </Tooltip>
+                    </Descriptions.Item>
+                  </Descriptions>
+                </Card>
+              ))}
+            </Space>
+          )}
         </Card>
 
         {/* 段 ④ findings 表 */}

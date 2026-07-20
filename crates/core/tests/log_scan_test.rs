@@ -245,13 +245,26 @@ fn scan_log_non_weak_password_no_finding() {
     assert!(wp.is_empty(), "non-weak creds must not yield finding");
 }
 
-/// 8. summary 为 serde_yml::Value::Mapping，extra 为 Null。
+/// 8. summary 为 serde_yml::Value::Mapping；v0.2.2 起 extra 为
+///    `Mapping({ "blind_aggregation": [...] })`（无盲注探针时为空数组）。
 #[test]
 fn scan_log_report_shape() {
     let e = mk_entry(1, "GET", "/news.php", Some("id=1+union+select+1,2,3"));
     let report = run(&[e]);
     assert!(matches!(report.summary, Value::Mapping(_)));
-    assert!(matches!(report.extra, Value::Null));
+    // v0.2.2（T2-13）：extra 由 Value::Null 改为 Value::Mapping，
+    // 含 blind_aggregation 键（无盲注探针时为空 sequence）。
+    let extra = report
+        .extra
+        .as_mapping()
+        .expect("extra must be a mapping after T2-13");
+    assert!(
+        extra
+            .get("blind_aggregation")
+            .and_then(|v| v.as_sequence())
+            .is_some(),
+        "extra must contain blind_aggregation sequence",
+    );
     assert_eq!(report.source, "log");
 }
 
@@ -320,4 +333,87 @@ fn scan_log_union_all_select_hits() {
         .filter(|f| f.r#type == "sqli" && f.value == "sqli_union")
         .collect();
     assert!(!sqli.is_empty(), "union all select must hit sqli_union");
+}
+
+/// 12. v0.2.2（T2-13）：scan_log 末尾调 BlindAggregator，结果塞进
+///     `report.extra.blind_aggregation`。合成几条 database() 第 1 字符 'p'
+///     （ascii 112）的盲注二分探针（同源单 IP），断言聚合后 extra 为
+///     mapping 且含 `blind_aggregation` 键、数组非空、首项
+///     `read_target=="database()"` 且 `decoded_string` 首字符 == `'p'`。
+///
+/// 合成数据仿照 blind_aggregator.rs 模块级 fixture 验证表：
+/// - true_size = 862（条件成立 → body 较小）
+/// - false_size = 875
+/// - thr∈{79,103,109,111} → body==862（true）
+/// - thr∈{112,115} → body==875（false）
+/// - min(false_thresholds)=112 == ascii('p')，max(true)+1=112 自洽。
+#[test]
+fn blind_aggregation_in_report_extra() {
+    // 直接构造 LogEntry（不走 mk_entry，因需要自定义 size + decoded_query
+    // 含 ascii(substr(...)) 探针）。
+    fn blind_entry(line_no: usize, thr: u32, body: u64) -> LogEntry {
+        let q = format!("id=1' or ascii(substr((database()),1,1))>{thr}#");
+        LogEntry {
+            line_no,
+            ip: "10.0.0.9".to_string(),
+            timestamp: "17/Nov/2023:03:45:42 +0000".to_string(),
+            method: "GET".to_string(),
+            path: "/news.php".to_string(),
+            query: Some(q.clone()),
+            status: 200,
+            size: Some(body),
+            user_agent: "curl".to_string(),
+            raw: String::new(),
+            decoded_path: String::new(),
+            decoded_query: Some(q), // BlindAggregator 直接读 decoded_query
+            decoded_ua: String::new(),
+        }
+    }
+
+    // database() 第 1 字符 'p'=ascii 112 的 7 探针。
+    let entries = vec![
+        blind_entry(1, 79, 862),   // 112>79 = true  → body 862
+        blind_entry(2, 103, 862),  // 112>103 = true → body 862
+        blind_entry(3, 109, 862),  // 112>109 = true → body 862
+        blind_entry(4, 111, 862),  // 112>111 = true → body 862
+        blind_entry(5, 112, 875),  // 112>112 = false → body 875
+        blind_entry(6, 115, 875),  // 112>115 = false → body 875
+    ];
+
+    let report = run(&entries);
+
+    // extra 为 mapping。
+    let extra = report
+        .extra
+        .as_mapping()
+        .expect("report.extra must be a mapping");
+    // 含 blind_aggregation 键，值为非空 sequence。
+    let blind_agg = extra
+        .get("blind_aggregation")
+        .and_then(|v| v.as_sequence())
+        .expect("blind_aggregation must be a sequence");
+    assert!(
+        !blind_agg.is_empty(),
+        "blind_aggregation must be non-empty for blind entries",
+    );
+
+    // 首项 read_target == "database()"。
+    let first = blind_agg[0]
+        .as_mapping()
+        .expect("blind_aggregation item is mapping");
+    assert_eq!(
+        first.get("read_target").and_then(|v| v.as_str()),
+        Some("database()"),
+        "first result read_target == database()",
+    );
+
+    // decoded_string 首字符 == 'p'。
+    let decoded = first
+        .get("decoded_string")
+        .and_then(|v| v.as_str())
+        .expect("decoded_string present");
+    assert!(
+        decoded.starts_with('p'),
+        "decoded_string must start with 'p', got {decoded:?}",
+    );
 }

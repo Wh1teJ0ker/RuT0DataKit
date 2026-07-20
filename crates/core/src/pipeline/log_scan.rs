@@ -15,13 +15,18 @@
 //!   sqli_hits / weak_password_hits / sensitive_hits / top_attack_ips（按
 //!   IP 聚合命中数排序取前 5，元素 `{ ip, hits }`）。
 //! - 不重新实现 URL 解码，复用 [`crate::log::parse_query`]。
+//!
+//! v0.2.2（T2-13）：`Report.extra` 由 `Value::Null` 改为
+//! `Value::Mapping({ "blind_aggregation": [AggregatedResult...] })`，承载
+//! T2-12 的盲注二分序列聚合结果。`extra` 为 `serde_yml::Value`，旧前端读
+//! `extra` 为 null 不受影响（向后兼容）。
 
 use std::collections::HashMap;
 
 use serde_yml::Value;
 
 use crate::log::{parse_query, LogEntry};
-use crate::logsign::SignatureEngine;
+use crate::logsign::{BlindAggregator, SignatureEngine};
 use crate::report::{Finding, Report};
 use crate::rules::RuleSet;
 use crate::scan::{DefaultSensitiveScan, SensitiveScan};
@@ -42,6 +47,8 @@ pub const WEAK_KEYWORDS: &[&str] = &[
 /// - `sig_engine` / `scan` / `rules` 由调用方注入，避免在 pipeline 内部
 ///   重复构造（GUI 多次扫描场景友好）。
 /// - `source` 从 entries 第一行的 `raw` 推断太脆弱，统一填 `"log"`。
+/// - v0.2.2（T2-13）：末尾调 [`BlindAggregator`] 还原盲注二分字符串，
+///   塞进 `Report.extra.blind_aggregation`。
 pub fn scan_log(
     entries: &[LogEntry],
     sig_engine: &SignatureEngine,
@@ -147,12 +154,24 @@ pub fn scan_log(
         Value::Sequence(top_attack_ips),
     );
 
+    // v0.2.2（T2-13）：盲注二分序列聚合还原。直接对全量 entries 跑
+    // BlindAggregator（同源/同 read_target 自动分组），结果塞进
+    // Report.extra.blind_aggregation。无盲注探针时返回空 Vec，
+    // extra 仍为含空数组的 Mapping（前端可统一按 sequence 读）。
+    let aggregator = BlindAggregator::collect_from_entries(entries);
+    let blind_results = aggregator.aggregate();
+    let mut extra_map = serde_yml::Mapping::new();
+    extra_map.insert(
+        Value::String("blind_aggregation".into()),
+        serde_yml::to_value(&blind_results).unwrap_or(Value::Null),
+    );
+
     Report {
         source: "log".to_string(),
         kind: "log_scan".to_string(),
         summary: Value::Mapping(summary),
         findings,
-        extra: Value::Null,
+        extra: Value::Mapping(extra_map),
     }
 }
 
