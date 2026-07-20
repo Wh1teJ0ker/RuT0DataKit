@@ -9,6 +9,7 @@ import {
   Tooltip,
   Tag,
   Descriptions,
+  Collapse,
   Spin,
   App as AntApp,
 } from "antd";
@@ -218,6 +219,66 @@ export default function LogView({ state, dispatch }) {
     return <Tag color={TAG_COLOR_BY_ATTACK[t] || "default"}>{label}</Tag>;
   };
 
+  // 段 ③.5 盲注聚合：probe_kind Tag 着色。
+  // r.kind 由后端 AggregatedResult.kind 提供（T3-2）；缺失时从
+  // position_details[0].status 兜底推断。
+  const inferKind = (r) => {
+    if (r.kind) return r.kind;
+    const s = r.position_details?.[0]?.status;
+    if (s === "equality_resolved") return "equality";
+    if (s === "length_resolved") return "length";
+    return "ascii_binary";
+  };
+  const KIND_TAG_COLOR = {
+    ascii_binary: "red",
+    equality: "orange",
+    length: "blue",
+  };
+  const STATUS_TAG_COLOR = {
+    resolved: "green",
+    unresolved_all_true: "orange",
+    beyond_end: "default",
+    insufficient_probes: "red",
+    equality_resolved: "blue",
+    length_resolved: "purple",
+  };
+
+  // 段 ③.5 decoded_string：含分隔符（T3-1 separator_char）时用 volcano Tag
+  // 高亮分隔符字符；否则原样 Text copyable。
+  const renderDecodedString = (r) => {
+    const s = r.decoded_string;
+    if (!s) return <Text type="secondary">(空)</Text>;
+    if (!r.separator_char) {
+      return <Text strong copyable>{s}</Text>;
+    }
+    const sep = r.separator_char;
+    const parts = String(s).split(sep);
+    return (
+      <Space direction="vertical" size={0}>
+        <Text strong>
+          {parts.map((p, i) => (
+            <React.Fragment key={i}>
+              {i > 0 && (
+                <Tag color="volcano" style={{ margin: "0 2px" }}>
+                  {sep}
+                </Tag>
+              )}
+              {p}
+            </React.Fragment>
+          ))}
+        </Text>
+        <Button
+          size="small"
+          type="link"
+          style={{ padding: 0, height: "auto" }}
+          onClick={() => navigator.clipboard.writeText(String(s))}
+        >
+          复制
+        </Button>
+      </Space>
+    );
+  };
+
   const findingsColumns = [
     {
       title: "类型",
@@ -399,52 +460,128 @@ export default function LogView({ state, dispatch }) {
             <Empty description="无盲注二分序列可聚合" />
           ) : (
             <Space direction="vertical" size="small" style={{ width: "100%" }}>
-              {blindAggregation.map((r, idx) => (
-                <Card
-                  key={idx}
-                  size="small"
-                  type="inner"
-                  title={<Text code>{r.read_target}</Text>}
-                  extra={
-                    <Tag color="red">
-                      {r.resolved_chars}/{r.resolved_chars + r.unresolved_chars}{" "}
-                      已解
-                    </Tag>
-                  }
-                >
-                  <Descriptions size="small" column={2}>
-                    <Descriptions.Item label="还原结果">
-                      <Text strong copyable>
-                        {r.decoded_string || "(空)"}
-                      </Text>
-                    </Descriptions.Item>
-                    <Descriptions.Item label="探针数">
-                      <Text>{r.probe_count}</Text>
-                    </Descriptions.Item>
-                    <Descriptions.Item label="来源 IP">
-                      {r.source_ips && r.source_ips.length > 0 ? (
-                        <Space size="small" wrap>
-                          {r.source_ips.map((ip) => (
-                            <Tag key={ip}>{ip}</Tag>
-                          ))}
-                        </Space>
-                      ) : (
-                        <Text type="secondary">无</Text>
-                      )}
-                    </Descriptions.Item>
-                    <Descriptions.Item label="位置明细">
-                      <Tooltip
-                        title={JSON.stringify(r.position_details, null, 2)}
-                      >
+              {blindAggregation.map((r, idx) => {
+                const kind = inferKind(r);
+                return (
+                  <Card
+                    key={idx}
+                    size="small"
+                    type="inner"
+                    title={<Text code>{r.read_target}</Text>}
+                    extra={
+                      <Space size="small">
+                        <Tag color={KIND_TAG_COLOR[kind] || "default"}>
+                          {kind}
+                        </Tag>
+                        <Tag color="red">
+                          {r.resolved_chars}/
+                          {r.resolved_chars + r.unresolved_chars} 已解
+                        </Tag>
+                      </Space>
+                    }
+                  >
+                    <Descriptions size="small" column={2}>
+                      <Descriptions.Item label="还原结果">
+                        {renderDecodedString(r)}
+                      </Descriptions.Item>
+                      <Descriptions.Item label="探针数">
+                        <Text>{r.probe_count}</Text>
+                      </Descriptions.Item>
+                      <Descriptions.Item label="来源 IP">
+                        {r.source_ips && r.source_ips.length > 0 ? (
+                          <Space size="small" wrap>
+                            {r.source_ips.map((ip) => (
+                              <Tag key={ip}>{ip}</Tag>
+                            ))}
+                          </Space>
+                        ) : (
+                          <Text type="secondary">无</Text>
+                        )}
+                      </Descriptions.Item>
+                      <Descriptions.Item label="解析统计">
                         <Text type="secondary">
-                          {r.resolved_chars} 已解 / {r.beyond_end_positions}{" "}
-                          越界 / {r.unresolved_chars} 未解
+                          {r.resolved_chars} 已解 /{" "}
+                          {r.beyond_end_positions} 越界 /{" "}
+                          {r.unresolved_chars} 未解
                         </Text>
-                      </Tooltip>
-                    </Descriptions.Item>
-                  </Descriptions>
-                </Card>
-              ))}
+                      </Descriptions.Item>
+                    </Descriptions>
+                    <Collapse
+                      ghost
+                      size="small"
+                      style={{ marginTop: 4 }}
+                      items={[
+                        {
+                          key: "positions",
+                          label: `位置明细（${
+                            r.position_details?.length || 0
+                          } 项）`,
+                          children: (
+                            <Table
+                              size="small"
+                              pagination={false}
+                              scroll={{ y: 200 }}
+                              rowKey="position"
+                              dataSource={(r.position_details || []).map(
+                                (d, i) => ({
+                                  ...d,
+                                  key: d.position ?? i,
+                                })
+                              )}
+                              columns={[
+                                {
+                                  title: "位置",
+                                  dataIndex: "position",
+                                  width: 60,
+                                },
+                                {
+                                  title: "字符",
+                                  dataIndex: "decoded_char",
+                                  width: 60,
+                                  render: (c, row) => {
+                                    if (row.status === "length_resolved") {
+                                      return row.ascii_val ?? "-";
+                                    }
+                                    return c ? (
+                                      <Text code>{c}</Text>
+                                    ) : (
+                                      "-"
+                                    );
+                                  },
+                                },
+                                {
+                                  title: "ASCII",
+                                  dataIndex: "ascii_val",
+                                  width: 70,
+                                  render: (v) => v ?? "-",
+                                },
+                                {
+                                  title: "探针数",
+                                  dataIndex: "probe_count",
+                                  width: 70,
+                                },
+                                {
+                                  title: "状态",
+                                  dataIndex: "status",
+                                  render: (s) => (
+                                    <Tag
+                                      color={
+                                        STATUS_TAG_COLOR[s] || "default"
+                                      }
+                                    >
+                                      {s}
+                                    </Tag>
+                                  ),
+                                },
+                              ]}
+                            />
+                          ),
+                        },
+                      ]}
+                    />
+                  </Card>
+                );
+              })}
             </Space>
           )}
         </Card>
