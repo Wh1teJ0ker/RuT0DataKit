@@ -1484,6 +1484,99 @@ fn log_scan_full() {
         rt4_resolved > 0,
         "4th RT resolved_chars must be > 0, got {rt4_resolved}",
     );
+
+    // v0.2.4（T4-2）：断言 reconstructed_database 还原出结构化数据库视图。
+    // - schema == "person"
+    // - 含 1 张表 name == "person_data"
+    // - 该表 columns 含 id/username/password/sex/birth/idcard/phone（全量 7 列）
+    // - row_data_columns 含 id/username/idcard（RT4 实际 fetch 的列）
+    // - column_separator == "~"
+    // - rows 至少 2 行，首行 cells[id]=Some("1")、cells[username]=Some("zhangsan")
+    let reconstructed = extra
+        .get("reconstructed_database")
+        .and_then(|v| v.as_mapping())
+        .expect("reconstructed_database present in extra");
+    let schema = reconstructed
+        .get("schema")
+        .and_then(|v| v.as_str())
+        .expect("reconstructed_database.schema present");
+    assert_eq!(schema, "person", "schema must be person");
+    let tables = reconstructed
+        .get("tables")
+        .and_then(|v| v.as_sequence())
+        .expect("reconstructed_database.tables present");
+    let person_table = tables
+        .iter()
+        .find_map(|v| {
+            let m = v.as_mapping()?;
+            if m.get("name").and_then(|t| t.as_str()) == Some("person_data") {
+                Some(m)
+            } else {
+                None
+            }
+        })
+        .expect("person_data table present in reconstructed_database.tables");
+    let columns: Vec<&str> = person_table
+        .get("columns")
+        .and_then(|v| v.as_sequence())
+        .expect("columns present")
+        .iter()
+        .map(|v| v.as_str().unwrap_or(""))
+        .collect();
+    for expected in ["id", "username", "password", "sex", "birth", "idcard", "phone"] {
+        assert!(
+            columns.iter().any(|c| *c == expected),
+            "columns must contain {expected}, got {columns:?}",
+        );
+    }
+    let row_data_columns: Vec<&str> = person_table
+        .get("row_data_columns")
+        .and_then(|v| v.as_sequence())
+        .expect("row_data_columns present")
+        .iter()
+        .map(|v| v.as_str().unwrap_or(""))
+        .collect();
+    for expected in ["id", "username", "idcard"] {
+        assert!(
+            row_data_columns.iter().any(|c| *c == expected),
+            "row_data_columns must contain {expected}, got {row_data_columns:?}",
+        );
+    }
+    let column_separator = person_table
+        .get("column_separator")
+        .and_then(|v| v.as_str())
+        .map(|c| c.chars().next().unwrap_or('\0'));
+    assert_eq!(
+        column_separator,
+        Some('~'),
+        "column_separator must be '~', got {column_separator:?}",
+    );
+    let rows = person_table
+        .get("rows")
+        .and_then(|v| v.as_sequence())
+        .expect("rows present");
+    assert!(
+        rows.len() >= 2,
+        "person_data table must have at least 2 rows, got {}",
+        rows.len(),
+    );
+    let first_row = rows[0].as_mapping().expect("row 0 is mapping");
+    let cells = first_row
+        .get("cells")
+        .and_then(|v| v.as_sequence())
+        .expect("row 0 cells present");
+    // cells 索引对齐 columns：columns=[id,username,password,sex,birth,idcard,phone]
+    let id_cell = cells
+        .get(columns.iter().position(|c| *c == "id").unwrap_or(0))
+        .and_then(|v| v.as_str());
+    let username_cell = cells
+        .get(columns.iter().position(|c| *c == "username").unwrap_or(1))
+        .and_then(|v| v.as_str());
+    assert_eq!(id_cell, Some("1"), "row 0 id cell must be Some(\"1\")");
+    assert!(
+        username_cell.is_some_and(|s| s.contains("zhangsan") || s.contains("lisi")),
+        "row 0 username cell must be zhangsan or lisi, got {username_cell:?}",
+    );
 }
 
 /// v0.2.0 验收项 26：6 类签名各至少 1 正例 + 1 反例。

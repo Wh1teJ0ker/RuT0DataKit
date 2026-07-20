@@ -4,11 +4,11 @@
 全部处理在本地完成，不上传任何样本或规则。本仓库面向数据安全竞赛与红队场景中的
 "敏感数据快速清洗 / 解析" 需求，不依赖 Python 运行时。
 
-> **当前状态：v0.2.3 日志扫描盲注三轴优化（T3-1 ~ T3-4 全部 verified_complete，已 release_complete）。** v0.2.3 在 v0.2.2 跨 entry 布尔盲注二分序列聚合还原基础上，对「算法 / 类型 / 显示」三轴做优化：
-> - **算法（T3-1）**：`true_size` 判定由 v0.2.2 的 `min(body_size)`（fixture-specific 假设，反向场景误判）改为 `mode_per_position_true_size`——按 `char_position` 分组取每位置真假簇 body_size 的 min/max → 跨位置众数（并列取较小者）→ 无混合位置退化 `min(body_size)`；修复 v0.2.2 R1 第 4 read_target（false 频次 737 > true 669）全 `?` 回归。自带正则从单层扩到两层嵌套 `((?:[^()]|\((?:[^()]|\([^()]*\))*\))*)` 覆盖 `where table_schema=database()`。`AggregatedResult` 新增 `separator_char: Option<char>` 从 `read_target` 首个 `0xNN` 字面量解码（`0x7e`→`~`）。
-> - **类型（T3-2）**：`BlindProbe` 新增 `probe_kind: ProbeKind`（`AsciiBinary` / `Equality` / `Length`）+ `equality_char`；新增 equality（`substr((...),N,1)=('x'|char(NN))` 直接解出单字符）与 length（`length((...))(cmp)(\d+)` 解出字符串长度）两条正则；聚合分组键升级为 `(read_target, source_ip, ProbeKind)` 三元组防串扰；`AggregatedResult` 新增 `kind` 字段；`PositionDetail.status` 新增 `equality_resolved` / `length_resolved`。
-> - **显示（T3-3）**：GUI LogView 段 ③.5 inner Card 加 kind Tag 着色（ascii_binary=red / equality=orange / length=blue）+ separator 高亮（volcano Tag + 复制按钮）+ Collapse 内嵌 Table 位置明细（列 位置/字符/ASCII/探针数/状态，status Tag 6 色着色），替代 v0.2.2 的 JSON.stringify Tooltip。
-> 新字段 `kind` / `separator_char` 均 `#[serde(skip_serializing_if)]`，向后兼容 v0.2.2。版本状态约定见 `docs/04-版本标准.md`。
+> **当前状态：v0.2.4 日志扫描盲注聚合数据库格式还原（T4-1 ~ T4-4 全部 verified_complete，已 release_complete）。** v0.2.4 在 v0.2.3 三轴优化的基础上，把盲注聚合结果从「逐 read_target 卡片」升级为「按数据库格式还原」：
+> - **后端结构 + 算法（T4-1）**：`blind_aggregator` 新增 `ReconstructedDatabase` / `ReconstructedTable` / `ReconstructedRow` 三结构 + `BlindAggregator::reconstruct_database` 关联函数，三步算法：Step1 把每个 `AggregatedResult` 的 `read_target` 按 4 类模式分类（`schema`=database() / `table_list`=group_concat(table_name) from information_schema.tables / `column_list`=group_concat(column_name) ... where table_name='X' / `row_data`=group_concat(col1,0xNN,col2,...) from <table>；未匹配进 `unmatched_results`）；Step2 拼装 schema/tables/columns/rows（schema 直填 → table_list 解码表名按 `table_name='T'` 谓词匹配 column_list 全量列 → 按 `from T` 匹配 row_data 解析行：`,` split 行 + `column_separator`（`0xNN` 解码）split 列 → 投影到全量列，未 fetch 列 `None`）；Step3 unmatched 兜底。
+> - **pipeline 透传（T4-2）**：`scan_log` 末尾调 `reconstruct_database` 塞 `Report.extra.reconstructed_database`（与 `blind_aggregation` 并列，向后兼容 v0.2.3）。fixture 4 类探针自动还原：schema="person" / 1 表 person_data / 7 列 / ≥2 行 / row[0].id=Some("1")。
+> - **GUI 显示（T4-3）**：LogView 段 ③.5 之前新增段 ③.5a「还原数据库视图」Card——antd `Table` 按表渲染（全量列做表头，未 fetch 单元格显示 `-`）+ unmatched 兜底列表 + 空态 Empty；段 ③.5 改名「原始聚合明细」保留既有逐 read_target 卡片作兜底。
+> `blind_aggregation` 数组保留不动，新增 `reconstructed_database` 键；新字段 `schema`（Option）/ `column_separator`（Option）均 `#[serde(skip_serializing_if)]`，向后兼容 v0.2.3。版本状态约定见 `docs/04-版本标准.md`。
 
 ## 功能
 
@@ -19,6 +19,7 @@
 | v0.2.1 | SQLi payload 语义解析（6 类）+ 字段还原（query/path/UA）+ `+` 解码 | 已发布 v0.2.1 |
 | v0.2.2 | 日志扫描盲注二分序列自动聚合还原 flag + GUI 盲注聚合结果卡片 | 已发布 v0.2.2 |
 | v0.2.3 | 盲注三轴优化：true_size 众数算法 + equality/length 类型 + GUI kind Tag/separator 高亮/Collapse 位置明细 | 已发布 v0.2.3 |
+| v0.2.4 | 盲注聚合数据库格式还原：ReconstructedDatabase 交叉关联 4 类 read_target + GUI antd Table 按表渲染全量列 | 已发布 v0.2.4 |
 | v0.3.0（规划） | pcap 流量包敏感数据提取（依赖系统 tshark） | 规划中 |
 
 v0.1.0 已落地：
@@ -66,6 +67,13 @@ v0.2.3 日志扫描盲注三轴优化已落地：
 - **算法优化（T3-1）**：`true_size` 判定由 v0.2.2 的 `min(body_size)`（fixture-specific 假设，反向场景误判）改为 `mode_per_position_true_size`——按 `char_position` 分组取每位置真假簇 `body_size` 的 min/max → 跨位置众数（并列取较小者）→ 无混合位置退化 `min(body_size)`；修复 v0.2.2 R1 第 4 read_target（`group_concat(id,0x7e,username,0x7e,idcard)`，false 频次 737 > true 669）全局频次法误判为 875 → 全 `?` 的回归，新算法每位置 true 簇 = 862 → 众数 862 正确解出 `1~zhangsan~...~lisi~...`。自带正则从单层 `(?:[^()]|\([^()]*\))*` 扩到两层 `((?:[^()]|\((?:[^()]|\([^()]*\))*\))*)` 覆盖 `where table_schema=database()`。`AggregatedResult` 新增 `separator_char: Option<char>`（`#[serde(skip_serializing_if)]`）从 `read_target` 首个 `0xNN` 字面量解码（`0x7e`→`~`，`0xff+` 返回 `None`）。
 - **盲注类型扩展（T3-2）**：`BlindProbe` 新增 `probe_kind: ProbeKind` 枚举（`AsciiBinary` / `Equality` / `Length`）+ `equality_char: Option<char>`；新增 2 条正则：equality（`substr((...),N,1)=('x'|char(NN))` 直接解出单字符）+ length（`length((...))(>=?|<=?|=)(\d+)` 解出字符串长度，取最小 `=` 或最大 `<` 阈值）。聚合分组键由 `(read_target, source_ip)` 升级为 `(read_target, source_ip, ProbeKind)` 三元组，避免同一 read_target 的 ascii_binary 与 length 探针串扰。`AggregatedResult` 新增 `kind: Option<String>`（序列化为 `ascii_binary` / `equality` / `length`，`#[serde(skip_serializing_if)]`）。`PositionDetail.status` 新增 `equality_resolved` / `length_resolved`。
 - **GUI 显示优化（T3-3）**：LogView 段 ③.5 inner Card：extra 加 kind Tag 着色（ascii_binary=red / equality=orange / length=blue；`r.kind` 缺失时前端按 `position_details[0].status` 兜底推断）+ 已解 N/M Tag；还原结果由 v0.2.2 的 `Text copyable` 升级为 `separator_char` 存在时 `Text strong` + volcano Tag 包裹分隔符高亮分段 + 独立「复制」按钮（`navigator.clipboard.writeText`），否则 `Text strong copyable`；位置明细由 v0.2.2 的 Tooltip + JSON.stringify 升级为 antd `Collapse`（ghost / size=small / 默认折叠）+ 内嵌 `Table`（列 位置 / 字符 / ASCII / 探针数 / 状态 Tag 6 色着色：resolved=green / unresolved_all_true=orange / beyond_end=default / insufficient_probes=red / equality_resolved=blue / length_resolved=purple）。
+
+v0.2.4 日志扫描盲注聚合数据库格式还原已落地：
+- **后端结构 + 算法（T4-1）**：`blind_aggregator.rs` 新增 `ReconstructedDatabase { schema, tables, unmatched_results }` / `ReconstructedTable { name, columns, rows, row_data_columns, column_separator, source_probe_count }` / `ReconstructedRow { cells: Vec<Option<String>> }` 三结构 + `BlindAggregator::reconstruct_database(&[AggregatedResult]) -> ReconstructedDatabase` 关联函数。三步算法：Step1 分类（4 类 read_target 模式：`schema`=database() / `table_list`=group_concat(table_name) from information_schema.tables / `column_list`=group_concat(column_name) ... where table_name='X' / `row_data`=group_concat(col1,0xNN,col2,...) from <table>；未匹配进 `unmatched_results`）；Step2 拼装（schema 直填 → table_list 解码表名按 `table_name='T'` 谓词匹配 column_list 全量列（无谓词按索引对齐，无列清单兜底 row_data_columns）→ 按 `from T` 匹配 row_data 解析行：`,` split 行 + `column_separator`（`0xNN` 解码）split 列 → 投影到全量列，未 fetch 列 `None`）；Step3 unmatched 原样塞回兜底。8 条单测覆盖全还原 / unmatched / 缺 column_list 兜底 / 空 results / 无分隔符单列 / 3 正则单元测试。
+- **pipeline 透传（T4-2）**：`scan_log` 末尾调 `reconstruct_database` 塞 `Report.extra.reconstructed_database` 键（与 `blind_aggregation` 并列，向后兼容 v0.2.3）。fixture 4 类探针自动还原：schema="person" / 1 表 person_data / 7 列 (id/username/password/sex/birth/idcard/phone) / ≥2 行 / row[0].id=Some("1") / row[0].username=contains zhangsan/lisi / row_data_columns=[id,username,idcard] / column_separator=Some('~')。e2e `log_scan_full` 新增五段断言。
+- **GUI 显示（T4-3）**：LogView 段 ③.5 之前新增段 ③.5a「还原数据库视图」Card——顶部 Descriptions（schema `<Text code>` + 表数 + unmatched 数）；每张 `ReconstructedTable` 一个 inner Card + antd `Table`（全量列做表头，未 fetch 单元格 `render: v => v ?? <Text type="secondary">-</Text>` 显示 `-`）+ extra（`column_separator` volcano Tag + `row_data_columns` Tooltip「已 fetch N/M 列」+ 探针 Tag）；unmatched 非空时下方 `Divider` + 简版列表（read_target + decoded_string copyable）；空态 `Empty`（「无法还原为数据库结构」）。段 ③.5 改名「原始聚合明细」保留既有逐 read_target 卡片作兜底（kind Tag / separator 高亮 / Collapse+Table 位置明细全部不动），数据源 `blindAggregation` 不变。
+- **向后兼容**：`blind_aggregation` 数组保留不动；新增 `reconstructed_database` 键 + 新结构字段 `schema`（Option）/ `column_separator`（Option）均 `#[serde(skip_serializing_if)]`。
+- **已知简化**：行切分依赖 group_concat 默认分隔符 `,`（fixture idcard 数字无 `,`）；`group_concat SEPARATOR 'X'` 子句解析、三层+嵌套正则、UNION 报错聚合 / 时间盲注聚合留 v0.3.0+。
 
 ## 安装
 
@@ -211,6 +219,7 @@ cargo tauri dev
 | v0.2.1 | SQLi payload 语义解析（6 类）+ 字段还原（query/path/UA）+ `+` 解码 | 已发布 v0.2.1 |
 | v0.2.2 | 日志扫描盲注二分序列自动聚合还原 flag + GUI 盲注聚合结果卡片 | 已发布 v0.2.2 |
 | v0.2.3 | 盲注三轴优化：true_size 众数算法 + equality/length 类型 + GUI kind Tag/separator 高亮/Collapse 位置明细 | 已发布 v0.2.3 |
+| v0.2.4 | 盲注聚合数据库格式还原：ReconstructedDatabase 交叉关联 4 类 read_target + GUI antd Table 按表渲染全量列 | 已发布 v0.2.4 |
 | v0.3.0 | pcap 流量包敏感数据提取（依赖 tshark） | 规划中 |
 
 版本判定标准见 `docs/04-版本标准.md`。

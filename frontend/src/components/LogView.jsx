@@ -10,6 +10,7 @@ import {
   Tag,
   Descriptions,
   Collapse,
+  Divider,
   Spin,
   App as AntApp,
 } from "antd";
@@ -167,6 +168,42 @@ export default function LogView({ state, dispatch }) {
   const topAttackIps = summary?.top_attack_ips || [];
   // 段 ③.5 盲注聚合结果：来自 T2-13 report.extra.blind_aggregation。
   const blindAggregation = state.logReport?.extra?.blind_aggregation || [];
+  // 段 ③.5a 还原数据库视图：来自 T4-2 report.extra.reconstructed_database。
+  // 把 4 类标准 read_target 交叉关联成 schema → tables → columns → rows，
+  // 用 antd Table 按表展示（全量列，未 fetch 列留空）。缺失时为 null。
+  const reconstructedDb = state.logReport?.extra?.reconstructed_database || null;
+
+  // 段 ③.5a 还原数据库视图：把一张 ReconstructedTable 的 columns/rows 转成
+  // antd Table 的 columns/dataSource。columns 做表头（title=列名，
+  // dataIndex=列名），rows 转成 dataSource（每行一个对象，键=列名，未 fetch
+  // 列 undefined）。未 fetch 单元格渲染「-」表示该列在 row data 查询中未
+  // fetch。
+  const buildTableColumns = (table) => {
+    if (!table || !Array.isArray(table.columns)) return [];
+    return table.columns.map((col) => ({
+      title: col,
+      dataIndex: col,
+      width: 120,
+      ellipsis: true,
+      render: (v) =>
+        v === undefined || v === null ? (
+          <Text type="secondary">-</Text>
+        ) : (
+          <Text>{String(v)}</Text>
+        ),
+    }));
+  };
+  const buildTableDataSource = (table) => {
+    if (!table || !Array.isArray(table.rows)) return [];
+    return table.rows.map((row, i) => {
+      const obj = { key: i };
+      (table.columns || []).forEach((col, idx) => {
+        const cell = row.cells?.[idx];
+        obj[col] = cell === null || cell === undefined ? undefined : String(cell);
+      });
+      return obj;
+    });
+  };
 
   // 段 ④ findings 表：分页 50。
   const findingsData = useMemo(() => {
@@ -446,9 +483,133 @@ export default function LogView({ state, dispatch }) {
           </Spin>
         </Card>
 
-        {/* 段 ③.5 盲注聚合结果 */}
+        {/* 段 ③.5a 还原数据库视图（v0.2.4 T4-3）*/}
         <Card
-          title="盲注聚合结果"
+          title="还原数据库视图"
+          styles={{ body: { padding: 12 } }}
+          extra={
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              {reconstructedDb && reconstructedDb.tables
+                ? `${reconstructedDb.tables.length} 张表`
+                : "无表"}
+            </Text>
+          }
+        >
+          {!reconstructedDb ||
+          !reconstructedDb.tables ||
+          reconstructedDb.tables.length === 0 ? (
+            <Empty description="无法还原为数据库结构（缺少 database()/table_name/column_name/row data 四类探针）" />
+          ) : (
+            <Space direction="vertical" size="small" style={{ width: "100%" }}>
+              <Descriptions size="small" column={3} bordered>
+                <Descriptions.Item label="数据库">
+                  {reconstructedDb.schema ? (
+                    <Text code strong>
+                      {reconstructedDb.schema}
+                    </Text>
+                  ) : (
+                    <Text type="secondary">未知</Text>
+                  )}
+                </Descriptions.Item>
+                <Descriptions.Item label="表数">
+                  <Text>{reconstructedDb.tables.length}</Text>
+                </Descriptions.Item>
+                <Descriptions.Item label="未匹配聚合">
+                  <Text>
+                    {(reconstructedDb.unmatched_results || []).length}
+                  </Text>
+                </Descriptions.Item>
+              </Descriptions>
+              {reconstructedDb.tables.map((table, idx) => (
+                <Card
+                  key={idx}
+                  size="small"
+                  type="inner"
+                  title={
+                    <Space size="small">
+                      <Text code strong>
+                        {table.name}
+                      </Text>
+                      <Tag color="blue">
+                        {table.columns?.length || 0} 列 /{" "}
+                        {table.rows?.length || 0} 行
+                      </Tag>
+                    </Space>
+                  }
+                  extra={
+                    <Space size="small">
+                      {table.column_separator && (
+                        <Tag color="volcano">
+                          列分隔符 {table.column_separator}
+                        </Tag>
+                      )}
+                      {table.row_data_columns &&
+                        table.row_data_columns.length > 0 && (
+                          <Tooltip
+                            title={`已 fetch 列：${table.row_data_columns.join(
+                              ", "
+                            )}；其余列在该 row data 查询中未 fetch，显示为「-」`}
+                          >
+                            <Tag color="orange">
+                              {table.row_data_columns.length}/
+                              {table.columns?.length || 0} 列已 fetch
+                            </Tag>
+                          </Tooltip>
+                        )}
+                      <Tag>探针 {table.source_probe_count ?? 0}</Tag>
+                    </Space>
+                  }
+                >
+                  <Table
+                    size="small"
+                    pagination={false}
+                    scroll={{ x: "max-content", y: 240 }}
+                    rowKey="key"
+                    columns={buildTableColumns(table)}
+                    dataSource={buildTableDataSource(table)}
+                    locale={{
+                      emptyText: "无还原行数据",
+                    }}
+                  />
+                </Card>
+              ))}
+              {reconstructedDb.unmatched_results &&
+                reconstructedDb.unmatched_results.length > 0 && (
+                  <>
+                    <Divider
+                      style={{ margin: "8px 0" }}
+                      orientation="left"
+                      plain
+                    >
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        未匹配的聚合结果（{reconstructedDb.unmatched_results.length} 项）
+                      </Text>
+                    </Divider>
+                    {reconstructedDb.unmatched_results.map((r, i) => (
+                      <Card
+                        key={`unmatched-${i}`}
+                        size="small"
+                        type="inner"
+                        title={<Text code>{r.read_target}</Text>}
+                      >
+                        <Descriptions size="small" column={1}>
+                          <Descriptions.Item label="还原结果">
+                            <Text strong copyable>
+                              {r.decoded_string || "(空)"}
+                            </Text>
+                          </Descriptions.Item>
+                        </Descriptions>
+                      </Card>
+                    ))}
+                  </>
+                )}
+            </Space>
+          )}
+        </Card>
+
+        {/* 段 ③.5 盲注聚合结果（原始聚合明细，v0.2.4 改名为兜底展示）*/}
+        <Card
+          title="原始聚合明细"
           styles={{ body: { padding: 12 } }}
           extra={
             <Text type="secondary" style={{ fontSize: 12 }}>

@@ -158,12 +158,23 @@ pub fn scan_log(
     // BlindAggregator（同源/同 read_target 自动分组），结果塞进
     // Report.extra.blind_aggregation。无盲注探针时返回空 Vec，
     // extra 仍为含空数组的 Mapping（前端可统一按 sequence 读）。
+    //
+    // v0.2.4（T4-2）：在 blind_aggregation 之外新增 reconstructed_database 键，
+    // 把 4 类标准 read_target（database() / group_concat(table_name) /
+    // group_concat(column_name) / group_concat(col,0xNN,...)）交叉关联成
+    // 结构化 ReconstructedDatabase（schema → tables → columns → rows），
+    // 供前端按数据库格式展示。blind_aggregation 数组保留不动（向后兼容）。
     let aggregator = BlindAggregator::collect_from_entries(entries);
     let blind_results = aggregator.aggregate();
+    let reconstructed = BlindAggregator::reconstruct_database(&blind_results);
     let mut extra_map = serde_yml::Mapping::new();
     extra_map.insert(
         Value::String("blind_aggregation".into()),
         serde_yml::to_value(&blind_results).unwrap_or(Value::Null),
+    );
+    extra_map.insert(
+        Value::String("reconstructed_database".into()),
+        serde_yml::to_value(&reconstructed).unwrap_or(Value::Null),
     );
 
     Report {
