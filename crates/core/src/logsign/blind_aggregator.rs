@@ -13,31 +13,33 @@
 //! - `body_size` 取 `LogEntry.size`（`Option<u64>`，`None` 跳过该 entry）。
 //! - `source_ip` = `LogEntry.ip.clone()`，用于区分不同注入源。
 //!
-//! ## 真假方向（fixture 验证后写死）
+//! ## 真假方向（双簇自动判定）
 //!
-//! 对 `tests/fixtures/samples/log/access.log` line 19-65（`database()` 第 1
-//! 字符 'p'=ascii 112）实测：
+//! 盲注二分探针在「条件成立」与「不成立」两种响应下，HTTP body 字节数
+//! 不同（靶机通常在条件成立时走不同分支导致响应长度变化）。true 探针
+//! 覆盖大部分 thr 区间（除越界末位外每个字符都要扫一遍），故其在 group
+//! 内出现频次显著高于 false 探针。
 //!
-//! | thr | body_size | 条件 `ascii > thr` |
-//! |-----|-----------|---------------------|
-//! | 79  | 862       | 112>79 = true       |
-//! | 103 | 862       | 112>103 = true      |
-//! | 109 | 862       | 112>109 = true      |
-//! | 111 | 862       | 112>111 = true      |
-//! | 112 | 875       | 112>112 = false     |
-//! | 115 | 875       | 112>115 = false     |
+//! 据此 `group_true_size` 在「混合位置」（同位置内 body_size 不全同，
+//! 即该位置同时有 true/false 探针）上取 body_size 众数，自动适配「条件
+//! 成立→body 更小」或「条件成立→body 更大」两种方向。只在混合位置上
+//! 统计，避免 beyond_end / unresolved_all_true 等单簇位置投票压倒 true 簇
+//! （如某位置全 false body 投票盖过真正的 true_size）。
+//! - fixture（`access.log` line 19-24，`database()` 第 1 字符 'p'=112）：
+//!   pos 1 混合位置中 true body=862 出现 4 次，false body=875 出现 2 次 →
+//!   众数 862 → 与 v0.2.2 `min(body_size)` 等价，向后兼容。
+//! - 反向场景（true body=900 / false body=850）：混合位置众数 900 自动判为
+//!   true_size，无需改算法。
 //!
-//! **条件成立 → body 较小（862）**；条件不成立 → body 较大（875）。
-//! 故 **`true_size = min(body_size)`**（条件成立的响应 body 更小）。
-//! 单测用合成数据沿用同一语义，不依赖 fixture 频次法。
-//!
-//! 该方向是 fixture-specific 假设；若未来接入「条件成立→body 更大」的靶机，
-//! 需把 `group_true_size` 的取法从 `min` 改为 `max`（见 `aggregate` 注释）。
+//! 并列频次（极少见，两簇等频）取较小者，偏向 fixture 真假方向
+//! （true 通常 body 更小）。无混合位置时退化到 `min(body_size)`（v0.2.2
+//! 行为，不破坏 fixture），仍能区分 all-true / all-false（见聚合算法）。
 //!
 //! ## 聚合算法
 //!
 //! 对每个 `(read_target, source_ip)` 分组：
-//! 1. `group_true_size = min(所有探针 body_size)`（条件成立响应 body）。
+//! 1. `group_true_size = mode(body_size)`（条件成立响应 body，众数取较小
+//!    者并列偏向）。
 //! 2. 按 `char_position` 子分组。
 //! 3. 每个位置：
 //!    - 全同 body 且 == group_true_size → `unresolved_all_true`（ascii 大于
@@ -51,11 +53,20 @@
 //! 4. 按 position 升序拼接：resolved 追加字符；unresolved/insufficient 追加
 //!    `'?'`；**首个 beyond_end 即停止拼接**（字符串末尾）。
 //!
+//! ## 分隔符高亮（0xNN 字面量）
+//!
+//! read_target 若含 `0xNN` 十六进制字面量（如 fixture
+//! `group_concat(id,0x7e,username,0x7e,idcard)` 的 0x7e=`~`），
+//! `aggregate()` 末尾解析首个字面量为 `AggregatedResult.separator_char`
+//! （`Option<char>`，无字面量为 `None`，向后兼容）。decoded_string 本身
+//! 不变；该字段仅供 GUI（T3-3）高亮分隔符。
+//!
 //! ## regex 限制
 //!
 //! regex crate 无 look-around，`read_target` 内层嵌套括号用
-//! `(?:[^()]|\([^()]*\))*` 吃掉单层 `(...)`（如 `database()` /
-//! `group_concat(table_name)`）。多层嵌套不支持，是已知简化。
+//! `(?:[^()]|\((?:[^()]|\([^()]*\))*\))*` 吃掉最多 2 层嵌套（如
+//! `database()` / `group_concat(table_name)` / `where
+//! table_schema=database()`）。3 层及以上嵌套不支持，是已知简化。
 
 use std::collections::HashMap;
 
@@ -121,6 +132,11 @@ pub struct AggregatedResult {
     pub source_ips: Vec<String>,
     /// 每个位置的详情，按 position 升序。
     pub position_details: Vec<PositionDetail>,
+    /// read_target 中首个 `0xNN` 十六进制字面量解码出的分隔符（如有），
+    /// 供 GUI 高亮展示。例如 `group_concat(id,0x7e,username,0x7e,idcard)`
+    /// 的 read_target 含 `0x7e` → `Some('~')`。无字面量为 `None`（向后兼容）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub separator_char: Option<char>,
 }
 
 /// 盲注二分序列聚合器。
@@ -210,9 +226,13 @@ impl BlindAggregator {
 
         let mut results: Vec<AggregatedResult> = Vec::with_capacity(groups.len());
         for ((read_target, _source_ip), group_probes) in groups {
-            // group_true_size = min(body_size)（条件成立响应 body 更小，
-            // 见模块级文档 fixture 验证表）。
-            let group_true_size = group_probes.iter().map(|p| p.body_size).min().unwrap_or(0);
+            // group_true_size = 全位置 body_size 众数（条件成立响应 body）。
+            // 双簇自动判定：只在「混合位置」（同位置内 body_size 不全同，即
+            // 既有 true 又有 false 探针的位置）上统计 body_size 频次取众数，
+            // 避免 beyond_end / unresolved_all_true 等单簇位置投票压倒 true
+            // 簇（HANDOFF risks 指出的退化场景）。无混合位置时退化到
+            // `min(body_size)`（v0.2.2 行为，不破坏 fixture）。并列取较小者。
+            let group_true_size = mode_body_size_from_mixed_positions(&group_probes);
 
             // 按 char_position 子分组。
             let mut by_pos: HashMap<u32, Vec<&BlindProbe>> = HashMap::new();
@@ -270,6 +290,10 @@ impl BlindAggregator {
             // probe_count = 该分组探针总数。
             let probe_count = group_probes.len() as u32;
 
+            // separator_char：从 read_target 解析首个 `0x([0-9a-fA-F]{2})` 字面量，
+            // 解码为对应 ASCII 字符（如 0x7e → '~'），供 GUI 高亮。无字面量 None。
+            let separator_char = parse_separator_char(&read_target);
+
             results.push(AggregatedResult {
                 read_target,
                 decoded_string,
@@ -279,6 +303,7 @@ impl BlindAggregator {
                 probe_count,
                 source_ips,
                 position_details,
+                separator_char,
             });
         }
 
@@ -297,6 +322,74 @@ impl Default for BlindAggregator {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// 统计「混合位置」body_size 众数作为 true_size 标识。
+///
+/// 双簇自动判定：只在「同位置内 body_size 不全同」（即该位置既有 true 又有
+/// false 探针，能直接区分真假簇）的位置上统计 body_size 频次取众数。这避免
+/// beyond_end / unresolved_all_true 等单簇位置投票压倒真正的 true 簇
+/// （HANDOFF risks 指出的退化场景：如某位置全部 false body 投票可能盖过
+/// 真正的 true_size）。
+///
+/// 取众数而非 min/max：true 探针在混合位置中覆盖大部分 thr 区间（除
+/// 越界末位外），故众数即 true_size。并列频次取较小者（true 通常 body 更
+/// 小，与 v0.2.2 fixture 方向一致；反向场景下众数仍指向 true 簇，仅同频
+/// 时偏向 fixture 方向）。
+///
+/// 退化路径：无混合位置（全部位置都单簇）时退化到 `min(body_size)`，
+/// 与 v0.2.2 行为一致（不破坏 fixture：fixture 的 pos 1 是混合位置，
+/// 众数法与 min 等价）。探针为空时返回 0。
+fn mode_body_size_from_mixed_positions(probes: &[&BlindProbe]) -> u64 {
+    // 按 char_position 聚合。
+    let mut by_pos: HashMap<u32, Vec<u64>> = HashMap::new();
+    for p in probes {
+        by_pos.entry(p.char_position).or_default().push(p.body_size);
+    }
+    // 只保留「混合位置」：该位置 body_size 不全同（pos_min != pos_max）。
+    let mut freq: HashMap<u64, u32> = HashMap::new();
+    for bodies in by_pos.values() {
+        let bmin = *bodies.iter().min().unwrap_or(&0);
+        let bmax = *bodies.iter().max().unwrap_or(&0);
+        if bmin != bmax {
+            for b in bodies {
+                *freq.entry(*b).or_insert(0) += 1;
+            }
+        }
+    }
+    if freq.is_empty() {
+        // 无混合位置 → 退化到 min(body_size)（v0.2.2 行为）。
+        return probes.iter().map(|p| p.body_size).min().unwrap_or(0);
+    }
+    // 取频次最高者；并列时取 body_size 较小者。
+    freq.into_iter()
+        .max_by_key(|(body, count)| (*count, std::cmp::Reverse(*body)))
+        .map(|(body, _)| body)
+        .unwrap_or(0)
+}
+
+/// 从 read_target 解析首个 `0x([0-9a-fA-F]{2})` 十六进制字面量分隔符。
+///
+/// 用于 fixture `group_concat(id,0x7e,username,0x7e,idcard)` 中 0x7e → '~'
+/// 的展示层高亮。仅返回字面量解码后的首个 ASCII 字符；无字面量返回 None。
+/// 字面量值 > 127（非 ASCII）返回 None。
+fn parse_separator_char(read_target: &str) -> Option<char> {
+    let re = hex_literal_regex();
+    let caps = re.captures(read_target)?;
+    let hex = caps.get(1)?.as_str();
+    let val = u32::from_str_radix(hex, 16).ok()?;
+    if val > 0x7f {
+        return None;
+    }
+    char::from_u32(val)
+}
+
+fn hex_literal_regex() -> &'static Regex {
+    use std::sync::OnceLock;
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"0x([0-9a-fA-F]{2})").expect("hex_literal regex must compile")
+    })
 }
 
 /// 聚合单个位置：依据 group_true_size 判定每个探针真假，还原 ascii 值。
@@ -401,13 +494,17 @@ fn aggregate_position(
 ///
 /// 形态：`ascii(substr((<read_target>),<pos>,1))<cmp><thr>`
 /// 捕获组：1=read_target、2=char_position、3=comparator、4=threshold。
-/// `read_target` 内层单层 `(...)` 用 `(?:[^()]|\([^()]*\))*` 吃掉。
+/// `read_target` 内层嵌套 `(...)` 用
+/// `(?:[^()]|\((?:[^()]|\([^()]*\))*\))*` 吃掉最多 2 层嵌套
+/// （覆盖 fixture `where table_schema=database()` 中 database() 包在
+/// 最外层 substr 内层、其本身又有空括号的双层场景）。regex crate 无
+/// look-around，2 层足够 fixture；更深嵌套是已知简化。
 fn blind_probe_regex() -> &'static Regex {
     use std::sync::OnceLock;
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(
-            r"ascii\s*\(\s*substr\s*\(\s*\(\s*((?:[^()]|\([^()]*\))*)\s*\)\s*,\s*(\d+)\s*,\s*\d+\s*\)\s*\)\s*(>=?|<=?|=)\s*(\d+)",
+            r"ascii\s*\(\s*substr\s*\(\s*\(\s*((?:[^()]|\((?:[^()]|\([^()]*\))*\))*)\s*\)\s*,\s*(\d+)\s*,\s*\d+\s*\)\s*\)\s*(>=?|<=?|=)\s*(\d+)",
         )
         .expect("blind_probe regex must compile")
     })
@@ -493,5 +590,183 @@ mod tests {
             let agg = BlindAggregator::collect_from_entries(&[e]);
             assert_eq!(agg.probes.len(), 1, "cmp={} must match", cmp);
         }
+    }
+
+    // ---- v0.2.3 双簇自动判定 / 多层嵌套正则 / 0xNN 分隔符 ----
+
+    /// 双簇自动判定：合成「条件成立→body 更大」场景（与 fixture 相反方向）。
+    ///
+    /// true body=900（条件成立响应更大），false body=850。pos 1 ascii=112='p'：
+    /// - thr 79/103/109/111 → 900 (true, ascii>thr)
+    /// - thr 112/115 → 850 (false, ascii<=thr)
+    /// 众数判定：900 出现 4 次 > 850 出现 2 次 → group_true_size=900，
+    /// 与 v0.2.2 min(body_size)=850 不同，但还原结果仍为 'p'。
+    #[test]
+    fn true_size_auto_detects_larger_body() {
+        let pos1 = vec![
+            (79u32, 900u64),
+            (103, 900),
+            (109, 900),
+            (111, 900),
+            (112, 850),
+            (115, 850),
+        ];
+        let mut entries: Vec<LogEntry> = Vec::new();
+        let mut line = 1usize;
+        for (thr, body) in &pos1 {
+            let q = format!(
+                "ascii(substr((database()),1,1))>{}",
+                thr
+            );
+            entries.push(mk_entry(line, "1.1.1.1", Some(&q), Some(*body)));
+            line += 1;
+        }
+        // pos 8: 全同 850 → beyond_end（== max false，全 false）。
+        for thr in [79u32, 103, 115] {
+            let q = format!(
+                "ascii(substr((database()),8,1))>{}",
+                thr
+            );
+            entries.push(mk_entry(line, "1.1.1.1", Some(&q), Some(850)));
+            line += 1;
+        }
+
+        let agg = BlindAggregator::collect_from_entries(&entries);
+        let results = agg.aggregate();
+        assert_eq!(results.len(), 1);
+        let r = &results[0];
+        // 双簇自动判定：group_true_size == 900（条件成立 body 更大场景）。
+        let pos1_detail = r
+            .position_details
+            .iter()
+            .find(|d| d.position == 1)
+            .expect("pos 1 detail");
+        assert_eq!(pos1_detail.status, "resolved");
+        assert_eq!(pos1_detail.ascii_val, Some(112));
+        assert_eq!(pos1_detail.decoded_char, Some('p'));
+        assert_eq!(pos1_detail.true_size, 900, "auto-detect larger body");
+        assert!(
+            r.decoded_string.starts_with('p'),
+            "decoded_string starts with p, got {}",
+            r.decoded_string
+        );
+    }
+
+    /// 多层嵌套正则：read_target 含 `where table_schema=database()`，2 层
+    /// 嵌套括号（外层 substr(...) 内的 (...) 中含 database()），应被完整捕获。
+    #[test]
+    fn regex_captures_double_nested_parens() {
+        let payload = "1' or ascii(substr((select group_concat(table_name) from \
+         information_schema.tables where table_schema=database()),1,1))>79#";
+        let e = mk_entry(1, "1.1.1.1", Some(payload), Some(862));
+        let agg = BlindAggregator::collect_from_entries(&[e]);
+        assert_eq!(agg.probes.len(), 1, "double-nested read_target must match");
+        let rt = &agg.probes[0].read_target;
+        assert!(
+            rt.contains("group_concat(table_name)"),
+            "must contain group_concat(table_name), got: {rt}"
+        );
+        assert!(
+            rt.contains("information_schema.tables"),
+            "must contain information_schema.tables, got: {rt}"
+        );
+        assert!(
+            rt.contains("where table_schema=database()"),
+            "must contain where table_schema=database(), got: {rt}"
+        );
+        assert_eq!(agg.probes[0].char_position, 1);
+        assert_eq!(agg.probes[0].threshold, 79);
+    }
+
+    /// 0xNN 字面量分隔符：read_target 含 `0x7e` → separator_char==Some('~')；
+    /// 含 `0x41` → Some('A')。
+    #[test]
+    fn separator_char_extracted_from_hex_literal() {
+        // 0x7e → '~'
+        let payload_7e = "1' or ascii(substr((group_concat(id,0x7e,username,0x7e,idcard) from person_data),1,1))>79#";
+        let e = mk_entry(1, "1.1.1.1", Some(payload_7e), Some(862));
+        let agg = BlindAggregator::collect_from_entries(&[e]);
+        let results = agg.aggregate();
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0].separator_char, Some('~'),
+            "0x7e must decode to '~', got {:?}",
+            results[0].separator_char
+        );
+
+        // 0x41 → 'A'
+        let payload_41 = "1' or ascii(substr((group_concat(id,0x41,username) from person_data),1,1))>79#";
+        let e = mk_entry(2, "1.1.1.1", Some(payload_41), Some(862));
+        let agg = BlindAggregator::collect_from_entries(&[e]);
+        let results = agg.aggregate();
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0].separator_char, Some('A'),
+            "0x41 must decode to 'A', got {:?}",
+            results[0].separator_char
+        );
+
+        // 无字面量 → None
+        let payload_none = "1' or ascii(substr((database()),1,1))>79#";
+        let e = mk_entry(3, "1.1.1.1", Some(payload_none), Some(862));
+        let agg = BlindAggregator::collect_from_entries(&[e]);
+        let results = agg.aggregate();
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0].separator_char, None,
+            "no 0xNN literal → separator_char None"
+        );
+    }
+
+    /// mode_body_size_from_mixed_positions 单测：只在混合位置上取众数，
+    /// 并列频次取较小者；无混合位置退化到 min(body_size)。
+    #[test]
+    fn mode_body_size_picks_smaller_on_tie() {
+        // 两个混合位置（pos 1）：body 862 与 875 各 1 次 → 并列取 862。
+        let mk_probe = |pos: u32, thr: u32, body: u64| BlindProbe {
+            read_target: "x".to_string(),
+            char_position: pos,
+            threshold: thr,
+            body_size: body,
+            source_ip: "1.1.1.1".to_string(),
+            line_no: thr as usize,
+        };
+        let p1 = mk_probe(1, 1, 875);
+        let p2 = mk_probe(1, 2, 862);
+        let probes: Vec<&BlindProbe> = vec![&p1, &p2];
+        assert_eq!(mode_body_size_from_mixed_positions(&probes), 862);
+
+        // 同一混合位置（pos 1）中 body 900 出现 3 次 > 850 出现 1 次 → 900。
+        let mut many: Vec<BlindProbe> = Vec::new();
+        for i in 0..3 {
+            many.push(mk_probe(1, i, 900));
+        }
+        many.push(mk_probe(1, 99, 850));
+        let many_refs: Vec<&BlindProbe> = many.iter().collect();
+        assert_eq!(mode_body_size_from_mixed_positions(&many_refs), 900);
+
+        // 无混合位置（pos 1 全 850，pos 2 全 900）→ 退化到 min=850。
+        let p_a = mk_probe(1, 1, 850);
+        let p_b = mk_probe(1, 2, 850);
+        let p_c = mk_probe(2, 1, 900);
+        let p_d = mk_probe(2, 2, 900);
+        let no_mixed: Vec<&BlindProbe> = vec![&p_a, &p_b, &p_c, &p_d];
+        assert_eq!(
+            mode_body_size_from_mixed_positions(&no_mixed),
+            850,
+            "no mixed positions → fallback to min(body_size)"
+        );
+    }
+
+    /// parse_separator_char 单测：0xff（>0x7f 非 ASCII）→ None。
+    #[test]
+    fn parse_separator_char_rejects_non_ascii() {
+        assert_eq!(parse_separator_char("group_concat(id,0x7e,x)"), Some('~'));
+        assert_eq!(parse_separator_char("no literal here"), None);
+        assert_eq!(
+            parse_separator_char("group_concat(id,0xff,x)"),
+            None,
+            "0xff > 0x7f non-ASCII → None"
+        );
     }
 }
