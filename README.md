@@ -4,7 +4,11 @@
 全部处理在本地完成，不上传任何样本或规则。本仓库面向数据安全竞赛与红队场景中的
 "敏感数据快速清洗 / 解析" 需求，不依赖 Python 运行时。
 
-> **当前状态：v0.2.2 日志扫描盲注二分序列聚合还原（T2-12 ~ T2-14 已 verified_complete，T2-15 收尾完成待 Release QA）。** v0.2.2 在 v0.2.1 SQLi payload 单条语义解析基础上新增跨 entry 布尔盲注二分序列聚合还原：`blind_aggregator` 模块（`crates/core/src/logsign/blind_aggregator.rs`）对一批同源（同 `read_target` + 同 `source_ip`）的盲注二分探针按 `char_position` 聚类，基于 `LogEntry.size`（HTTP 响应 body 字节数）自动判定真假方向（`true_size = min(body_size)`，fixture-specific 假设），还原出被盲注读取的完整字符串（flag，如 `database()`=`"person"` / `table_name`=`"person_data"` / `column_name` 含 `id,username,password`）；自带嵌套正则 `(?:[^()]|\([^()]*\))*` 吃单层 `(...)`；`Report.extra` 由 `Value::Null` → `Value::Mapping({blind_aggregation: [...]})` 向后兼容；GUI LogView 新增「盲注聚合结果」卡片（antd inner Card + Text copyable 还原串 + 探针数 + 来源 IP + 位置明细 Tooltip + 空态 Empty）。v0.2.1 底座（parsed_payload 单条语义解析 + decoded 字段 + Finding.extra 透传）保持不变并向后兼容。版本状态约定见 `docs/04-版本标准.md`。
+> **当前状态：v0.2.3 日志扫描盲注三轴优化（T3-1 ~ T3-4 全部 verified_complete，已 release_complete）。** v0.2.3 在 v0.2.2 跨 entry 布尔盲注二分序列聚合还原基础上，对「算法 / 类型 / 显示」三轴做优化：
+> - **算法（T3-1）**：`true_size` 判定由 v0.2.2 的 `min(body_size)`（fixture-specific 假设，反向场景误判）改为 `mode_per_position_true_size`——按 `char_position` 分组取每位置真假簇 body_size 的 min/max → 跨位置众数（并列取较小者）→ 无混合位置退化 `min(body_size)`；修复 v0.2.2 R1 第 4 read_target（false 频次 737 > true 669）全 `?` 回归。自带正则从单层扩到两层嵌套 `((?:[^()]|\((?:[^()]|\([^()]*\))*\))*)` 覆盖 `where table_schema=database()`。`AggregatedResult` 新增 `separator_char: Option<char>` 从 `read_target` 首个 `0xNN` 字面量解码（`0x7e`→`~`）。
+> - **类型（T3-2）**：`BlindProbe` 新增 `probe_kind: ProbeKind`（`AsciiBinary` / `Equality` / `Length`）+ `equality_char`；新增 equality（`substr((...),N,1)=('x'|char(NN))` 直接解出单字符）与 length（`length((...))(cmp)(\d+)` 解出字符串长度）两条正则；聚合分组键升级为 `(read_target, source_ip, ProbeKind)` 三元组防串扰；`AggregatedResult` 新增 `kind` 字段；`PositionDetail.status` 新增 `equality_resolved` / `length_resolved`。
+> - **显示（T3-3）**：GUI LogView 段 ③.5 inner Card 加 kind Tag 着色（ascii_binary=red / equality=orange / length=blue）+ separator 高亮（volcano Tag + 复制按钮）+ Collapse 内嵌 Table 位置明细（列 位置/字符/ASCII/探针数/状态，status Tag 6 色着色），替代 v0.2.2 的 JSON.stringify Tooltip。
+> 新字段 `kind` / `separator_char` 均 `#[serde(skip_serializing_if)]`，向后兼容 v0.2.2。版本状态约定见 `docs/04-版本标准.md`。
 
 ## 功能
 
@@ -13,7 +17,8 @@
 | v0.1.0 | CSV / XLSX 表格数据脱敏 + 校验 + 导出 + 规则管理（四功能 GUI） | 已发布 v0.1.0 |
 | v0.2.0 | 日志文件解析 + SQLi 攻击签名扫描 + 弱口令 / 敏感字段扫描 | 已发布 v0.2.0 |
 | v0.2.1 | SQLi payload 语义解析（6 类）+ 字段还原（query/path/UA）+ `+` 解码 | 已发布 v0.2.1 |
-| v0.2.2 | 日志扫描盲注二分序列自动聚合还原 flag + GUI 盲注聚合结果卡片 | 开发中（T2-12~T2-14 verified_complete，T2-15 收尾中） |
+| v0.2.2 | 日志扫描盲注二分序列自动聚合还原 flag + GUI 盲注聚合结果卡片 | 已发布 v0.2.2 |
+| v0.2.3 | 盲注三轴优化：true_size 众数算法 + equality/length 类型 + GUI kind Tag/separator 高亮/Collapse 位置明细 | 已发布 v0.2.3 |
 | v0.3.0（规划） | pcap 流量包敏感数据提取（依赖系统 tshark） | 规划中 |
 
 v0.1.0 已落地：
@@ -56,6 +61,11 @@ v0.2.2 日志扫描盲注二分序列聚合还原已落地：
 - **自带嵌套正则**：regex crate 无 look-around，`read_target` 内层嵌套括号用 `(?:[^()]|\([^()]*\))*` 吃单层 `(...)`（如 `database()` / `group_concat(table_name)`）；多层嵌套不支持（已知简化）。
 - **Report.extra.blind_aggregation 透传**：`scan_log` 末尾把 `Vec<AggregatedResult>` 序列化进 `Report.extra` 的 `Value::Mapping({blind_aggregation: [...]})`；无盲注探针时 extra 仍为含空数组的 Mapping；向后兼容（v0.2.1 `Finding.extra: Option<Value>` 既有行为不破）。
 - **GUI LogView 盲注聚合结果卡片**：findings 表下方新增段 ③.5，读 `Report.extra.blind_aggregation` 渲染 antd inner Card + `Typography.Text` copyable 还原串（一键复制 flag）+ 探针数 + 来源 IP + 位置明细 Tooltip + 空态 `Empty`。
+
+v0.2.3 日志扫描盲注三轴优化已落地：
+- **算法优化（T3-1）**：`true_size` 判定由 v0.2.2 的 `min(body_size)`（fixture-specific 假设，反向场景误判）改为 `mode_per_position_true_size`——按 `char_position` 分组取每位置真假簇 `body_size` 的 min/max → 跨位置众数（并列取较小者）→ 无混合位置退化 `min(body_size)`；修复 v0.2.2 R1 第 4 read_target（`group_concat(id,0x7e,username,0x7e,idcard)`，false 频次 737 > true 669）全局频次法误判为 875 → 全 `?` 的回归，新算法每位置 true 簇 = 862 → 众数 862 正确解出 `1~zhangsan~...~lisi~...`。自带正则从单层 `(?:[^()]|\([^()]*\))*` 扩到两层 `((?:[^()]|\((?:[^()]|\([^()]*\))*\))*)` 覆盖 `where table_schema=database()`。`AggregatedResult` 新增 `separator_char: Option<char>`（`#[serde(skip_serializing_if)]`）从 `read_target` 首个 `0xNN` 字面量解码（`0x7e`→`~`，`0xff+` 返回 `None`）。
+- **盲注类型扩展（T3-2）**：`BlindProbe` 新增 `probe_kind: ProbeKind` 枚举（`AsciiBinary` / `Equality` / `Length`）+ `equality_char: Option<char>`；新增 2 条正则：equality（`substr((...),N,1)=('x'|char(NN))` 直接解出单字符）+ length（`length((...))(>=?|<=?|=)(\d+)` 解出字符串长度，取最小 `=` 或最大 `<` 阈值）。聚合分组键由 `(read_target, source_ip)` 升级为 `(read_target, source_ip, ProbeKind)` 三元组，避免同一 read_target 的 ascii_binary 与 length 探针串扰。`AggregatedResult` 新增 `kind: Option<String>`（序列化为 `ascii_binary` / `equality` / `length`，`#[serde(skip_serializing_if)]`）。`PositionDetail.status` 新增 `equality_resolved` / `length_resolved`。
+- **GUI 显示优化（T3-3）**：LogView 段 ③.5 inner Card：extra 加 kind Tag 着色（ascii_binary=red / equality=orange / length=blue；`r.kind` 缺失时前端按 `position_details[0].status` 兜底推断）+ 已解 N/M Tag；还原结果由 v0.2.2 的 `Text copyable` 升级为 `separator_char` 存在时 `Text strong` + volcano Tag 包裹分隔符高亮分段 + 独立「复制」按钮（`navigator.clipboard.writeText`），否则 `Text strong copyable`；位置明细由 v0.2.2 的 Tooltip + JSON.stringify 升级为 antd `Collapse`（ghost / size=small / 默认折叠）+ 内嵌 `Table`（列 位置 / 字符 / ASCII / 探针数 / 状态 Tag 6 色着色：resolved=green / unresolved_all_true=orange / beyond_end=default / insufficient_probes=red / equality_resolved=blue / length_resolved=purple）。
 
 ## 安装
 
@@ -199,7 +209,8 @@ cargo tauri dev
 | v0.1.0 | CSV / XLSX 脱敏 + 校验 + 导出 + 规则管理（四功能 GUI）+ Tauri GUI | 已发布 v0.1.0 |
 | v0.2.0 | 日志文件解析 + SQLi 攻击签名扫描 + 弱口令 / 敏感字段扫描 | 已发布 v0.2.0 |
 | v0.2.1 | SQLi payload 语义解析（6 类）+ 字段还原（query/path/UA）+ `+` 解码 | 已发布 v0.2.1 |
-| v0.2.2 | 日志扫描盲注二分序列自动聚合还原 flag + GUI 盲注聚合结果卡片 | 开发中（T2-15 收尾中） |
+| v0.2.2 | 日志扫描盲注二分序列自动聚合还原 flag + GUI 盲注聚合结果卡片 | 已发布 v0.2.2 |
+| v0.2.3 | 盲注三轴优化：true_size 众数算法 + equality/length 类型 + GUI kind Tag/separator 高亮/Collapse 位置明细 | 已发布 v0.2.3 |
 | v0.3.0 | pcap 流量包敏感数据提取（依赖 tshark） | 规划中 |
 
 版本判定标准见 `docs/04-版本标准.md`。
