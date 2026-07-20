@@ -1,8 +1,10 @@
-//! T2-12 blind_aggregator 集成测试。
+//! T2-12 blind_aggregator 集成测试 + v0.2.3 equality/length/mixed 扩展。
 //!
 //! 验证 `BlindAggregator::collect_from_entries` 的正则抽取（database() /
-//! 嵌套 group_concat read_target）与 `aggregate` 的二分还原（合成 7 探针
-//! ascii=112='p'、越界位置、unresolved 全 true）。
+//! 嵌套 group_concat read_target / equality / length）与 `aggregate` 的
+//! 二分还原（合成 7 探针 ascii=112='p'、越界位置、unresolved 全 true；
+//! v0.2.3 equality 单探针直接得字符、length 5 探针二分还原数值、
+//! 混合 probe_kind 互不污染）。
 
 mod common;
 
@@ -250,4 +252,129 @@ fn aggregate_insufficient_probes_when_not_self_consistent() {
         .expect("pos 1 detail");
     assert_eq!(pos1.status, "insufficient_probes");
     assert_eq!(pos1.decoded_char, None);
+}
+
+// ---- v0.2.3 equality / length / mixed kinds ----
+
+/// Equality 探针：`substr((database()),1,1)='p'` 单探针 + body==true_size
+/// → decoded_string="p"，status="equality_resolved"。
+#[test]
+fn equality_probe_resolves_single_char() {
+    let e = mk_entry(
+        1,
+        "1.1.1.1",
+        "substr((database()),1,1)='p'",
+        Some(862),
+    );
+    let agg = BlindAggregator::collect_from_entries(&[e]);
+    assert_eq!(agg.probes().len(), 1);
+    let p = &agg.probes()[0];
+    assert_eq!(p.read_target, "database()");
+    assert_eq!(p.char_position, 1);
+    assert_eq!(p.equality_char, Some('p'));
+    let results = agg.aggregate();
+    assert_eq!(results.len(), 1);
+    let r: &AggregatedResult = &results[0];
+    assert_eq!(r.kind.as_deref(), Some("equality"));
+    assert_eq!(r.decoded_string, "p");
+    let pos1 = r
+        .position_details
+        .iter()
+        .find(|d| d.position == 1)
+        .expect("pos 1 detail");
+    assert_eq!(pos1.status, "equality_resolved");
+    assert_eq!(pos1.decoded_char, Some('p'));
+    assert_eq!(pos1.ascii_val, None);
+    assert_eq!(r.resolved_chars, 1);
+}
+
+/// Equality 探针 char() 形态：`substr((database()),1,1)=char(112)` → 'p'。
+#[test]
+fn equality_probe_char_form() {
+    let e = mk_entry(
+        1,
+        "1.1.1.1",
+        "substr((database()),1,1)=char(112)",
+        Some(862),
+    );
+    let agg = BlindAggregator::collect_from_entries(&[e]);
+    assert_eq!(agg.probes().len(), 1);
+    assert_eq!(agg.probes()[0].equality_char, Some('p'));
+    let results = agg.aggregate();
+    assert_eq!(results.len(), 1);
+    let r = &results[0];
+    assert_eq!(r.kind.as_deref(), Some("equality"));
+    assert_eq!(r.decoded_string, "p");
+}
+
+/// Length 探针：5 个 `length((database()))>N` 探针（length=6，二分 thr=5/6/7/8/10）
+/// → decoded_string="6"，status="length_resolved"。
+#[test]
+fn length_probe_resolves_numeric() {
+    // true body=862 (length>thr 成立), false body=875。
+    // thr=5 → 862 (true); thr=6/7/8/10 → 875 (false)。
+    // max(true)+1 = 5+1 = 6 == min(false) = 6 自洽 → length_val=6。
+    let cases = [(5u32, 862u64), (6, 875), (7, 875), (8, 875), (10, 875)];
+    let mut entries: Vec<LogEntry> = Vec::new();
+    for (i, (thr, body)) in cases.iter().enumerate() {
+        let q = format!("length((database()))>{}", thr);
+        entries.push(mk_entry(i + 1, "1.1.1.1", &q, Some(*body)));
+    }
+    let agg = BlindAggregator::collect_from_entries(&entries);
+    assert_eq!(agg.probes().len(), 5);
+    assert!(agg.probes().iter().all(|p| p.char_position == 0));
+    let results = agg.aggregate();
+    assert_eq!(results.len(), 1);
+    let r = &results[0];
+    assert_eq!(r.kind.as_deref(), Some("length"));
+    assert_eq!(r.decoded_string, "6");
+    assert_eq!(r.position_details.len(), 1);
+    let d = &r.position_details[0];
+    assert_eq!(d.position, 0);
+    assert_eq!(d.status, "length_resolved");
+    assert_eq!(d.ascii_val, Some(6));
+    assert_eq!(d.decoded_char, None);
+    assert_eq!(r.resolved_chars, 1);
+    assert_eq!(r.unresolved_chars, 0);
+}
+
+/// 同 read_target 同时有 ascii_binary 和 length 探针 → 两个独立 AggregatedResult，
+/// 不交叉污染。
+#[test]
+fn mixed_kinds_no_cross_contamination() {
+    let mut entries: Vec<LogEntry> = Vec::new();
+    // ascii_binary: pos 1, ascii=112='p'。
+    let ascii_cases = [(79u32, 862u64), (103, 862), (111, 862), (112, 875)];
+    for (i, (thr, body)) in ascii_cases.iter().enumerate() {
+        let q = format!("ascii(substr((database()),1,1))>{}", thr);
+        entries.push(mk_entry(i + 1, "1.1.1.1", &q, Some(*body)));
+    }
+    // length: length=6。
+    let len_cases = [(5u32, 862u64), (6, 875), (8, 875)];
+    for (i, (thr, body)) in len_cases.iter().enumerate() {
+        let q = format!("length((database()))>{}", thr);
+        entries.push(mk_entry(100 + i, "1.1.1.1", &q, Some(*body)));
+    }
+    let agg = BlindAggregator::collect_from_entries(&entries);
+    let results = agg.aggregate();
+    assert_eq!(
+        results.len(),
+        2,
+        "expect 2 groups (ascii_binary + length), got {}",
+        results.len()
+    );
+    let ascii_r = results
+        .iter()
+        .find(|r| r.kind.as_deref() == Some("ascii_binary"))
+        .expect("ascii_binary group present");
+    let len_r = results
+        .iter()
+        .find(|r| r.kind.as_deref() == Some("length"))
+        .expect("length group present");
+    assert!(
+        ascii_r.decoded_string.starts_with('p'),
+        "ascii group decoded starts with 'p', got {}",
+        ascii_r.decoded_string
+    );
+    assert_eq!(len_r.decoded_string, "6");
 }

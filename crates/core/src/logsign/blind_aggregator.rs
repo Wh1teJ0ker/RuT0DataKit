@@ -1,17 +1,32 @@
-//! 布尔盲注二分序列聚合还原模块（v0.2.2 T2-12）。
+//! 布尔盲注探针聚合还原模块（v0.2.2 T2-12 / v0.2.3 T3-2）。
 //!
 //! 与 [`super::payload_parser`] 互补：payload_parser 只解析「单条 payload 的
 //! 语义类别」（盲注/UNION/报错…），本模块在签名命中之后，对一批同源
-//! （同 read_target + 同 source_ip）的二分探针按 `char_position` 聚类，
-//! 还原出被盲注读取的完整字符串。
+//! （同 read_target + 同 source_ip + 同 [`ProbeKind`]）的盲注探针按位置
+//! 聚类，还原出被盲注读取的完整字符串或数值。
+//!
+//! ## 支持的探针形态（v0.2.3）
+//!
+//! - [`ProbeKind::AsciiBinary`]：`ascii(substr((<rt>),<pos>,1))<cmp><thr>`
+//!   二分序列，按位置聚类还原字符串（v0.2.2 既有）。
+//! - [`ProbeKind::Equality`]：`substr((<rt>),<pos>,1)='c'` 或
+//!   `substr((<rt>),<pos>,1)=char(<ascii>)` 等值形态，单探针直接得字符
+//!   （v0.2.3 新增）。
+//! - [`ProbeKind::Length`]：`length((<rt>))<cmp><thr>` 长度盲注，按 threshold
+//!   二分还原长度数值，`decoded_string` 输出十进制数字串（如 `"28"`）
+//!   （v0.2.3 新增）。
+//!
+//! 时间盲注聚合 out_of_scope（`LogEntry` 无 `response_time_ms` 字段，
+//! fixture 无样本）。
 //!
 //! ## 输入
 //!
 //! - [`BlindAggregator::collect_from_entries`] 吃 `&[LogEntry]`，对每条 entry
-//!   的 `decoded_query`（如 None 则 `decoded_path`）整串跑自带正则，抽取出
-//!   `ascii(substr((<read_target>),<pos>,1))<cmp><thr>` 形态的探针。
+//!   的 `decoded_query`（如 None 则 `decoded_path`）整串跑三套自带正则
+//!   （ascii_binary / equality / length），抽取出三类探针。
 //! - `body_size` 取 `LogEntry.size`（`Option<u64>`，`None` 跳过该 entry）。
 //! - `source_ip` = `LogEntry.ip.clone()`，用于区分不同注入源。
+//! - 同一条 entry 可能同时命中多类正则（少见），全部收集。
 //!
 //! ## 真假方向（每位置独立判定 + 跨位置众数）
 //!
@@ -45,7 +60,10 @@
 //!
 //! ## 聚合算法
 //!
-//! 对每个 `(read_target, source_ip)` 分组：
+//! 按 `(read_target, source_ip, ProbeKind)` 三元组分组（避免 length 与
+//! ascii_binary 同 read_target 混）。
+//!
+//! ### AsciiBinary 分组
 //! 1. `group_true_size = mode_per_position_true_size`（每混合位置判 true 簇，
 //!    跨位置取众数，并列取较小者偏向）。
 //! 2. 按 `char_position` 子分组。
@@ -61,6 +79,29 @@
 //! 4. 按 position 升序拼接：resolved 追加字符；unresolved/insufficient 追加
 //!    `'?'`；**首个 beyond_end 即停止拼接**（字符串末尾）。
 //!
+//! ### Equality 分组
+//! - 同 (read_target, source_ip, position) 子组：
+//!   - 单簇（全同 body，视为全 true）→ `equality_resolved`，
+//!     `decoded_char = equality_char`。
+//!   - 多簇 → 取 true 簇（沿用 `mode_per_position_true_size`）的探针
+//!     `equality_char`；true 簇内多探针字符一致 → `equality_resolved`；
+//!     不一致 → `insufficient_probes`。全 false 簇 → `beyond_end`
+//!     （位置越界，攻击者探了但条件不成立）。
+//! - decoded_string 按 position 升序拼接 resolved 字符；beyond_end 截断；
+//!   unresolved/insufficient 插 `'?'`。
+//!
+//! ### Length 分组
+//! - 所有探针 position=0（无 position 维度，全是「读长度」）。
+//! - `group_true_size` 沿用 `mode_per_position_true_size`（单一位置内多探针
+//!   → 混合则取低 thr 侧 body，单簇退化 min）。
+//! - true 探针（body==group_true_size，`length > thr`）→ length > thr；
+//!   false 探针 → length <= thr。
+//! - `length_val = min(false_thresholds)`，自洽性校验
+//!   `max(true_thresholds) + 1 == length_val`，不符标 `insufficient_probes`。
+//! - `decoded_string = length_val.to_string()`（如 `"28"`）。
+//! - `position_details` 只有一项：position=0, decoded_char=None,
+//!   ascii_val=Some(length_val), status=`length_resolved`。
+//!
 //! ## 分隔符高亮（0xNN 字面量）
 //!
 //! read_target 若含 `0xNN` 十六进制字面量（如 fixture
@@ -75,6 +116,8 @@
 //! `(?:[^()]|\((?:[^()]|\([^()]*\))*\))*` 吃掉最多 2 层嵌套（如
 //! `database()` / `group_concat(table_name)` / `where
 //! table_schema=database()`）。3 层及以上嵌套不支持，是已知简化。
+//! equality 正则捕获组 3（`'c'` 单字符）或 4（`char(N)` ascii 数字）；
+//! length 正则忽略 comparator（fixture/合成测试均用 `>` 语义）。
 
 use std::collections::HashMap;
 
@@ -82,18 +125,44 @@ use regex::Regex;
 
 use crate::log::LogEntry;
 
-/// 单条盲注二分探针。
+/// 盲注探针类型（v0.2.3）。
 ///
-/// 由 [`BlindAggregator::collect_from_entries`] 从 `LogEntry` 抽出，对应一条
-/// `ascii(substr((<read_target>),<char_position>,1))<cmp><threshold>` 请求。
+/// - [`ProbeKind::AsciiBinary`]：`ascii(substr((<rt>),<pos>,1))<cmp><thr>`
+///   二分序列（v0.2.2 既有）。
+/// - [`ProbeKind::Equality`]：`substr((<rt>),<pos>,1)='c'` 或 `=char(<ascii>)`
+///   等值形态（v0.2.3 新增）。
+/// - [`ProbeKind::Length`]：`length((<rt>))<cmp><thr>` 长度盲注（v0.2.3 新增）。
+///
+/// `aggregate` 按 `(read_target, source_ip, ProbeKind)` 三元组分组，避免
+/// length 与 ascii_binary 同 read_target 混。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProbeKind {
+    /// `ascii(substr((<rt>),<pos>,1))<cmp><thr>` 二分序列。
+    AsciiBinary,
+    /// `substr((<rt>),<pos>,1)='c'` 或 `=char(<ascii>)` 等值形态。
+    Equality,
+    /// `length((<rt>))<cmp><thr>` 长度盲注。
+    Length,
+}
+
+/// 单条盲注探针。
+///
+/// 由 [`BlindAggregator::collect_from_entries`] 从 `LogEntry` 抽出。三类形态：
+/// - AsciiBinary：`ascii(substr((<read_target>),<char_position>,1))<cmp><threshold>`。
+/// - Equality：`substr((<read_target>),<char_position>,1)='c'` 或 `=char(<ascii>)`，
+///   `equality_char` 携带还原字符，`threshold` 填字符 ascii 值（哨兵，不参与
+///   二分；equality 不走 threshold 二分路径）。
+/// - Length：`length((<read_target>))<cmp><threshold>`，`char_position=0`（哨兵），
+///   `equality_char=None`。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct BlindProbe {
-    /// 完整 substr 内层表达式，如 `database()` 或
+    /// 完整 substr/length 内层表达式，如 `database()` 或
     /// `select group_concat(table_name) from information_schema.tables where table_schema=database()`。
     pub read_target: String,
-    /// 盲注读取第几个字符（1-based）。
+    /// 盲注读取第几个字符（1-based）。Length 探针固定 0（哨兵，无位置维度）。
     pub char_position: u32,
-    /// ascii 比较阈值。
+    /// ascii 比较阈值。Equality 探针填字符 ascii 值（哨兵）。
     pub threshold: u32,
     /// HTTP 响应 body 字节数（来自 `LogEntry.size`）。
     pub body_size: u64,
@@ -101,32 +170,38 @@ pub struct BlindProbe {
     pub source_ip: String,
     /// 原始日志行号（回引用）。
     pub line_no: usize,
+    /// 探针类型（v0.2.3）。
+    pub probe_kind: ProbeKind,
+    /// Equality 探针捕获的字符（`'c'` 形态或 `char(N)` 解码）；其他类为 `None`。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub equality_char: Option<char>,
 }
 
 /// 单个字符位置的聚合详情。
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PositionDetail {
-    /// 字符位置（1-based）。
+    /// 字符位置（1-based）。Length 探针为 0。
     pub position: u32,
     /// 还原出的字符；unresolved/beyond_end/insufficient 为 `None`。
     pub decoded_char: Option<char>,
-    /// 还原出的 ascii 值；未还原为 `None`。
+    /// 还原出的 ascii 值；未还原为 `None`。Length 探针为还原出的长度数值。
     pub ascii_val: Option<u32>,
     /// 该位置条件成立响应的 body size。
     pub true_size: u64,
     /// 该位置的探针数。
     pub probe_count: u32,
-    /// 状态：`resolved` / `unresolved_all_true` / `beyond_end` / `insufficient_probes`。
+    /// 状态：`resolved` / `unresolved_all_true` / `beyond_end` /
+    /// `insufficient_probes` / `equality_resolved` / `length_resolved`。
     pub status: String,
 }
 
-/// 一个 `(read_target, source_ip)` 分组聚合后的还原结果。
+/// 一个 `(read_target, source_ip, ProbeKind)` 分组聚合后的还原结果。
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct AggregatedResult {
     /// 聚合的 read_target。
     pub read_target: String,
     /// 还原出的字符串（按 position 升序拼接，首个 beyond_end 截断；
-    /// unresolved/insufficient 位置插 `'?'`）。
+    /// unresolved/insufficient 位置插 `'?'`；Length 类为十进制数字串）。
     pub decoded_string: String,
     /// 成功还原的字符数。
     pub resolved_chars: u32,
@@ -145,12 +220,16 @@ pub struct AggregatedResult {
     /// 的 read_target 含 `0x7e` → `Some('~')`。无字面量为 `None`（向后兼容）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub separator_char: Option<char>,
+    /// 探针类型字符串（v0.2.3）："ascii_binary" / "equality" / "length"，
+    /// 供前端区分展示。与 [`ProbeKind`] serde rename 一致。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
 }
 
-/// 盲注二分序列聚合器。
+/// 盲注探针聚合器。
 ///
 /// 用 [`BlindAggregator::collect_from_entries`] 从日志条目抽取探针，
-/// 再用 [`BlindAggregator::aggregate`] 还原字符串。
+/// 再用 [`BlindAggregator::aggregate`] 还原字符串/数值。
 pub struct BlindAggregator {
     probes: Vec<BlindProbe>,
 }
@@ -166,15 +245,18 @@ impl BlindAggregator {
         &self.probes
     }
 
-    /// 从日志条目列表抽取所有盲注二分探针。
+    /// 从日志条目列表抽取所有盲注探针（三类正则并行）。
     ///
     /// - 跳过 `method`/`path` 为空的 408 超时行。
     /// - 对 `decoded_query`（None 时 fallback `decoded_path`）整串先
     ///   `.to_lowercase()` 再跑正则，兼容 `ASCII/SUBSTR` 大写形态。
-    /// - 同一条 entry 可能命中多处（极少见），全部收集。
+    /// - 三类正则各跑一次：ascii_binary / equality / length。同一条 entry
+    ///   可能同时命中多类（少见），全部 push。
     /// - `size` 为 `None` 的 entry 跳过（无 body size 无法判真假）。
     pub fn collect_from_entries(entries: &[LogEntry]) -> Self {
-        let re = blind_probe_regex();
+        let re_ascii = ascii_binary_regex();
+        let re_eq = equality_regex();
+        let re_len = length_regex();
         let mut probes = Vec::new();
         for entry in entries {
             if entry.method.is_empty() || entry.path.is_empty() {
@@ -190,7 +272,9 @@ impl BlindAggregator {
                 None => entry.decoded_path.as_str(),
             };
             let lower = text.to_lowercase();
-            for caps in re.captures_iter(&lower) {
+
+            // AsciiBinary：1=read_target、2=char_position、3=comparator、4=threshold。
+            for caps in re_ascii.captures_iter(&lower) {
                 let read_target = caps.get(1).map(|m| m.as_str().to_string());
                 let char_position = caps
                     .get(2)
@@ -200,8 +284,6 @@ impl BlindAggregator {
                     .and_then(|m| m.as_str().parse::<u32>().ok());
                 match (read_target, char_position, threshold) {
                     (Some(rt), Some(pos), Some(thr)) => {
-                        // to_lowercase 后 read_target 也是小写；保留小写形态
-                        // 作为分组 key（fixture 全小写，不影响）。
                         probes.push(BlindProbe {
                             read_target: rt,
                             char_position: pos,
@@ -209,6 +291,63 @@ impl BlindAggregator {
                             body_size: size,
                             source_ip: entry.ip.clone(),
                             line_no: entry.line_no,
+                            probe_kind: ProbeKind::AsciiBinary,
+                            equality_char: None,
+                        });
+                    }
+                    _ => continue,
+                }
+            }
+
+            // Equality：1=read_target、2=char_position、3='c' 单字符、4=char(N) ascii。
+            for caps in re_eq.captures_iter(&lower) {
+                let read_target = caps.get(1).map(|m| m.as_str().to_string());
+                let char_position = caps
+                    .get(2)
+                    .and_then(|m| m.as_str().parse::<u32>().ok());
+                let eq_char = if let Some(c) = caps.get(3) {
+                    c.as_str().chars().next()
+                } else if let Some(n) = caps.get(4) {
+                    n.as_str().parse::<u32>().ok().and_then(char::from_u32)
+                } else {
+                    None
+                };
+                match (read_target, char_position, eq_char) {
+                    (Some(rt), Some(pos), Some(c)) => {
+                        // threshold 填字符 ascii 值作哨兵（equality 不走二分路径）。
+                        let thr = c as u32;
+                        probes.push(BlindProbe {
+                            read_target: rt,
+                            char_position: pos,
+                            threshold: thr,
+                            body_size: size,
+                            source_ip: entry.ip.clone(),
+                            line_no: entry.line_no,
+                            probe_kind: ProbeKind::Equality,
+                            equality_char: Some(c),
+                        });
+                    }
+                    _ => continue,
+                }
+            }
+
+            // Length：1=read_target、2=comparator、3=threshold。
+            for caps in re_len.captures_iter(&lower) {
+                let read_target = caps.get(1).map(|m| m.as_str().to_string());
+                let threshold = caps
+                    .get(3)
+                    .and_then(|m| m.as_str().parse::<u32>().ok());
+                match (read_target, threshold) {
+                    (Some(rt), Some(thr)) => {
+                        probes.push(BlindProbe {
+                            read_target: rt,
+                            char_position: 0, // 哨兵：length 无位置维度。
+                            threshold: thr,
+                            body_size: size,
+                            source_ip: entry.ip.clone(),
+                            line_no: entry.line_no,
+                            probe_kind: ProbeKind::Length,
+                            equality_char: None,
                         });
                     }
                     _ => continue,
@@ -218,93 +357,47 @@ impl BlindAggregator {
         Self { probes }
     }
 
-    /// 聚合所有探针，按 `(read_target, source_ip)` 分组还原字符串。
+    /// 聚合所有探针，按 `(read_target, source_ip, ProbeKind)` 分组还原。
     ///
     /// 返回列表每个元素对应一个分组，分组内 `position_details` 按 position
     /// 升序。详见模块级文档「聚合算法」。
     pub fn aggregate(&self) -> Vec<AggregatedResult> {
-        // 按 (read_target, source_ip) 分组。
-        let mut groups: HashMap<(String, String), Vec<&BlindProbe>> = HashMap::new();
+        // 按 (read_target, source_ip, probe_kind) 三元组分组。
+        let mut groups: HashMap<(String, String, ProbeKind), Vec<&BlindProbe>> = HashMap::new();
         for p in &self.probes {
             groups
-                .entry((p.read_target.clone(), p.source_ip.clone()))
+                .entry((p.read_target.clone(), p.source_ip.clone(), p.probe_kind))
                 .or_default()
                 .push(p);
         }
 
         let mut results: Vec<AggregatedResult> = Vec::with_capacity(groups.len());
-        for ((read_target, _source_ip), group_probes) in groups {
-            // group_true_size = 每混合位置独立判 true 簇，跨位置取众数
-            // （并列取较小者偏向 fixture 方向）。
-            // 双簇自动判定：每个「混合位置」（同位置内 body_size 不全同，即
-            // 既有 true 又有 false 探针）独立判该位置 true 簇 = 出现在最低
-            // threshold 一侧的 body_size（thr 越低越可能 ascii>thr 成立）。
-            // 这对 fixture（true body=min）每位置取 min，对反向场景（true
-            // body=max）每位置取 max，方向自动适配，无需写死 min/max。
-            // 再跨混合位置对 true 簇标识取众数。单簇位置（beyond_end /
-            // unresolved_all_true）不参与，避免 all-false 位置投票压倒
-            // true 簇。无混合位置时退化到 `min(body_size)`（v0.2.2 行为）。
-            let group_true_size = mode_per_position_true_size(&group_probes);
+        for ((read_target, _source_ip, kind), group_probes) in groups {
+            let (position_details, decoded_string, resolved_chars, unresolved_chars, beyond_end_positions) =
+                match kind {
+                    ProbeKind::AsciiBinary => aggregate_ascii_binary_group(&group_probes),
+                    ProbeKind::Equality => aggregate_equality_group(&group_probes),
+                    ProbeKind::Length => aggregate_length_group(&group_probes),
+                };
 
-            // 按 char_position 子分组。
-            let mut by_pos: HashMap<u32, Vec<&BlindProbe>> = HashMap::new();
-            for p in &group_probes {
-                by_pos.entry(p.char_position).or_default().push(p);
-            }
-            let mut positions: Vec<u32> = by_pos.keys().copied().collect();
-            positions.sort();
-
-            let mut position_details: Vec<PositionDetail> = Vec::with_capacity(positions.len());
-            for pos in &positions {
-                let probes = by_pos.get(pos).unwrap();
-                let detail = aggregate_position(*pos, probes, group_true_size);
-                position_details.push(detail);
-            }
-
-            // 拼接 decoded_string：升序，首个 beyond_end 截断；
-            // resolved 追加字符，unresolved/insufficient 追加 '?'。
-            let mut decoded_string = String::new();
-            let mut resolved_chars = 0u32;
-            let mut unresolved_chars = 0u32;
-            let mut beyond_end_positions = 0u32;
-            for d in &position_details {
-                match d.status.as_str() {
-                    "beyond_end" => {
-                        beyond_end_positions += 1;
-                        break;
-                    }
-                    "resolved" => {
-                        if let Some(c) = d.decoded_char {
-                            decoded_string.push(c);
-                            resolved_chars += 1;
-                        } else {
-                            decoded_string.push('?');
-                            unresolved_chars += 1;
-                        }
-                    }
-                    _ => {
-                        // unresolved_all_true / insufficient_probes
-                        decoded_string.push('?');
-                        unresolved_chars += 1;
-                    }
-                }
-            }
-
-            // source_ips 去重 + 排序，便于前端展示。单源场景下与分组 key
-            // 的 source_ip 等价（BTreeSet 必非空，因 group_probes 来自分组
-            // key，至少含一个 source_ip）。
+            // source_ips 去重 + 排序，便于前端展示。
             let source_ips: Vec<String> = group_probes
                 .iter()
                 .map(|p| p.source_ip.clone())
                 .collect::<std::collections::BTreeSet<_>>()
                 .into_iter()
                 .collect();
-            // probe_count = 该分组探针总数。
             let probe_count = group_probes.len() as u32;
 
-            // separator_char：从 read_target 解析首个 `0x([0-9a-fA-F]{2})` 字面量，
-            // 解码为对应 ASCII 字符（如 0x7e → '~'），供 GUI 高亮。无字面量 None。
+            // separator_char：从 read_target 解析首个 `0x([0-9a-fA-F]{2})` 字面量。
             let separator_char = parse_separator_char(&read_target);
+
+            // kind 字符串：与 ProbeKind serde rename 一致。
+            let kind_str = match kind {
+                ProbeKind::AsciiBinary => "ascii_binary",
+                ProbeKind::Equality => "equality",
+                ProbeKind::Length => "length",
+            };
 
             results.push(AggregatedResult {
                 read_target,
@@ -316,15 +409,16 @@ impl BlindAggregator {
                 source_ips,
                 position_details,
                 separator_char,
+                kind: Some(kind_str.to_string()),
             });
         }
 
-        // 按 (read_target, source_ip) 升序输出，便于测试稳定。source_ips
-        // 已是单源分组（BTreeSet 至少含分组 key 的 source_ip），取首项即可。
+        // 按 (read_target, source_ip, kind) 升序输出，便于测试稳定。
         results.sort_by(|a, b| {
             a.read_target
                 .cmp(&b.read_target)
                 .then_with(|| a.source_ips.first().cmp(&b.source_ips.first()))
+                .then_with(|| a.kind.cmp(&b.kind))
         });
         results
     }
@@ -334,6 +428,192 @@ impl Default for BlindAggregator {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// AsciiBinary 分组聚合：二分序列还原字符串。
+///
+/// 返回 (position_details, decoded_string, resolved_chars, unresolved_chars,
+/// beyond_end_positions)。
+fn aggregate_ascii_binary_group(group_probes: &[&BlindProbe]) -> (Vec<PositionDetail>, String, u32, u32, u32) {
+    let group_true_size = mode_per_position_true_size(group_probes);
+
+    // 按 char_position 子分组。
+    let mut by_pos: HashMap<u32, Vec<&BlindProbe>> = HashMap::new();
+    for p in group_probes {
+        by_pos.entry(p.char_position).or_default().push(p);
+    }
+    let mut positions: Vec<u32> = by_pos.keys().copied().collect();
+    positions.sort();
+
+    let mut position_details: Vec<PositionDetail> = Vec::with_capacity(positions.len());
+    for pos in &positions {
+        let probes = by_pos.get(pos).unwrap();
+        let detail = aggregate_position(*pos, probes, group_true_size);
+        position_details.push(detail);
+    }
+
+    let (decoded_string, resolved_chars, unresolved_chars, beyond_end_positions) =
+        build_decoded_string(&position_details);
+    (position_details, decoded_string, resolved_chars, unresolved_chars, beyond_end_positions)
+}
+
+/// Equality 分组聚合：等值探针直接得字符。
+fn aggregate_equality_group(group_probes: &[&BlindProbe]) -> (Vec<PositionDetail>, String, u32, u32, u32) {
+    let group_true_size = mode_per_position_true_size(group_probes);
+
+    let mut by_pos: HashMap<u32, Vec<&BlindProbe>> = HashMap::new();
+    for p in group_probes {
+        by_pos.entry(p.char_position).or_default().push(p);
+    }
+    let mut positions: Vec<u32> = by_pos.keys().copied().collect();
+    positions.sort();
+
+    let mut position_details: Vec<PositionDetail> = Vec::with_capacity(positions.len());
+    for pos in &positions {
+        let probes = by_pos.get(pos).unwrap();
+        let detail = aggregate_equality_position(*pos, probes, group_true_size);
+        position_details.push(detail);
+    }
+
+    let (decoded_string, resolved_chars, unresolved_chars, beyond_end_positions) =
+        build_decoded_string(&position_details);
+    (position_details, decoded_string, resolved_chars, unresolved_chars, beyond_end_positions)
+}
+
+/// Length 分组聚合：按 threshold 二分还原长度数值。
+fn aggregate_length_group(group_probes: &[&BlindProbe]) -> (Vec<PositionDetail>, String, u32, u32, u32) {
+    let group_true_size = mode_per_position_true_size(group_probes);
+    let probe_count = group_probes.len() as u32;
+
+    let bodies: Vec<u64> = group_probes.iter().map(|p| p.body_size).collect();
+    let pos_min = *bodies.iter().min().unwrap_or(&0);
+    let pos_max = *bodies.iter().max().unwrap_or(&0);
+
+    // 全同 body：单簇。== group_true_size → 全 true（length 大于所有 thr，
+    // 越上界未定）；!= → 全 false（length 小于等于所有 thr，仅得下界 0）。
+    if pos_min == pos_max {
+        let (status, ascii_val) = if pos_min == group_true_size {
+            ("unresolved_all_true".to_string(), None)
+        } else {
+            // 全 false：length <= min(thr)；下界为 0（无法精确还原）。
+            ("insufficient_probes".to_string(), None)
+        };
+        let detail = PositionDetail {
+            position: 0,
+            decoded_char: None,
+            ascii_val,
+            true_size: group_true_size,
+            probe_count,
+            status,
+        };
+        let decoded_string = "?".to_string();
+        return (
+            vec![detail],
+            decoded_string,
+            0,
+            1,
+            0,
+        );
+    }
+
+    // 混合：true 探针 = body == group_true_size（length > thr）；
+    // false 探针 = body != group_true_size（length <= thr）。
+    let mut true_thresholds: Vec<u32> = Vec::new();
+    let mut false_thresholds: Vec<u32> = Vec::new();
+    for p in group_probes {
+        if p.body_size == group_true_size {
+            true_thresholds.push(p.threshold);
+        } else {
+            false_thresholds.push(p.threshold);
+        }
+    }
+
+    if false_thresholds.is_empty() {
+        let detail = PositionDetail {
+            position: 0,
+            decoded_char: None,
+            ascii_val: None,
+            true_size: group_true_size,
+            probe_count,
+            status: "unresolved_all_true".to_string(),
+        };
+        return (vec![detail], "?".to_string(), 0, 1, 0);
+    }
+    if true_thresholds.is_empty() {
+        // 全 false 但 body 不全同 → 不可靠。
+        let detail = PositionDetail {
+            position: 0,
+            decoded_char: None,
+            ascii_val: None,
+            true_size: group_true_size,
+            probe_count,
+            status: "insufficient_probes".to_string(),
+        };
+        return (vec![detail], "?".to_string(), 0, 1, 0);
+    }
+
+    let max_true = *true_thresholds.iter().max().unwrap();
+    let min_false = *false_thresholds.iter().min().unwrap();
+    let length_val = min_false;
+    let self_consistent = max_true + 1 == min_false;
+    let (status, decoded_char) = if self_consistent {
+        ("length_resolved".to_string(), None)
+    } else {
+        ("insufficient_probes".to_string(), None)
+    };
+    let ascii_val = if self_consistent { Some(length_val) } else { None };
+    let detail = PositionDetail {
+        position: 0,
+        decoded_char,
+        ascii_val,
+        true_size: group_true_size,
+        probe_count,
+        status,
+    };
+    let decoded_string = if self_consistent {
+        length_val.to_string()
+    } else {
+        "?".to_string()
+    };
+    let (resolved_chars, unresolved_chars) = if self_consistent {
+        (1, 0)
+    } else {
+        (0, 1)
+    };
+    (vec![detail], decoded_string, resolved_chars, unresolved_chars, 0)
+}
+
+/// 从 position_details 构建 decoded_string：升序，resolved/equality_resolved
+/// 追加字符，length_resolved 不应出现在多位置场景（length 只单位置），
+/// unresolved/insufficient 追加 `'?'`，首个 beyond_end 截断。
+fn build_decoded_string(position_details: &[PositionDetail]) -> (String, u32, u32, u32) {
+    let mut decoded_string = String::new();
+    let mut resolved_chars = 0u32;
+    let mut unresolved_chars = 0u32;
+    let mut beyond_end_positions = 0u32;
+    for d in position_details {
+        match d.status.as_str() {
+            "beyond_end" => {
+                beyond_end_positions += 1;
+                break;
+            }
+            "resolved" | "equality_resolved" => {
+                if let Some(c) = d.decoded_char {
+                    decoded_string.push(c);
+                    resolved_chars += 1;
+                } else {
+                    decoded_string.push('?');
+                    unresolved_chars += 1;
+                }
+            }
+            _ => {
+                // unresolved_all_true / insufficient_probes
+                decoded_string.push('?');
+                unresolved_chars += 1;
+            }
+        }
+    }
+    (decoded_string, resolved_chars, unresolved_chars, beyond_end_positions)
 }
 
 /// 每混合位置独立判 true 簇，跨位置对 true 簇标识取众数作为 true_size。
@@ -352,10 +632,12 @@ impl Default for BlindAggregator {
 /// 4. 无混合位置时退化到 `min(body_size)`（v0.2.2 行为，不破坏 fixture）。
 ///    探针为空时返回 0。
 ///
-/// 为什么不取「全位置 body_size 众数」：fixture 第 4 RT 上 false 探针频次
-/// （737）可高于 true（669），全位置众数会误判到 false 簇（875），使第 4
-/// RT 退化为全 `?`。每位置独立判 true 簇避开此问题（每位置 true 簇 = 862，
-/// 众数 → 862）。
+/// **Equality/Length 限制**：本函数沿用「最低 thr 侧 = true」启发，对
+/// AsciiBinary `>` 形态正确；Equality 多探针混合场景下，threshold 已被填
+/// 为字符 ascii 值，最低 thr 侧未必是 true 簇（equality 无 thr 序语义）。
+/// 单探针 equality 退化到 `min(body_size)` = 该探针 body → 视为 true →
+/// `equality_resolved`，与 HANDOFF 单探针测试一致。多探针 equality 混合
+/// 场景 fixture 无样本，是已知简化。
 fn mode_per_position_true_size(probes: &[&BlindProbe]) -> u64 {
     // 按 char_position 聚合。
     let mut by_pos: HashMap<u32, Vec<&BlindProbe>> = HashMap::new();
@@ -373,9 +655,7 @@ fn mode_per_position_true_size(probes: &[&BlindProbe]) -> u64 {
             continue;
         }
         // 该位置 true 簇 = 出现在最低 threshold 一侧的 body_size。
-        // thr 越低越可能 ascii > thr 成立（探针为真）→ 那个 body 即 true 簇。
         let min_thr = pos_probes.iter().map(|p| p.threshold).min().expect("non-empty");
-        // 取最低 threshold 对应的 body_size（若有多个同 thr 取众数再任取）。
         let true_body_at_pos = pos_probes
             .iter()
             .filter(|p| p.threshold == min_thr)
@@ -419,7 +699,7 @@ fn hex_literal_regex() -> &'static Regex {
     })
 }
 
-/// 聚合单个位置：依据 group_true_size 判定每个探针真假，还原 ascii 值。
+/// 聚合单个 AsciiBinary 位置：依据 group_true_size 判定每个探针真假，还原 ascii 值。
 fn aggregate_position(
     position: u32,
     probes: &[&BlindProbe],
@@ -433,7 +713,6 @@ fn aggregate_position(
     // 全同 body_size：按是否 == group_true_size 区分 all-true vs all-false。
     if pos_min == pos_max {
         if pos_min == group_true_size {
-            // 所有探针条件都成立（ascii > 所有 thr），越上界未定。
             return PositionDetail {
                 position,
                 decoded_char: None,
@@ -443,8 +722,6 @@ fn aggregate_position(
                 status: "unresolved_all_true".to_string(),
             };
         } else {
-            // 所有探针条件都不成立（ascii <= 所有 thr），且 body 全同 !=
-            // true_size → 已越出字符串末尾（ascii 实际为空/0）。
             return PositionDetail {
                 position,
                 decoded_char: None,
@@ -456,8 +733,6 @@ fn aggregate_position(
         }
     }
 
-    // 混合：true 探针 = body == group_true_size（ascii > thr）；
-    // false 探针 = body != group_true_size（ascii <= thr）。
     let mut true_thresholds: Vec<u32> = Vec::new();
     let mut false_thresholds: Vec<u32> = Vec::new();
     for p in probes {
@@ -469,8 +744,6 @@ fn aggregate_position(
     }
 
     if false_thresholds.is_empty() {
-        // 全 true（不应到这里，因为 pos_min != pos_max 已排除全同；
-        // 但若 group_true_size 不在 bodies 中也会触发，保守归 unresolved）。
         return PositionDetail {
             position,
             decoded_char: None,
@@ -481,7 +754,6 @@ fn aggregate_position(
         };
     }
     if true_thresholds.is_empty() {
-        // 全 false 但 body 不全同（混入了多个非 true_size 值）→ 不可靠。
         return PositionDetail {
             position,
             decoded_char: None,
@@ -496,7 +768,6 @@ fn aggregate_position(
     let min_false = *false_thresholds.iter().min().unwrap();
     let ascii_val = min_false;
     let self_consistent = max_true + 1 == min_false;
-    // 仅在自洽时返回 decoded_char；insufficient_probes 状态下 ascii_val 不可靠。
     let decoded_char = if self_consistent {
         char::from_u32(ascii_val)
     } else {
@@ -517,23 +788,127 @@ fn aggregate_position(
     }
 }
 
-/// 编译并缓存盲注二分探针正则。
+/// 聚合单个 Equality 位置：依据 group_true_size 判定探针真假，取 true 簇字符。
+fn aggregate_equality_position(
+    position: u32,
+    probes: &[&BlindProbe],
+    group_true_size: u64,
+) -> PositionDetail {
+    let probe_count = probes.len() as u32;
+    let bodies: Vec<u64> = probes.iter().map(|p| p.body_size).collect();
+    let pos_min = *bodies.iter().min().unwrap_or(&0);
+    let pos_max = *bodies.iter().max().unwrap_or(&0);
+
+    // 单簇：全同 body → 视为全 true（HANDOFF：单探针/单簇直接得字符）。
+    if pos_min == pos_max {
+        if pos_min == group_true_size {
+            // 取首个探针的 equality_char（单簇内字符应一致；不一致则 insufficient）。
+            let chars: Vec<Option<char>> = probes.iter().map(|p| p.equality_char).collect();
+            let consistent = chars.iter().all(|c| *c == chars[0]);
+            let (decoded_char, status) = if consistent {
+                (chars[0], "equality_resolved".to_string())
+            } else {
+                (None, "insufficient_probes".to_string())
+            };
+            return PositionDetail {
+                position,
+                decoded_char,
+                ascii_val: None,
+                true_size: group_true_size,
+                probe_count,
+                status,
+            };
+        } else {
+            // 全同 body 且 != group_true_size → beyond_end（位置越界）。
+            return PositionDetail {
+                position,
+                decoded_char: None,
+                ascii_val: None,
+                true_size: group_true_size,
+                probe_count,
+                status: "beyond_end".to_string(),
+            };
+        }
+    }
+
+    // 混合：true 探针 = body == group_true_size；取 true 簇 equality_char。
+    let mut true_chars: Vec<Option<char>> = Vec::new();
+    for p in probes {
+        if p.body_size == group_true_size {
+            true_chars.push(p.equality_char);
+        }
+    }
+    if true_chars.is_empty() {
+        return PositionDetail {
+            position,
+            decoded_char: None,
+            ascii_val: None,
+            true_size: group_true_size,
+            probe_count,
+            status: "beyond_end".to_string(),
+        };
+    }
+    let consistent = true_chars.iter().all(|c| *c == true_chars[0]);
+    let (decoded_char, status) = if consistent {
+        (true_chars[0], "equality_resolved".to_string())
+    } else {
+        (None, "insufficient_probes".to_string())
+    };
+    PositionDetail {
+        position,
+        decoded_char,
+        ascii_val: None,
+        true_size: group_true_size,
+        probe_count,
+        status,
+    }
+}
+
+/// 编译并缓存 AsciiBinary 盲注探针正则。
 ///
 /// 形态：`ascii(substr((<read_target>),<pos>,1))<cmp><thr>`
 /// 捕获组：1=read_target、2=char_position、3=comparator、4=threshold。
-/// `read_target` 内层嵌套 `(...)` 用
-/// `(?:[^()]|\((?:[^()]|\([^()]*\))*\))*` 吃掉最多 2 层嵌套
-/// （覆盖 fixture `where table_schema=database()` 中 database() 包在
-/// 最外层 substr 内层、其本身又有空括号的双层场景）。regex crate 无
-/// look-around，2 层足够 fixture；更深嵌套是已知简化。
-fn blind_probe_regex() -> &'static Regex {
+fn ascii_binary_regex() -> &'static Regex {
     use std::sync::OnceLock;
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(
             r"ascii\s*\(\s*substr\s*\(\s*\(\s*((?:[^()]|\((?:[^()]|\([^()]*\))*\))*)\s*\)\s*,\s*(\d+)\s*,\s*\d+\s*\)\s*\)\s*(>=?|<=?|=)\s*(\d+)",
         )
-        .expect("blind_probe regex must compile")
+        .expect("ascii_binary regex must compile")
+    })
+}
+
+/// 编译并缓存 Equality 盲注探针正则。
+///
+/// 形态 A：`substr((<read_target>),<pos>,1)='c'`
+/// 形态 B：`substr((<read_target>),<pos>,1)=char(<ascii>)`
+/// 捕获组：1=read_target、2=char_position、3=单字符（'c' 形态）、
+/// 4=ascii 数字（char(N) 形态，二选一）。
+fn equality_regex() -> &'static Regex {
+    use std::sync::OnceLock;
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"substr\s*\(\s*\(\s*((?:[^()]|\((?:[^()]|\([^()]*\))*\))*)\s*\)\s*,\s*(\d+)\s*,\s*\d+\s*\)\s*=\s*(?:'([^'])'|char\s*\(\s*(\d+)\s*\))",
+        )
+        .expect("equality regex must compile")
+    })
+}
+
+/// 编译并缓存 Length 盲注探针正则。
+///
+/// 形态：`length((<read_target>))<cmp><thr>`
+/// 捕获组：1=read_target、2=comparator、3=threshold。
+/// comparator 当前被忽略（聚合按 `>` 语义处理，fixture/合成测试均用 `>`）。
+fn length_regex() -> &'static Regex {
+    use std::sync::OnceLock;
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"length\s*\(\s*\(\s*((?:[^()]|\((?:[^()]|\([^()]*\))*\))*)\s*\)\s*\)\s*(>=?|<=?|=)\s*(\d+)",
+        )
+        .expect("length regex must compile")
     })
 }
 
@@ -566,7 +941,6 @@ mod tests {
 
     #[test]
     fn regex_skips_empty_entry() {
-        // 408 超时行（method/path 空）不产探针。
         let mut e = mk_entry(1, "1.1.1.1", Some("ascii(substr((database()),1,1))>79"), Some(875));
         e.method.clear();
         e.path.clear();
@@ -576,7 +950,6 @@ mod tests {
 
     #[test]
     fn regex_skips_entry_without_size() {
-        // size=None 跳过。
         let e = mk_entry(1, "1.1.1.1", Some("ascii(substr((database()),1,1))>79"), None);
         let agg = BlindAggregator::collect_from_entries(&[e]);
         assert!(agg.probes.is_empty());
@@ -591,7 +964,6 @@ mod tests {
 
     #[test]
     fn regex_falls_back_to_decoded_path() {
-        // decoded_query=None 时 fallback decoded_path。
         let mut e = mk_entry(1, "1.1.1.1", None, Some(875));
         e.decoded_path = "ascii(substr((database()),1,1))>79".to_string();
         let agg = BlindAggregator::collect_from_entries(&[e]);
@@ -599,6 +971,8 @@ mod tests {
         assert_eq!(agg.probes[0].read_target, "database()");
         assert_eq!(agg.probes[0].char_position, 1);
         assert_eq!(agg.probes[0].threshold, 79);
+        assert_eq!(agg.probes[0].probe_kind, ProbeKind::AsciiBinary);
+        assert_eq!(agg.probes[0].equality_char, None);
     }
 
     #[test]
@@ -621,13 +995,6 @@ mod tests {
 
     // ---- v0.2.3 双簇自动判定 / 多层嵌套正则 / 0xNN 分隔符 ----
 
-    /// 双簇自动判定：合成「条件成立→body 更大」场景（与 fixture 相反方向）。
-    ///
-    /// true body=900（条件成立响应更大），false body=850。pos 1 ascii=112='p'：
-    /// - thr 79/103/109/111 → 900 (true, ascii>thr)
-    /// - thr 112/115 → 850 (false, ascii<=thr)
-    /// 众数判定：900 出现 4 次 > 850 出现 2 次 → group_true_size=900，
-    /// 与 v0.2.2 min(body_size)=850 不同，但还原结果仍为 'p'。
     #[test]
     fn true_size_auto_detects_larger_body() {
         let pos1 = vec![
@@ -641,19 +1008,12 @@ mod tests {
         let mut entries: Vec<LogEntry> = Vec::new();
         let mut line = 1usize;
         for (thr, body) in &pos1 {
-            let q = format!(
-                "ascii(substr((database()),1,1))>{}",
-                thr
-            );
+            let q = format!("ascii(substr((database()),1,1))>{}", thr);
             entries.push(mk_entry(line, "1.1.1.1", Some(&q), Some(*body)));
             line += 1;
         }
-        // pos 8: 全同 850 → beyond_end（== max false，全 false）。
         for thr in [79u32, 103, 115] {
-            let q = format!(
-                "ascii(substr((database()),8,1))>{}",
-                thr
-            );
+            let q = format!("ascii(substr((database()),8,1))>{}", thr);
             entries.push(mk_entry(line, "1.1.1.1", Some(&q), Some(850)));
             line += 1;
         }
@@ -662,7 +1022,6 @@ mod tests {
         let results = agg.aggregate();
         assert_eq!(results.len(), 1);
         let r = &results[0];
-        // 双簇自动判定：group_true_size == 900（条件成立 body 更大场景）。
         let pos1_detail = r
             .position_details
             .iter()
@@ -672,15 +1031,9 @@ mod tests {
         assert_eq!(pos1_detail.ascii_val, Some(112));
         assert_eq!(pos1_detail.decoded_char, Some('p'));
         assert_eq!(pos1_detail.true_size, 900, "auto-detect larger body");
-        assert!(
-            r.decoded_string.starts_with('p'),
-            "decoded_string starts with p, got {}",
-            r.decoded_string
-        );
+        assert!(r.decoded_string.starts_with('p'));
     }
 
-    /// 多层嵌套正则：read_target 含 `where table_schema=database()`，2 层
-    /// 嵌套括号（外层 substr(...) 内的 (...) 中含 database()），应被完整捕获。
     #[test]
     fn regex_captures_double_nested_parens() {
         let payload = "1' or ascii(substr((select group_concat(table_name) from \
@@ -689,69 +1042,39 @@ mod tests {
         let agg = BlindAggregator::collect_from_entries(&[e]);
         assert_eq!(agg.probes.len(), 1, "double-nested read_target must match");
         let rt = &agg.probes[0].read_target;
-        assert!(
-            rt.contains("group_concat(table_name)"),
-            "must contain group_concat(table_name), got: {rt}"
-        );
-        assert!(
-            rt.contains("information_schema.tables"),
-            "must contain information_schema.tables, got: {rt}"
-        );
-        assert!(
-            rt.contains("where table_schema=database()"),
-            "must contain where table_schema=database(), got: {rt}"
-        );
+        assert!(rt.contains("group_concat(table_name)"));
+        assert!(rt.contains("information_schema.tables"));
+        assert!(rt.contains("where table_schema=database()"));
         assert_eq!(agg.probes[0].char_position, 1);
         assert_eq!(agg.probes[0].threshold, 79);
     }
 
-    /// 0xNN 字面量分隔符：read_target 含 `0x7e` → separator_char==Some('~')；
-    /// 含 `0x41` → Some('A')。
     #[test]
     fn separator_char_extracted_from_hex_literal() {
-        // 0x7e → '~'
         let payload_7e = "1' or ascii(substr((group_concat(id,0x7e,username,0x7e,idcard) from person_data),1,1))>79#";
         let e = mk_entry(1, "1.1.1.1", Some(payload_7e), Some(862));
         let agg = BlindAggregator::collect_from_entries(&[e]);
         let results = agg.aggregate();
         assert_eq!(results.len(), 1);
-        assert_eq!(
-            results[0].separator_char, Some('~'),
-            "0x7e must decode to '~', got {:?}",
-            results[0].separator_char
-        );
+        assert_eq!(results[0].separator_char, Some('~'));
 
-        // 0x41 → 'A'
         let payload_41 = "1' or ascii(substr((group_concat(id,0x41,username) from person_data),1,1))>79#";
         let e = mk_entry(2, "1.1.1.1", Some(payload_41), Some(862));
         let agg = BlindAggregator::collect_from_entries(&[e]);
         let results = agg.aggregate();
         assert_eq!(results.len(), 1);
-        assert_eq!(
-            results[0].separator_char, Some('A'),
-            "0x41 must decode to 'A', got {:?}",
-            results[0].separator_char
-        );
+        assert_eq!(results[0].separator_char, Some('A'));
 
-        // 无字面量 → None
         let payload_none = "1' or ascii(substr((database()),1,1))>79#";
         let e = mk_entry(3, "1.1.1.1", Some(payload_none), Some(862));
         let agg = BlindAggregator::collect_from_entries(&[e]);
         let results = agg.aggregate();
         assert_eq!(results.len(), 1);
-        assert_eq!(
-            results[0].separator_char, None,
-            "no 0xNN literal → separator_char None"
-        );
+        assert_eq!(results[0].separator_char, None);
     }
 
-    /// mode_per_position_true_size 单测：每混合位置独立判 true 簇（出现在
-    /// 最低 threshold 一侧的 body_size），跨位置对 true 簇标识取众数；
-    /// 并列频次取较小者；无混合位置退化到 min(body_size)。
     #[test]
     fn mode_body_size_picks_smaller_on_tie() {
-        // 混合位置 pos 1：thr=1 body=875、thr=2 body=862。
-        // min thr=1 → 该位置 true 簇 = 875。无并列，返回 875。
         let mk_probe = |pos: u32, thr: u32, body: u64| BlindProbe {
             read_target: "x".to_string(),
             char_position: pos,
@@ -759,20 +1082,19 @@ mod tests {
             body_size: body,
             source_ip: "1.1.1.1".to_string(),
             line_no: thr as usize,
+            probe_kind: ProbeKind::AsciiBinary,
+            equality_char: None,
         };
         let p1 = mk_probe(1, 1, 875);
         let p2 = mk_probe(1, 2, 862);
         let probes: Vec<&BlindProbe> = vec![&p1, &p2];
         assert_eq!(mode_per_position_true_size(&probes), 875);
 
-        // 反向场景：pos 1 中 thr=1 body=900、thr=99 body=850。
-        // min thr=1 → true 簇 = 900。
         let p3 = mk_probe(1, 1, 900);
         let p4 = mk_probe(1, 99, 850);
         let probes2: Vec<&BlindProbe> = vec![&p3, &p4];
         assert_eq!(mode_per_position_true_size(&probes2), 900);
 
-        // 两个混合位置（pos 1 与 pos 2），各自 true 簇 = 862 → 众数 862。
         let p_a = mk_probe(1, 1, 862);
         let p_b = mk_probe(1, 99, 875);
         let p_c = mk_probe(2, 1, 862);
@@ -780,28 +1102,116 @@ mod tests {
         let probes3: Vec<&BlindProbe> = vec![&p_a, &p_b, &p_c, &p_d];
         assert_eq!(mode_per_position_true_size(&probes3), 862);
 
-        // 无混合位置（pos 1 全 850，pos 2 全 900）→ 退化到 min=850。
         let p_a = mk_probe(1, 1, 850);
         let p_b = mk_probe(1, 2, 850);
         let p_c = mk_probe(2, 1, 900);
         let p_d = mk_probe(2, 2, 900);
         let no_mixed: Vec<&BlindProbe> = vec![&p_a, &p_b, &p_c, &p_d];
-        assert_eq!(
-            mode_per_position_true_size(&no_mixed),
-            850,
-            "no mixed positions → fallback to min(body_size)"
-        );
+        assert_eq!(mode_per_position_true_size(&no_mixed), 850);
     }
 
-    /// parse_separator_char 单测：0xff（>0x7f 非 ASCII）→ None。
     #[test]
     fn parse_separator_char_rejects_non_ascii() {
         assert_eq!(parse_separator_char("group_concat(id,0x7e,x)"), Some('~'));
         assert_eq!(parse_separator_char("no literal here"), None);
-        assert_eq!(
-            parse_separator_char("group_concat(id,0xff,x)"),
-            None,
-            "0xff > 0x7f non-ASCII → None"
+        assert_eq!(parse_separator_char("group_concat(id,0xff,x)"), None);
+    }
+
+    // ---- v0.2.3 equality / length 探针 ----
+
+    #[test]
+    fn equality_probe_resolves_single_char() {
+        // substr((database()),1,1)='p'，body==true_size（单簇 → 全 true）。
+        let e = mk_entry(1, "1.1.1.1", Some("substr((database()),1,1)='p'"), Some(862));
+        let agg = BlindAggregator::collect_from_entries(&[e]);
+        assert_eq!(agg.probes.len(), 1);
+        assert_eq!(agg.probes[0].probe_kind, ProbeKind::Equality);
+        assert_eq!(agg.probes[0].equality_char, Some('p'));
+        assert_eq!(agg.probes[0].char_position, 1);
+        let results = agg.aggregate();
+        assert_eq!(results.len(), 1);
+        let r = &results[0];
+        assert_eq!(r.kind.as_deref(), Some("equality"));
+        assert_eq!(r.decoded_string, "p");
+        let pos1 = r.position_details.iter().find(|d| d.position == 1).expect("pos1");
+        assert_eq!(pos1.status, "equality_resolved");
+        assert_eq!(pos1.decoded_char, Some('p'));
+    }
+
+    #[test]
+    fn equality_probe_char_form() {
+        // substr((database()),1,1)=char(112) → 'p'。
+        let e = mk_entry(1, "1.1.1.1", Some("substr((database()),1,1)=char(112)"), Some(862));
+        let agg = BlindAggregator::collect_from_entries(&[e]);
+        assert_eq!(agg.probes.len(), 1);
+        assert_eq!(agg.probes[0].probe_kind, ProbeKind::Equality);
+        assert_eq!(agg.probes[0].equality_char, Some('p'));
+        let results = agg.aggregate();
+        assert_eq!(results.len(), 1);
+        let r = &results[0];
+        assert_eq!(r.decoded_string, "p");
+    }
+
+    #[test]
+    fn length_probe_resolves_numeric() {
+        // length((database()))>N，length=6。true body=862，false body=875。
+        // thr=5→862(true); thr=10/7/6/8→875(false)。min(false)=6=max(true)+1。
+        let cases = [(5u32, 862u64), (10, 875), (7, 875), (6, 875), (8, 875)];
+        let mut entries: Vec<LogEntry> = Vec::new();
+        for (i, (thr, body)) in cases.iter().enumerate() {
+            let q = format!("length((database()))>{}", thr);
+            entries.push(mk_entry(i + 1, "1.1.1.1", Some(&q), Some(*body)));
+        }
+        let agg = BlindAggregator::collect_from_entries(&entries);
+        assert_eq!(agg.probes.len(), 5);
+        assert!(agg.probes.iter().all(|p| p.probe_kind == ProbeKind::Length));
+        assert!(agg.probes.iter().all(|p| p.char_position == 0));
+        let results = agg.aggregate();
+        assert_eq!(results.len(), 1);
+        let r = &results[0];
+        assert_eq!(r.kind.as_deref(), Some("length"));
+        assert_eq!(r.decoded_string, "6");
+        assert_eq!(r.position_details.len(), 1);
+        let d = &r.position_details[0];
+        assert_eq!(d.position, 0);
+        assert_eq!(d.status, "length_resolved");
+        assert_eq!(d.ascii_val, Some(6));
+        assert_eq!(d.decoded_char, None);
+    }
+
+    #[test]
+    fn mixed_kinds_no_cross_contamination() {
+        // 同 read_target 同时有 ascii_binary 与 length 探针 → 两个独立 AggregatedResult。
+        let mut entries: Vec<LogEntry> = Vec::new();
+        // ascii_binary: pos 1, ascii=112='p'。
+        let ascii_cases = [(79u32, 862u64), (103, 862), (111, 862), (112, 875)];
+        for (i, (thr, body)) in ascii_cases.iter().enumerate() {
+            let q = format!("ascii(substr((database()),1,1))>{}", thr);
+            entries.push(mk_entry(i + 1, "1.1.1.1", Some(&q), Some(*body)));
+        }
+        // length: length=6。
+        let len_cases = [(5u32, 862u64), (6, 875), (8, 875)];
+        for (i, (thr, body)) in len_cases.iter().enumerate() {
+            let q = format!("length((database()))>{}", thr);
+            entries.push(mk_entry(100 + i, "1.1.1.1", Some(&q), Some(*body)));
+        }
+        let agg = BlindAggregator::collect_from_entries(&entries);
+        let results = agg.aggregate();
+        // 两个分组（同 read_target=database()，同 source_ip，但 probe_kind 不同）。
+        assert_eq!(results.len(), 2, "expect 2 groups (ascii_binary + length)");
+        let ascii_r = results
+            .iter()
+            .find(|r| r.kind.as_deref() == Some("ascii_binary"))
+            .expect("ascii_binary group");
+        let len_r = results
+            .iter()
+            .find(|r| r.kind.as_deref() == Some("length"))
+            .expect("length group");
+        assert!(
+            ascii_r.decoded_string.starts_with('p'),
+            "ascii group decodes 'p', got {}",
+            ascii_r.decoded_string
         );
+        assert_eq!(len_r.decoded_string, "6");
     }
 }
