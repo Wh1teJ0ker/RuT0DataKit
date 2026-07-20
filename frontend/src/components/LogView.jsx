@@ -102,12 +102,41 @@ export default function LogView({ state, dispatch }) {
       ellipsis: true,
       render: (v) => truncateCell(v, 40),
     },
+    {
+      title: "解码Path",
+      dataIndex: "decoded_path",
+      ellipsis: true,
+      render: (v) => (v ? truncateCell(v, 40) : "-"),
+    },
     { title: "Status", dataIndex: "status", width: 70 },
+    {
+      title: "解码Query",
+      dataIndex: "decoded_query",
+      ellipsis: true,
+      render: (v) =>
+        v ? (
+          <Tooltip title={v}>
+            <span>
+              {String(v).length > 60
+                ? String(v).slice(0, 60) + "..."
+                : v}
+            </span>
+          </Tooltip>
+        ) : (
+          "-"
+        ),
+    },
     {
       title: "User-Agent",
       dataIndex: "user_agent",
       ellipsis: true,
       render: (v) => truncateCell(v, 40),
+    },
+    {
+      title: "解码UA",
+      dataIndex: "decoded_ua",
+      ellipsis: true,
+      render: (v) => (v ? truncateCell(v, 40) : "-"),
     },
   ];
 
@@ -153,6 +182,40 @@ export default function LogView({ state, dispatch }) {
   };
   const tagColor = (t) => TAG_COLOR_BY_TYPE[t] || "default";
 
+  // extra.attack_type → 读取目标 Tag 颜色。
+  const TAG_COLOR_BY_ATTACK = {
+    blind_boolean: "red",
+    union: "orange",
+    error: "magenta",
+    time: "blue",
+    tautology: "default",
+    comment: "default",
+  };
+
+  // 从 f.extra 取字段拼结构化读取目标标签。
+  const renderReadTarget = (extra) => {
+    if (!extra) return "-";
+    const t = extra.attack_type;
+    if (!t) return "-";
+    let label = null;
+    if (t === "blind_boolean") {
+      label = `${extra.read_target ?? "-"} · 第${
+        extra.char_position ?? "-"
+      }字符 · ${extra.comparator ?? ""}${extra.compared_ascii ?? "-"}`;
+    } else if (t === "union") {
+      label = `UNION ${extra.union_columns ?? "-"}列`;
+    } else if (t === "error") {
+      label = `读取 ${extra.read_target ?? "-"}`;
+    } else if (t === "time") {
+      label = `延时 ${extra.sleep_seconds ?? "-"}秒`;
+    } else if (t === "tautology" || t === "comment") {
+      return "-";
+    } else {
+      return "-";
+    }
+    return <Tag color={TAG_COLOR_BY_ATTACK[t] || "default"}>{label}</Tag>;
+  };
+
   const findingsColumns = [
     {
       title: "类型",
@@ -177,6 +240,21 @@ export default function LogView({ state, dispatch }) {
       dataIndex: "context",
       ellipsis: true,
       render: (v) => (v ? truncateCell(v, 80) : "-"),
+    },
+    {
+      title: "解析结果",
+      dataIndex: "extra",
+      ellipsis: true,
+      render: (extra, f) => {
+        const v = extra?.summary ?? f?.context;
+        return v ? truncateCell(v, 80) : "-";
+      },
+    },
+    {
+      title: "读取目标",
+      dataIndex: "extra",
+      width: 200,
+      render: (extra) => renderReadTarget(extra),
     },
   ];
 
