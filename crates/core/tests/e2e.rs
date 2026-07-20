@@ -41,6 +41,12 @@
 //!    scan_log，断言 Report.kind=="log_scan"、SQLi > 1000、弱口令 ≥ 4、
 //!    4 类新签名（union/extractvalue/sleep/tautology）各 ≥ 1 命中。
 //! 26. `log_signatures_6_categories`：6 条 LogEntry 各触发 1 类签名，各配反例。
+//!
+//! v0.2.1 语义增强新增（T2-11）：
+//! 27. `log_payload_parser_e2e`：构造盲注 entry → scan_log_entry → 断言
+//!    hit.parsed_payload.read_target == Some("database()")。
+//! 28. `log_decoded_query_plus_decode`：构造 entry query 含 `+` → parse_line →
+//!    断言 decoded_query 含空格而非 `+`。
 
 mod common;
 
@@ -1343,6 +1349,23 @@ fn log_scan_full() {
     assert!(has_rule("sqli_time_based"), "time_based signature must hit at least once");
     assert!(has_rule("sqli_tautology"), "tautology signature must hit at least once");
 
+    // T2-9：sqli finding 的 extra 字段已透传 parsed_payload，至少有一条 sqli
+    // finding 的 extra.is_some()（fixture 含大量可被 parse_payload 解析的 payload）。
+    assert!(
+        sqli_findings.iter().any(|f| f.extra.is_some()),
+        "at least one sqli finding must carry parsed_payload in extra",
+    );
+    // weak_password finding 的 extra 为 None（向后兼容）。
+    let wp_findings: Vec<&ruT0_data_kit_core::report::Finding> = report
+        .findings
+        .iter()
+        .filter(|f| f.r#type == "weak_password")
+        .collect();
+    assert!(
+        wp_findings.iter().all(|f| f.extra.is_none()),
+        "all weak_password findings must have extra == None",
+    );
+
     // top_attack_ips 字段存在且为 sequence，长度 ≤ 5
     let top = m
         .get("top_attack_ips")
@@ -1378,6 +1401,24 @@ fn log_signatures_6_categories() {
             size: Some(100),
             user_agent: "curl/7.88.0".to_string(),
             raw: format!("GET /news.php?{query} HTTP/1.1"),
+            decoded_path: ruT0_data_kit_core::log::url_decode_twice("/news.php"),
+            decoded_query: {
+                let pairs = ruT0_data_kit_core::log::parse_query(query);
+                Some(
+                    pairs
+                        .iter()
+                        .map(|(k, v)| {
+                            if v.is_empty() {
+                                k.clone()
+                            } else {
+                                format!("{k}={v}")
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join("&"),
+                )
+            },
+            decoded_ua: ruT0_data_kit_core::log::url_decode_twice("curl/7.88.0"),
         }
     }
 
@@ -1426,5 +1467,270 @@ fn log_signatures_6_categories() {
             .iter()
             .all(|h| h.rule_id != "sqli_tautology"),
         "or 1 alone must not trigger tautology",
+    );
+}
+
+/// v0.2.0 验收项 27（T2-9 新增）：sqli_union / sqli_error_based pattern
+/// 扩变体回归 + extra/parsed_payload e2e 断言。
+///
+/// - `union all select 1,2,3` 命中 sqli_union（兼容 `union all select`）。
+/// - `1 and extractvalue(1,concat(0x7e,user()))` 命中 sqli_error_based（原已支持，回归）。
+/// - `1 and exp(~(select * from dual))` 命中 sqli_error_based（新增 exp ~ 变体）。
+/// - `1 and floor(rand(0)*2)` 命中 sqli_error_based（floor rand 变体，回归）。
+/// - 上述命中后 SignatureHit.parsed_payload.is_some()（T2-8 填充）。
+#[test]
+fn log_signatures_pattern_variants_and_parsed_payload() {
+    use ruT0_data_kit_core::log::LogEntry;
+
+    fn mk(line_no: usize, query: &str) -> LogEntry {
+        LogEntry {
+            line_no,
+            ip: "10.0.0.9".to_string(),
+            timestamp: "10/Oct/2023:13:55:36 +0000".to_string(),
+            method: "GET".to_string(),
+            path: "/news.php".to_string(),
+            query: Some(query.to_string()),
+            status: 200,
+            size: Some(100),
+            user_agent: "curl/7.88.0".to_string(),
+            raw: format!("GET /news.php?{query} HTTP/1.1"),
+            decoded_path: ruT0_data_kit_core::log::url_decode_twice("/news.php"),
+            decoded_query: {
+                let pairs = ruT0_data_kit_core::log::parse_query(query);
+                Some(
+                    pairs
+                        .iter()
+                        .map(|(k, v)| {
+                            if v.is_empty() {
+                                k.clone()
+                            } else {
+                                format!("{k}={v}")
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join("&"),
+                )
+            },
+            decoded_ua: ruT0_data_kit_core::log::url_decode_twice("curl/7.88.0"),
+        }
+    }
+
+    let eng = SignatureEngine::default();
+
+    // 1. union all select 命中 sqli_union（pattern 扩变体后兼容）。
+    let union_all = mk(1, "id=1 union all select 1,2,3");
+    let hits = eng.scan_log_entry(&union_all);
+    assert!(
+        hits.iter().any(|h| h.rule_id == "sqli_union"),
+        "union all select must hit sqli_union, hits={:?}",
+        hits.iter().map(|h| &h.rule_id).collect::<Vec<_>>(),
+    );
+
+    // 2. extractvalue 命中 sqli_error_based（原已支持，回归）。
+    let extractvalue = mk(2, "id=1 and extractvalue(1,concat(0x7e,user()))");
+    let hits = eng.scan_log_entry(&extractvalue);
+    assert!(
+        hits.iter().any(|h| h.rule_id == "sqli_error_based"),
+        "extractvalue must hit sqli_error_based",
+    );
+
+    // 3. exp(~...) 命中 sqli_error_based（新增 exp ~ 变体）。
+    let exp_bang = mk(3, "id=1 and exp(~(select * from dual))");
+    let hits = eng.scan_log_entry(&exp_bang);
+    assert!(
+        hits.iter().any(|h| h.rule_id == "sqli_error_based"),
+        "exp(~...) must hit sqli_error_based (new variant), hits={:?}",
+        hits.iter().map(|h| &h.rule_id).collect::<Vec<_>>(),
+    );
+
+    // 4. floor(rand(0)*2) 命中 sqli_error_based（floor rand 变体，回归）。
+    let floor_rand = mk(4, "id=1 and floor(rand(0)*2)");
+    let hits = eng.scan_log_entry(&floor_rand);
+    assert!(
+        hits.iter().any(|h| h.rule_id == "sqli_error_based"),
+        "floor(rand(0)*2) must hit sqli_error_based (floor rand variant)",
+    );
+
+    // 5. 命中后 parsed_payload.is_some()（T2-8 填充；union/error 均可被 parse_payload
+    //    解析出结构化信息）。
+    let union_hits = eng.scan_log_entry(&mk(5, "id=1 union select 1,2,3"));
+    assert!(
+        union_hits
+            .iter()
+            .any(|h| h.rule_id == "sqli_union" && h.parsed_payload.is_some()),
+        "union hit must carry parsed_payload",
+    );
+    let err_hits = eng.scan_log_entry(&extractvalue);
+    assert!(
+        err_hits
+            .iter()
+            .any(|h| h.rule_id == "sqli_error_based" && h.parsed_payload.is_some()),
+        "error_based hit must carry parsed_payload",
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// 27. log_payload_parser_e2e（v0.2.1 T2-11）
+//
+// 端到端验证：盲注 entry 经 scan_log_entry 后，命中 SignatureHit 的
+// parsed_payload.read_target == Some("database()")。这把 T2-8 的
+// payload_parser 与 T2-1/T2-7 的 scan_log_entry 串起来，证明语义解析
+// 在签名命中路径上确实被调用并填充正确字段。
+// ─────────────────────────────────────────────────────────────────────
+#[test]
+fn log_payload_parser_e2e() {
+    use ruT0_data_kit_core::log::LogEntry;
+
+    fn mk(line_no: usize, query: &str) -> LogEntry {
+        LogEntry {
+            line_no,
+            ip: "10.0.0.9".to_string(),
+            timestamp: "10/Oct/2023:13:55:36 +0000".to_string(),
+            method: "GET".to_string(),
+            path: "/news.php".to_string(),
+            query: Some(query.to_string()),
+            status: 200,
+            size: Some(100),
+            user_agent: "curl/7.88.0".to_string(),
+            raw: format!("GET /news.php?{query} HTTP/1.1"),
+            decoded_path: ruT0_data_kit_core::log::url_decode_twice("/news.php"),
+            decoded_query: {
+                let pairs = ruT0_data_kit_core::log::parse_query(query);
+                Some(
+                    pairs
+                        .iter()
+                        .map(|(k, v)| {
+                            if v.is_empty() {
+                                k.clone()
+                            } else {
+                                format!("{k}={v}")
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join("&"),
+                )
+            },
+            decoded_ua: ruT0_data_kit_core::log::url_decode_twice("curl/7.88.0"),
+        }
+    }
+
+    let eng = SignatureEngine::default();
+
+    // 盲注二分 payload：ascii(substr((database()),1,1))>79，末尾 # 注释。
+    let e = mk(1, "id=1' or ascii(substr((database()),1,1))>79#");
+    let hits = eng.scan_log_entry(&e);
+
+    // 必须命中 sqli_blind_binary。
+    assert!(
+        hits.iter().any(|h| h.rule_id == "sqli_blind_binary"),
+        "blind payload must hit sqli_blind_binary, hits={:?}",
+        hits.iter().map(|h| &h.rule_id).collect::<Vec<_>>(),
+    );
+
+    // 命中的 SignatureHit 必须携带 parsed_payload，且 read_target == database()。
+    let blind_hit = hits
+        .iter()
+        .find(|h| h.rule_id == "sqli_blind_binary")
+        .expect("sqli_blind_binary hit must exist");
+    let parsed = blind_hit
+        .parsed_payload
+        .as_ref()
+        .expect("blind hit must carry parsed_payload");
+    assert_eq!(
+        parsed.attack_type, "blind_boolean",
+        "parsed attack_type must be blind_boolean, got {:?}",
+        parsed.attack_type,
+    );
+    assert_eq!(
+        parsed.read_target.as_deref(),
+        Some("database()"),
+        "parsed read_target must be database(), got {:?}",
+        parsed.read_target,
+    );
+    assert_eq!(
+        parsed.char_position, Some(1),
+        "parsed char_position must be 1, got {:?}",
+        parsed.char_position,
+    );
+    assert_eq!(
+        parsed.comparator.as_deref(),
+        Some(">"),
+        "parsed comparator must be >, got {:?}",
+        parsed.comparator,
+    );
+    assert_eq!(
+        parsed.compared_ascii, Some(79),
+        "parsed compared_ascii must be 79, got {:?}",
+        parsed.compared_ascii,
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// 28. log_decoded_query_plus_decode（v0.2.1 T2-11）
+//
+// 端到端验证 parse_line 对 query 中 `+` 的 form-urlencoded 还原：构造
+// 一行 CLF/Nginx Combined 日志，其 query 段含字面 `+`（表空格），经
+// LogReader::parse_line 后 entry.decoded_query 必须含空格、不含 `+`。
+// 这证明 T2-7 的 parse_query `+`→space 语义在 parse_line 端到端路径上
+// 生效，为 payload_parser 提供「已正确解码」输入。
+// ─────────────────────────────────────────────────────────────────────
+#[test]
+fn log_decoded_query_plus_decode() {
+    let reader = LogReader::new().expect("LogReader must compile");
+
+    // CLF 行：query 含 `q=hello+world`（form-urlencoded 中 `+` 表空格）。
+    let raw_line = r#"10.0.0.9 - - [10/Oct/2023:13:55:36 +0000] "GET /search?q=hello+world&sort=asc HTTP/1.1" 200 512 "-" "curl/7.88.0""#;
+
+    let entry = reader
+        .parse_line(raw_line, 1)
+        .expect("CLF line with + in query must parse");
+
+    // 原始 query 保留字面 `+`（不解码）。
+    assert_eq!(
+        entry.query.as_deref(),
+        Some("q=hello+world&sort=asc"),
+        "raw query must keep literal +, got {:?}",
+        entry.query,
+    );
+
+    // decoded_query 必须把 `+` 解为空格、不再含字面 `+`。
+    let decoded = entry
+        .decoded_query
+        .as_ref()
+        .expect("decoded_query must be Some for entry with query");
+    assert!(
+        decoded.contains(' '),
+        "decoded_query must contain space (from +), got {:?}",
+        decoded,
+    );
+    assert!(
+        !decoded.contains('+'),
+        "decoded_query must not contain literal +, got {:?}",
+        decoded,
+    );
+    assert!(
+        decoded.contains("hello world"),
+        "decoded_query must contain 'hello world', got {:?}",
+        decoded,
+    );
+
+    // 同样验证 url-encoded 的 %20 也被双重解码为空格（与 + 等价语义）。
+    let raw_pct = r#"10.0.0.9 - - [10/Oct/2023:13:55:36 +0000] "GET /search?q=hello%2520world HTTP/1.1" 200 512 "-" "curl/7.88.0""#;
+    let entry_pct = reader
+        .parse_line(raw_pct, 2)
+        .expect("CLF line with %2520 in query must parse");
+    let decoded_pct = entry_pct
+        .decoded_query
+        .as_ref()
+        .expect("decoded_query must be Some for entry with query");
+    assert!(
+        decoded_pct.contains(' '),
+        "decoded_query for %2520 must contain space (double decode), got {:?}",
+        decoded_pct,
+    );
+    assert!(
+        !decoded_pct.contains('%'),
+        "decoded_query for %2520 must not contain %, got {:?}",
+        decoded_pct,
     );
 }

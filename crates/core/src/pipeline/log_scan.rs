@@ -68,6 +68,10 @@ pub fn scan_log(
                 location: Some(line_no_str.clone()),
                 valid: None,
                 context: Some(decoded_query_summary.clone()),
+                extra: hit
+                    .parsed_payload
+                    .as_ref()
+                    .and_then(|p| serde_yml::to_value(p).ok()),
             });
             *ip_hits.entry(entry.ip.clone()).or_insert(0) += 1;
             sqli_hits += 1;
@@ -81,6 +85,7 @@ pub fn scan_log(
                 location: Some(line_no_str.clone()),
                 valid: None,
                 context: None,
+                extra: None,
             });
             *ip_hits.entry(entry.ip.clone()).or_insert(0) += 1;
             weak_password_hits += 1;
@@ -92,6 +97,8 @@ pub fn scan_log(
         for mut f in sens {
             // 原 SensitiveScan 不填 location，补成当前 line_no。
             f.location = Some(line_no_str.clone());
+            // SensitiveScan 不产 parsed_payload，extra 显式置 None 保持向后兼容。
+            f.extra = None;
             findings.push(f);
             *ip_hits.entry(entry.ip.clone()).or_insert(0) += 1;
             sensitive_hits += 1;
@@ -241,6 +248,22 @@ mod tests {
             size: Some(100),
             user_agent: "curl/7.88.0".to_string(),
             raw: format!("{method} {path} {query:?}"),
+            decoded_path: crate::log::url_decode_twice(path),
+            decoded_query: query.map(|q| {
+                let pairs = crate::log::parse_query(q);
+                pairs
+                    .iter()
+                    .map(|(k, v)| {
+                        if v.is_empty() {
+                            k.clone()
+                        } else {
+                            format!("{k}={v}")
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("&")
+            }),
+            decoded_ua: crate::log::url_decode_twice("curl/7.88.0"),
         }
     }
 
@@ -331,6 +354,9 @@ mod tests {
                 size: None,
                 user_agent: String::new(),
                 raw: String::new(),
+                decoded_path: String::new(),
+                decoded_query: None,
+                decoded_ua: String::new(),
             });
         }
         // ip2 命中 2 次
@@ -346,6 +372,9 @@ mod tests {
                 size: None,
                 user_agent: String::new(),
                 raw: String::new(),
+                decoded_path: String::new(),
+                decoded_query: None,
+                decoded_ua: String::new(),
             });
         }
         // ip3..ip6 各命中 1 次
@@ -361,6 +390,9 @@ mod tests {
                 size: None,
                 user_agent: String::new(),
                 raw: String::new(),
+                decoded_path: String::new(),
+                decoded_query: None,
+                decoded_ua: String::new(),
             });
         }
         let eng = SignatureEngine::default();

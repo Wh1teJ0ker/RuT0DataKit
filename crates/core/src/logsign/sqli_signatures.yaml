@@ -13,6 +13,11 @@
 # 已做双重 URL 解码），故 pattern 一律按 decoded 形态编写（直接用 `#`、
 # `'`、空格，而非 `%23` / `%27` / `%20`）。
 #
+# 注意：T2-7 起 parse_query 按 form-urlencoded 语义把 `+` 预解为空格
+# （先 `+`→space 再双重 `%XX`），故 pattern 中表「空格」一律用 `\s`，
+# 不要用 `\+`（decoded 文本里已不存在字面 `+` 表空格的形态；
+# 字面 `+` 仅在原 `%2B` 解码后出现，不应被当作分隔符匹配）。
+#
 # 6 类覆盖：盲注二分 / UNION / 报错 / 时间盲注 / 恒真 / 注释符。
 
 - rule_id: sqli_blind_binary
@@ -26,15 +31,15 @@
 
 - rule_id: sqli_union
   category: union_injection
-  pattern: '\bunion\b.*\bselect\b'
+  pattern: '\bunion\b(?:\s+all)?\s+select\b'
   enabled: true
-  description: UNION 注入：union ... select 联合查询
+  description: UNION 注入：union [all] select 联合查询（兼容 union all select）
 
 - rule_id: sqli_error_based
   category: error_injection
-  pattern: '(extractvalue|updatexml|floor\(rand)'
+  pattern: '(?:extractvalue|updatexml|floor\s*\(\s*rand|exp\s*\(\s*~)'
   enabled: true
-  description: 报错注入：extractvalue / updatexml / floor(rand()) 报错回显
+  description: 报错注入：extractvalue / updatexml / floor(rand()) / exp(~) 报错回显
 
 - rule_id: sqli_time_based
   category: time_injection

@@ -80,6 +80,62 @@ fn parse_query_double_decode() {
     assert_eq!(url_decode_twice("%2527"), "'");
 }
 
+/// 3a. parse_query 按 form-urlencoded 语义把 `+` 解为空格（T2-7）。
+#[test]
+fn parse_query_decodes_plus_to_space() {
+    // `+` → 空格
+    let pairs = parse_query("a=1+2&b=hello+world");
+    assert_eq!(pairs[0], ("a".to_string(), "1 2".to_string()));
+    assert_eq!(pairs[1], ("b".to_string(), "hello world".to_string()));
+}
+
+/// 3b. `+`→space 先于 `%XX` 解码：`%2B`（字面 `+`）解出后保留为 `+`，
+/// 不被再次当作空格。证明解码顺序正确（反向会错误把字面 `+` 变空格）。
+#[test]
+fn parse_query_plus_before_pctxx_keeps_literal_plus() {
+    let pairs = parse_query("x=%2B");
+    assert_eq!(pairs, vec![("x".to_string(), "+".to_string())]);
+}
+
+/// 3c. `%20` 与 `+` 都变空格，`%2B` 仍为字面 `+`（混合场景）。
+#[test]
+fn parse_query_mixed_plus_and_pct20() {
+    let pairs = parse_query("k=a%20b+c");
+    assert_eq!(pairs, vec![("k".to_string(), "a b c".to_string())]);
+    // %2B 在混合场景仍保留字面 +
+    let pairs2 = parse_query("k=a%20b%2Bc");
+    assert_eq!(pairs2, vec![("k".to_string(), "a b+c".to_string())]);
+}
+
+/// 3d. LogEntry 三个 decoded_* 字段由 parse_line_with_re 末尾填充：
+/// - decoded_path = url_decode_twice(path)（不解 `+`）
+/// - decoded_query = Some("k=v&k2=v2") 已 `+` + 双重 %XX 解码拼回
+/// - decoded_ua = url_decode_twice(ua)（不解 `+`）
+#[test]
+fn log_entry_decoded_fields_filled() {
+    let line = r#"10.0.0.1 - - [10/Oct/2023:13:55:36 +0000] "GET /admin%2ephp?id=1%2527%20or%201=1&foo HTTP/1.1" 200 123 "-" "Mozilla%2F5.0""#;
+    let r = LogReader::new().expect("reader");
+    let e = r.parse_line(line, 1).expect("parse");
+    // decoded_path 双重 %XX，不解 +
+    assert_eq!(e.decoded_path, "/admin.php");
+    // decoded_query 已 + 与双重 %XX 解码拼回；`foo` 无 `=` 拼为裸 `foo`
+    assert_eq!(e.decoded_query.as_deref(), Some("id=1' or 1=1&foo"));
+    // decoded_ua 双重 %XX，不解 +
+    assert_eq!(e.decoded_ua, "Mozilla/5.0");
+}
+
+/// 3e. 无 query 时 decoded_query 为 None。
+#[test]
+fn log_entry_decoded_query_none_when_no_query() {
+    let line = r#"10.0.0.1 - - [10/Oct/2023:13:55:36 +0000] "GET /index.html HTTP/1.1" 200 123 "-" "curl/7.88.0""#;
+    let r = LogReader::new().expect("reader");
+    let e = r.parse_line(line, 1).expect("parse");
+    assert!(e.query.is_none());
+    assert!(e.decoded_query.is_none());
+    assert_eq!(e.decoded_path, "/index.html");
+    assert_eq!(e.decoded_ua, "curl/7.88.0");
+}
+
 /// 4. 格式不匹配返回 Err(CoreError::InvalidInput)。
 #[test]
 fn parse_malformed_returns_err() {

@@ -15,8 +15,10 @@
 //!   对 `-` 形态的 request line 误判（见 HANDOFF 提醒）。
 
 pub mod loader;
+pub mod payload_parser;
 
 pub use loader::{load_builtin_signatures, load_signatures_from_str, BUILTIN_YAML};
+pub use payload_parser::{parse_payload, ParsedPayload};
 
 use std::sync::Arc;
 
@@ -65,6 +67,8 @@ pub struct SignatureHit {
     pub matched_value: String,
     /// 命中文本来源：`path` 或 `query`。
     pub context: String,
+    /// 对命中文本段的语义解析（盲注二分/UNION 列数/报错目标等）；无匹配为 `None`。
+    pub parsed_payload: Option<payload_parser::ParsedPayload>,
 }
 
 /// 编译后的规则内部形态：缓存 Regex 以免热路径重复编译。
@@ -157,12 +161,15 @@ impl SignatureEngine {
                     // 锚点必须全部命中。
                     if rule.anchors.iter().all(|a| a.is_match(text)) {
                         let matched_value = m.as_str().to_string();
+                        // 对命中文本段做语义解析（6 类首命中），填入 parsed_payload。
+                        let parsed_payload = parse_payload(text);
                         hits.push(SignatureHit {
                             rule_id: rule.rule_id.clone(),
                             category: rule.category.clone(),
                             line_no: entry.line_no,
                             matched_value,
                             context: (*ctx).to_string(),
+                            parsed_payload,
                         });
                         break; // 同一规则同一段命中后跳下一段
                     }
@@ -200,6 +207,22 @@ mod tests {
             size: Some(100),
             user_agent: "curl/7.88.0".to_string(),
             raw: format!("{method} {path} {query:?}"),
+            decoded_path: crate::log::url_decode_twice(path),
+            decoded_query: query.map(|q| {
+                let pairs = crate::log::parse_query(q);
+                pairs
+                    .iter()
+                    .map(|(k, v)| {
+                        if v.is_empty() {
+                            k.clone()
+                        } else {
+                            format!("{k}={v}")
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("&")
+            }),
+            decoded_ua: crate::log::url_decode_twice("curl/7.88.0"),
         }
     }
 

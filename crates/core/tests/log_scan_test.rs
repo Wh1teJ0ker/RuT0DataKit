@@ -26,6 +26,22 @@ fn mk_entry(line_no: usize, method: &str, path: &str, query: Option<&str>) -> Lo
         size: Some(100),
         user_agent: "curl/7.88.0".to_string(),
         raw: format!("{method} {path} {query:?}"),
+        decoded_path: ruT0_data_kit_core::log::url_decode_twice(path),
+        decoded_query: query.map(|q| {
+            let pairs = ruT0_data_kit_core::log::parse_query(q);
+            pairs
+                .iter()
+                .map(|(k, v)| {
+                    if v.is_empty() {
+                        k.clone()
+                    } else {
+                        format!("{k}={v}")
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("&")
+        }),
+        decoded_ua: ruT0_data_kit_core::log::url_decode_twice("curl/7.88.0"),
     }
 }
 
@@ -124,6 +140,9 @@ fn scan_log_top_attack_ips() {
             size: None,
             user_agent: String::new(),
             raw: String::new(),
+            decoded_path: String::new(),
+            decoded_query: None,
+            decoded_ua: String::new(),
         });
         line += 1;
     }
@@ -140,6 +159,9 @@ fn scan_log_top_attack_ips() {
             size: None,
             user_agent: String::new(),
             raw: String::new(),
+            decoded_path: String::new(),
+            decoded_query: None,
+            decoded_ua: String::new(),
         });
         line += 1;
     }
@@ -156,6 +178,9 @@ fn scan_log_top_attack_ips() {
             size: None,
             user_agent: String::new(),
             raw: String::new(),
+            decoded_path: String::new(),
+            decoded_query: None,
+            decoded_ua: String::new(),
         });
         line += 1;
     }
@@ -228,4 +253,71 @@ fn scan_log_report_shape() {
     assert!(matches!(report.summary, Value::Mapping(_)));
     assert!(matches!(report.extra, Value::Null));
     assert_eq!(report.source, "log");
+}
+
+/// 9. sqli finding 的 extra 字段含 parsed_payload.summary（盲注二分行：
+///    summary 含「盲注二分」）；weak_password / sensitive finding 的 extra 为 None。
+#[test]
+fn scan_log_finding_extra_carries_parsed_payload() {
+    // 盲注二分 payload：parse_query 已把 `+` 预解为空格，`%23` 双重解码为 `#`。
+    let blind = mk_entry(
+        1,
+        "GET",
+        "/search.php",
+        Some("id=1%2527%20or%20ascii(substr((database())%2C1%2C1))%3E79%23"),
+    );
+    let report = run(&[blind]);
+    let sqli: Vec<_> = report
+        .findings
+        .iter()
+        .filter(|f| f.r#type == "sqli")
+        .collect();
+    assert!(!sqli.is_empty(), "blind binary must hit");
+    let s = sqli[0];
+    assert!(s.extra.is_some(), "sqli finding extra must be filled");
+    let extra = s.extra.as_ref().unwrap();
+    let summary = extra
+        .as_mapping()
+        .and_then(|m| m.get("summary"))
+        .and_then(|v| v.as_str())
+        .unwrap_or_else(|| panic!("extra.summary missing, extra={extra:?}"));
+    assert!(
+        summary.contains("盲注"),
+        "summary must contain 盲注, got {summary}",
+    );
+}
+
+/// 10. weak_password finding 的 extra 为 None（向后兼容：序列化时不出现 extra）。
+#[test]
+fn scan_log_weak_password_extra_none() {
+    let e = mk_entry(1, "GET", "/", Some("username=guest&password=123456"));
+    let report = run(&[e]);
+    let wp: Vec<_> = report
+        .findings
+        .iter()
+        .filter(|f| f.r#type == "weak_password")
+        .collect();
+    assert_eq!(wp.len(), 1);
+    assert!(wp[0].extra.is_none(), "weak_password extra must be None");
+    // 序列化后不含 "extra" key（skip_serializing_if 生效）
+    let yaml = serde_yml::to_string(&wp[0]).unwrap();
+    assert!(
+        !yaml.contains("extra"),
+        "serialized weak_password finding must not contain extra, got:\n{yaml}",
+    );
+}
+
+/// 11. `union all select 1,2,3` 命中 sqli_union（pattern 扩变体后兼容 union all）。
+#[test]
+fn scan_log_union_all_select_hits() {
+    // T2-7 parse_query 已把 `+` 预解为空格：`1+union+all+select+1,2,3` →
+    // `1 union all select 1,2,3`，命中 `\bunion\b(?:\s+all)?\s+select\b`。
+    let e = mk_entry(1, "GET", "/news.php", Some("id=1+union+all+select+1,2,3"));
+    let report = run(&[e]);
+    let sqli: Vec<_> = report
+        .findings
+        .iter()
+        .filter(|f| f.r#type == "sqli" && f.value == "sqli_union")
+        .collect();
+    assert!(!sqli.is_empty(), "union all select must hit sqli_union");
 }

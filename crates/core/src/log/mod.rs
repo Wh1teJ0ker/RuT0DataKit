@@ -6,9 +6,13 @@
 //! 设计要点：
 //! - `LogEntry` 字段一旦确定即冻结，下游 T2-2/T2-3/T2-5 都依赖此结构。
 //! - `query` 保留为 `Option<String>` 原始串；辅助函数 [`parse_query`] 把它
-//!   拆成 `Vec<(String, String)>`，key/value 均经过双重 URL 解码。
+//!   拆成 `Vec<(String, String)>`，key/value 均按 form-urlencoded 语义
+//!   先把 `+` 解为空格，再双重 `%XX` 解码。
 //! - [`url_decode_twice`] 手写实现（零新依赖）：先解一遍 `%XX`，再解一遍；
 //!   非法 `%` 原样保留，不 panic。
+//! - [`LogEntry::decoded_path`] / [`LogEntry::decoded_query`] /
+//!   [`LogEntry::decoded_ua`] 在 [`parse_line_with_re`] 末尾一次性填充，
+//!   为下游 payload_parser 提供「已解码完整文本」输入，避免重复解码。
 //! - [`LogReader::read`] 读整个文件，逐行用 [`parse_line`] 解析；任一行解析
 //!   失败即返回 `Err(CoreError::InvalidInput)`，调用方可据此判断文件是否
 //!   全部为合法 CLF/Nginx Combined 格式。
@@ -45,6 +49,14 @@ pub struct LogEntry {
     pub user_agent: String,
     /// 原始行字符串，便于回引。
     pub raw: String,
+    /// path 双重 `%XX` 解码结果（不解 `+`，path 段无 `+`=空格语义）。
+    /// 由 `parse_line_with_re` 末尾填充，供下游 payload_parser 直接使用。
+    pub decoded_path: String,
+    /// query 经 `parse_query` 解码后拼回的 `k=v&k2=v2` 完整串（已 `+`→space
+    /// 与双重 `%XX` 解码）；无 query 时为 `None`。供下游 payload_parser 直接使用。
+    pub decoded_query: Option<String>,
+    /// UA 双重 `%XX` 解码结果（不解 `+`）。由 `parse_line_with_re` 末尾填充。
+    pub decoded_ua: String,
 }
 
 /// 日志读取器：把一个文件读成 `Vec<LogEntry>`。
@@ -149,6 +161,13 @@ fn parse_line_with_re(re: &Regex, line: &str, line_no: usize) -> Result<LogEntry
     // request line 为 "-" 时 uri 为空，path 留空串、query 为 None。
     let (path, query) = split_path_query(uri);
 
+    // 预解码 3 字段，为下游 payload_parser 提供「已解码完整文本」输入。
+    // path / UA 不解 `+`（path 段无 `+`=空格语义）；query 走 parse_query
+    // （内部已 `+`→space + 双重 `%XX`），拼回 `k=v&k2=v2`。
+    let decoded_path = url_decode_twice(&path);
+    let decoded_ua = url_decode_twice(&user_agent);
+    let decoded_query = query.as_deref().map(|q| join_decoded_query(&parse_query(q)));
+
     Ok(LogEntry {
         line_no,
         ip,
@@ -160,7 +179,31 @@ fn parse_line_with_re(re: &Regex, line: &str, line_no: usize) -> Result<LogEntry
         size,
         user_agent,
         raw: line.to_string(),
+        decoded_path,
+        decoded_query,
+        decoded_ua,
     })
+}
+
+/// 把 `parse_query` 输出的 `(key, value)` 列表拼回 `k=v&k2=v2` 形态。
+///
+/// 按 HANDOFF 约定：value 为空时只输出 `key`（不带 `=`，对应原 query 中
+/// 无 `=` 的裸 key，如 `foo`）；value 非空输出 `key=value`。
+///
+/// 注意：调用方已确保传入的 pairs 经 `parse_query` 解码（`+` 与双重 `%XX`），
+/// 本函数不再做任何解码，仅做拼接。
+fn join_decoded_query(pairs: &[(String, String)]) -> String {
+    pairs
+        .iter()
+        .map(|(k, v)| {
+            if v.is_empty() {
+                k.clone()
+            } else {
+                format!("{k}={v}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("&")
 }
 
 /// 把 `uri` 按 `?` 拆成 `(path, Option<query>)`。
@@ -226,7 +269,14 @@ pub fn url_decode_twice(input: &str) -> String {
     url_decode_once(&once)
 }
 
-/// 把 query 串拆成 `Vec<(key, value)>`，key 和 value 均双重 URL 解码。
+/// 把 query 串拆成 `Vec<(key, value)>`，key/value 按 form-urlencoded 语义解码。
+///
+/// 解码顺序（关键，符合 application/x-www-form-urlencoded 标准）：
+/// 1. 先把 `+` 解为空格（form-urlencoded 中 `+` 即空格）。
+/// 2. 再做双重 `%XX` 解码（[`url_decode_twice`]）。
+///
+/// 顺序不可颠倒：若先 `%XX` 再 `+`，会把 `%2B`（字面 `+`）解出后又错解为空格。
+/// 例：`x=%2B` → 第 1 步无 `+`，第 2 步 `%2B`→`+`，结果 `[("x","+")]`（保留字面 `+`）。
 ///
 /// - 分隔符 `&`。
 /// - `key=value` 形式；`key` 无 `=` 时 value 视为空串。
@@ -244,7 +294,11 @@ pub fn parse_query(query: &str) -> Vec<(String, String)> {
             Some(idx) => (&pair[..idx], &pair[idx + 1..]),
             None => (pair, ""),
         };
-        out.push((url_decode_twice(k), url_decode_twice(v)));
+        // form-urlencoded 标准：先 `+`→space，再双重 `%XX` 解码。
+        out.push((
+            url_decode_twice(&k.replace('+', " ")),
+            url_decode_twice(&v.replace('+', " ")),
+        ));
     }
     out
 }

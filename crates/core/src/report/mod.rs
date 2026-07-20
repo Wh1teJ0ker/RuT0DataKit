@@ -25,6 +25,13 @@ pub struct Finding {
     /// 额外上下文，可空。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context: Option<String>,
+    /// 弱类型扩展字段，可空。log_scan 场景塞 ParsedPayload 序列化值
+    /// （由 pipeline/log_scan.rs 把 SignatureHit.parsed_payload 序列化为
+    /// `serde_yml::Value` 透传给前端）；csv_report / sensitive 场景为 `None`
+    /// （向后兼容：`skip_serializing_if` 保证无 extra 时序列化形态不变，旧
+    /// JSON 消费者读到 extra 为 undefined 不报错）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extra: Option<serde_yml::Value>,
 }
 
 /// 统一报告。

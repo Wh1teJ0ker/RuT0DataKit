@@ -2,14 +2,18 @@
 //!
 //! 正例用内联构造的 `LogEntry`（不走 fixture），避免与 T2-6 补造 fixture 循环依赖。
 //! 负例用纯正常请求行。
+//!
+//! T2-8 增补 `payload_parser` 6 类语义解析正反例单测 + fixture 盲注行集成断言。
 
 mod common;
 
-use ruT0_data_kit_core::log::LogEntry;
-use ruT0_data_kit_core::logsign::{
-    load_builtin_signatures, load_signatures_from_str, SignatureEngine, SignatureRule,
-};
+use std::fs;
 
+use ruT0_data_kit_core::log::{LogEntry, LogReader};
+use ruT0_data_kit_core::logsign::{
+    load_builtin_signatures, load_signatures_from_str, parse_payload, SignatureEngine,
+    SignatureRule,
+};
 /// 内联构造 LogEntry（不走 fixture）。
 fn mk_entry(line_no: usize, method: &str, path: &str, query: Option<&str>) -> LogEntry {
     LogEntry {
@@ -23,6 +27,22 @@ fn mk_entry(line_no: usize, method: &str, path: &str, query: Option<&str>) -> Lo
         size: Some(100),
         user_agent: "curl/7.88.0".to_string(),
         raw: format!("{method} {path} {query:?}"),
+        decoded_path: ruT0_data_kit_core::log::url_decode_twice(path),
+        decoded_query: query.map(|q| {
+            let pairs = ruT0_data_kit_core::log::parse_query(q);
+            pairs
+                .iter()
+                .map(|(k, v)| {
+                    if v.is_empty() {
+                        k.clone()
+                    } else {
+                        format!("{k}={v}")
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("&")
+        }),
+        decoded_ua: ruT0_data_kit_core::log::url_decode_twice("curl/7.88.0"),
     }
 }
 
@@ -142,9 +162,10 @@ fn sqli_time_based_negative() {
         "no time_based fp, hits={:?}", hits);
 }
 
+/// 5. sqli_tautology_negative 注释更新（T2-7 已支持 `+` 解码）。
 #[test]
 fn sqli_tautology_negative() {
-    // `or 1` 不成 `or 数字=数字`（用 %20 而非 +，T2-1 不解 +）。
+    // `or 1` 不成 `or 数字=数字`，不命中恒真。
     let e = mk_entry(15, "GET", "/p", Some("x=or%201"));
     let hits = SignatureEngine::default().scan_log_entry(&e);
     assert!(!hits.iter().any(|h| h.rule_id == "sqli_tautology"),
@@ -175,4 +196,124 @@ fn scan_normal_home_request_no_fp() {
     let e = mk_entry(1, "GET", "/", None);
     let hits = SignatureEngine::default().scan_log_entry(&e);
     assert!(hits.is_empty(), "normal GET / must produce 0 hit");
+}
+
+// ============ T2-8 payload_parser 6 类语义解析 ============
+
+#[test]
+fn payload_blind_boolean_positive() {
+    let r = parse_payload("1' or ascii(substr((database()),1,1))>79#").unwrap();
+    assert_eq!(r.attack_type, "blind_boolean");
+    assert_eq!(r.technique, "binary_search");
+    assert_eq!(r.read_target.as_deref(), Some("database()"));
+    assert_eq!(r.char_position, Some(1));
+    assert_eq!(r.comparator.as_deref(), Some(">"));
+    assert_eq!(r.compared_ascii, Some(79));
+}
+
+#[test]
+fn payload_blind_boolean_negative() {
+    assert!(parse_payload("normal query").is_none());
+}
+
+#[test]
+fn payload_union_positive() {
+    let r = parse_payload("1 union select 1,2,3").unwrap();
+    assert_eq!(r.attack_type, "union");
+    assert_eq!(r.union_columns, Some(3));
+}
+
+#[test]
+fn payload_union_all_positive() {
+    let r = parse_payload("1 union all select 1,2,3,4").unwrap();
+    assert_eq!(r.attack_type, "union");
+    assert_eq!(r.union_columns, Some(4));
+}
+
+#[test]
+fn payload_union_negative() {
+    assert!(parse_payload("select 1").is_none());
+}
+
+#[test]
+fn payload_error_positive() {
+    let r = parse_payload("1 and extractvalue(1,concat(0x7e,user()))").unwrap();
+    assert_eq!(r.attack_type, "error");
+    assert_eq!(r.read_target.as_deref(), Some("user()"));
+}
+
+#[test]
+fn payload_error_negative() {
+    assert!(parse_payload("concat(1,2)").is_none());
+}
+
+#[test]
+fn payload_time_positive() {
+    let r = parse_payload("1 and sleep(5)").unwrap();
+    assert_eq!(r.attack_type, "time");
+    assert_eq!(r.sleep_seconds, Some(5));
+}
+
+#[test]
+fn payload_time_negative() {
+    assert!(parse_payload("sleep mode").is_none());
+}
+
+#[test]
+fn payload_tautology_positive() {
+    let r = parse_payload("1 or 1=1").unwrap();
+    assert_eq!(r.attack_type, "tautology");
+    assert!(r.summary.contains("恒真"));
+}
+
+#[test]
+fn payload_tautology_negative() {
+    assert!(parse_payload("1=1").is_none());
+}
+
+#[test]
+fn payload_comment_positive() {
+    let r = parse_payload("1'--").unwrap();
+    assert_eq!(r.attack_type, "comment");
+    assert!(r.summary.contains("注释"));
+}
+
+#[test]
+fn payload_comment_negative() {
+    assert!(parse_payload("normal").is_none());
+}
+
+#[test]
+fn payload_none_on_normal_text() {
+    assert!(parse_payload("normal text without sqli").is_none());
+}
+
+/// SignatureHit.parsed_payload 在 fixture 盲注行（access.log L19）命中时为
+/// `Some(_)`，read_target=Some("database()")。
+#[test]
+fn scan_log_entry_fills_parsed_payload_on_blind_fixture_line() {
+    let path = common::fixtures_dir().join("log/access.log");
+    let raw = fs::read_to_string(&path).unwrap_or_else(|e| panic!("read access.log: {e:?}"));
+    let reader = LogReader::new().expect("reader");
+    let entries = reader
+        .read(&path)
+        .unwrap_or_else(|e| panic!("parse access.log: {e:?}"));
+    // 第 19 行（1-based）即首个盲注二分行。
+    let blind_line = entries
+        .iter()
+        .find(|e| e.line_no == 19)
+        .unwrap_or_else(|| panic!("missing line 19; entries={}", entries.len()));
+    let _ = raw;
+    let eng = SignatureEngine::default();
+    let hits = eng.scan_log_entry(blind_line);
+    let blind_hit = hits
+        .iter()
+        .find(|h| h.rule_id == "sqli_blind_binary")
+        .expect("blind_binary must hit on line 19");
+    let parsed = blind_hit
+        .parsed_payload
+        .as_ref()
+        .expect("parsed_payload must be Some on blind fixture line");
+    assert_eq!(parsed.attack_type, "blind_boolean");
+    assert_eq!(parsed.read_target.as_deref(), Some("database()"));
 }

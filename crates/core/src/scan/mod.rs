@@ -97,6 +97,7 @@ impl SensitiveScan for DefaultSensitiveScan {
                         location: None,
                         valid: Some(true),
                         context: None,
+                        extra: None,
                     });
                 } else if let Some(v) = build_validator(rule, &self.reg) {
                     let r = v.validate(candidate);
@@ -107,6 +108,7 @@ impl SensitiveScan for DefaultSensitiveScan {
                             location: None,
                             valid: Some(true),
                             context: None,
+                            extra: None,
                         });
                     }
                 }
