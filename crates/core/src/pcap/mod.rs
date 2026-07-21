@@ -12,9 +12,11 @@
 //! GUI 层据此弹提示并禁用按钮。
 
 pub mod decoder;
+pub mod detect;
 pub mod reader;
 pub mod scanner;
 
 pub use decoder::{decode_url_twice, extract_decoded_fields, reassemble_base64, try_decode_base64_field};
+pub use detect::{candidate_paths, detect_tshark, get_tshark_path, resolve_tshark_cmd, set_tshark_path, TsharkInfo};
 pub use reader::{HttpRequest, PcapReader};
 pub use scanner::PcapScanner;

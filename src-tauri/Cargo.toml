@@ -1,6 +1,6 @@
 [package]
 name = "ruT0-data-kit"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2021"
 description = "RuT0DataKit Tauri GUI"
 authors = ["RuT0DataKit"]
@@ -24,4 +24,9 @@ rust_xlsxwriter = "0"
 csv = "1"
 
 [features]
-default = []
+# 启用 Tauri 自定义协议（custom-protocol）：release 模式下使用 generate_context!()
+# 嵌入 ../frontend/dist 静态资源而非 devUrl(http://localhost:5173)，否则非 dev
+# 服务器运行时窗口为空白。`cargo tauri build` 会自动启用本特性，这里显式声明
+# 以便 `cargo build --release` 也能直接产出可用的 GUI 二进制。
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]

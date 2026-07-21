@@ -19,6 +19,12 @@ use super::{SearchHit, SearchMode};
 
 /// keyword 查询：取每个 term 的倒排表，按 mode 合并。
 ///
+/// v0.4.1 修正：CJK 分词把「张三」聚成一个 token，搜「张」会因 postings
+/// 里没有 key=`张` 而返回空。改为**子串匹配**——对每个查询 term，扫描所有
+/// postings key，凡 `key.contains(term)` 的都算命中，合并其 (row, col)。
+/// 这样搜「张」命中 `张三`/`张三丰`；搜「张三」命中 `张三`/`张三丰`；
+/// ASCII 场景不变（`alice` 仍命中 token `alice`）。
+///
 /// terms 为空 / 任意 term 未命中时按 mode 语义处理：
 /// - AND：空 terms → 空；任一 term 未命中 → 空（交集为空）。
 /// - OR：空 terms → 空；未命中的 term 直接跳过。
@@ -34,24 +40,27 @@ pub fn search_keyword(
         .iter()
         .map(|t| t.to_lowercase())
         .collect();
+    // 子串匹配：term → 命中的 (row, col) 集合。
+    // 对每个 term 扫描全部 postings key，凡 key.contains(term) 取其倒排表合并。
+    let term_to_set: Vec<HashSet<(usize, usize)>> = lower
+        .iter()
+        .map(|t| {
+            let mut acc: HashSet<(usize, usize)> = HashSet::new();
+            for (key, list) in index.postings.iter() {
+                if key.contains(t.as_str()) {
+                    acc.extend(list.iter().cloned());
+                }
+            }
+            acc
+        })
+        .collect();
     match mode {
         SearchMode::And => {
             // 任一 term 未命中 → 空集（AND 语义要求全部命中）。
-            // 先收集所有 term 的倒排表；任一缺失直接返回空。
-            let sets: Vec<HashSet<(usize, usize)>> = lower
-                .iter()
-                .map(|t| {
-                    index
-                        .postings
-                        .get(t)
-                        .map(|l| l.iter().cloned().collect())
-                        .unwrap_or_default()
-                })
-                .collect();
-            if sets.iter().any(|s| s.is_empty()) {
+            if term_to_set.iter().any(|s| s.is_empty()) {
                 return Vec::new();
             }
-            let mut iter = sets.into_iter();
+            let mut iter = term_to_set.into_iter();
             let first = iter.next().unwrap_or_default();
             let mut acc = first;
             for next in iter {
@@ -64,10 +73,8 @@ pub fn search_keyword(
         }
         SearchMode::Or => {
             let mut acc: HashSet<(usize, usize)> = HashSet::new();
-            for t in &lower {
-                if let Some(list) = index.postings.get(t) {
-                    acc.extend(list.iter().cloned());
-                }
+            for s in term_to_set {
+                acc.extend(s);
             }
             acc.into_iter().collect()
         }
@@ -207,6 +214,46 @@ mod tests {
         // "zzznotexist" 不在任何 cell 里，AND 应得空集。
         let hits = search_keyword(&idx, &["zzznotexist".into()], SearchMode::And);
         assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn keyword_substring_matches_cjk_partial() {
+        // v0.4.1 修正：CJK 分词把「张三」聚成一个 token，搜「张」应命中。
+        let records = Records {
+            headers: vec!["name".into()],
+            rows: vec![
+                vec!["张三".into()],
+                vec!["张三丰".into()],
+                vec!["李四".into()],
+            ],
+        };
+        let idx = SearchIndex::build(&records);
+        // 搜「张」应命中 (0,0) 和 (1,0)。
+        let hits = search_keyword(&idx, &["张".into()], SearchMode::Or);
+        let mut h = hits.clone();
+        h.sort();
+        assert_eq!(h, vec![(0, 0), (1, 0)]);
+        // 搜「张三」应命中「张三」和「张三丰」两个 token。
+        let hits2 = search_keyword(&idx, &["张三".into()], SearchMode::Or);
+        let mut h2 = hits2.clone();
+        h2.sort();
+        assert_eq!(h2, vec![(0, 0), (1, 0)]);
+        // 搜「李」应命中 (2,0)。
+        let hits3 = search_keyword(&idx, &["李".into()], SearchMode::Or);
+        assert_eq!(hits3, vec![(2, 0)]);
+    }
+
+    #[test]
+    fn keyword_substring_matches_ascii_partial() {
+        // 子串匹配同样适用于 ASCII：搜「ali」应命中 token `alice`。
+        let idx = SearchIndex::build(&sample());
+        let hits = search_keyword(&idx, &["ali".into()], SearchMode::Or);
+        let mut h = hits.clone();
+        h.sort();
+        // "alice" 出现在 (0,0) "Alice" 和 (0,1) "alice@example.com"，
+        // 但 (0,1) 的 token 是 `alice` 和 `example` 和 `com`，`ali` 是 `alice` 的子串。
+        assert!(h.contains(&(0, 0)));
+        assert!(h.contains(&(0, 1)));
     }
 
     #[test]

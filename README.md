@@ -4,13 +4,13 @@
 全部处理在本地完成，不上传任何样本或规则。本仓库面向数据安全竞赛与红队场景中的
 "敏感数据快速清洗 / 解析" 需求，不依赖 Python 运行时。
 
-> **当前状态：v0.4.1 5 项缺陷修复（T6-1 ~ T6-6 全部 verified_complete，已 release_complete）。** v0.4.1 在 v0.4.0 7 界面架构性完整重构的基础上，针对用户反馈的 5 个问题做定向修复：
-> - **数据流打通（T6-1）**：`ExportView` 从读 `state.filePath`（SET_FILE 通道）迁移到读 `state.records`（SET_RECORDS 通道，与 `PreprocessView.handleImport` 唯一写入端对齐）；`computeExportArgs` fallback 到 records 作为后端 inputPath；新增 e2e `preprocess_to_search_finds_hits`（csv → `read_records` → `search_records(Keyword "张三")` 命中行数 ≥1 + cell 含「张三」）端到端验证「预处理 → 搜索」链路。
-> - **移除各界面 FileToolbar（T6-2）**：删除 `frontend/src/components/FileToolbar.jsx`（-106 行）+ `App.jsx` 移除 `NO_TOOLBAR_VIEWS` 集合与 `<FileToolbar/>` 渲染分支；导入唯一入口收敛到 `PreprocessView` 内置「选择文件」按钮（v0.4.0 设计本意）。
-> - **ToolsView 下拉栏（T6-3）**：`Sidebar.jsx` 的「Tools」项由普通 Menu item 改为 antd `Menu.SubMenu`，`children=[{key:"tools.sql",label:"SQL 解析"},{key:"tools.regex",label:"正则解析"}]`，点击「Tools」标题展开/折叠（`openKeys` 受控为 `state.sidebarToolsOpen`）；子项点击双重 dispatch `SET_VIEW("tools")` + `SET_TOOLS_ACTIVE_TAB(<sql|regex>)`；`ToolsView.jsx` 本体不再渲染视图内 `Select` 下拉（与 Sidebar SubMenu 语义重复），仅渲染 Card + 子工具内容，Card `title` 随 `toolsActiveTab` 切换。
-> - **SQL 盲注特征自动跳转（T6-4）**：core `looks_like_blind_probe(sql: &str) -> bool` 复用 `ascii_binary_regex` / `equality_regex` / `length_regex` 三类正则，不依赖 `response_body_size`（区别于 `extract_blind_probe`）；Tauri `detect_sql_blind_features(headers, rows) -> {detected, samples}`；GUI `PreprocessView.handleImport` 命中即自动跳转到 SqlParseTool 并预填样本，仅本地正则匹配，不外发数据。
-> - **RegexTool 语句→构造正则（T6-5）**：移除内置模板 Tab + 新增 `ConstructTab`（antd `TextArea` 语句 → `regexConstruct(statement)` → `pattern` `Paragraph` copyable + `matched_clues` `Tag` 列表 + 测试样例高亮）；core 新增 `crates/core/src/tools/regex_construct.rs::construct_regex(statement) -> Result<ConstructedRegex, CoreError>`，规则化推断 6 类线索（位数 / 字符集 / 锚定前缀 / 邮箱 / URL / 身份证），语义优先级 邮箱 > URL > 身份证 > 通用，末尾 `Regex::new` 校验保证 pattern 可编译；10 单测全绿。
-> 安全约束保持：全本地处理，规则与样本不上传。版本状态约定见 `docs/04-版本标准.md`。
+> **当前状态：v0.4.2 设置模块首期（T7-1 ~ T7-4 verified_complete，已 release_complete）。** v0.4.2 在 v0.4.1 5 项缺陷修复的基础上，新增 Sidebar 底部「设置」入口与 tshark 多平台自动检测 + 路径配置：
+> - **Sidebar 底部「设置」入口（T7-3）**：`Sidebar.jsx` 给 antd Menu 加 `flex:1` 占满中段，下方分隔线 + `Button block` 把「设置」顶到底部；选中态用 `type=primary`；按钮内嵌 tshark 状态 Tag（绿=已检测 / 红=未检测）一眼可见。点击 dispatch `SET_VIEW("settings")`，App.jsx 新增 `view === "settings"` 分支渲染 SettingsView。
+> - **tshark 多平台自动检测（T7-1）**：core 新增 `crates/core/src/pcap/detect.rs`：进程级全局覆盖路径（`Mutex<Option<String>>`）+ `set_tshark_path` / `get_tshark_path` / `resolve_tshark_cmd` / `detect_tshark` / `candidate_paths`。`detect_tshark` 按优先级探测覆盖路径 → PATH `tshark` → 各平台候选绝对路径（macOS homebrew / Wireshark.app / Linux /usr/bin / Windows Program Files），跑 `<path> --version` 退出 0 即视为可用，返回 `TsharkInfo { path, version }`。`PcapReader::read` 两处 `Command::new("tshark")` 改为 `Command::new(&resolve_tshark_cmd())`，覆盖为 None 时行为与 v0.4.1 完全一致（零回归）。
+> - **路径配置持久化（T7-2）**：Tauri 新增 3 命令：`detect_tshark` / `load_tshark_path` / `save_tshark_path`，配置写 `app_config_dir/settings.json`（`{ "tshark_path": "..." }`），读写同时调 `set_tshark_path` 注入运行时立即生效（无需重启 app）。零新依赖（复用 `tauri::Manager::path()` + `std::fs`，不引入 `tauri-plugin-store` / `tauri-plugin-fs` / `which` crate）。
+> - **SettingsView UI（T7-3）**：`frontend/src/components/SettingsView.jsx` Card + Descriptions 显示状态 / 当前生效路径 / 版本；操作按钮组「自动检测 / 使用检测到的路径 / 选择文件... / 清除自定义路径」；挂载时自动调 `loadTsharkPath` + `detectTshark` 灌入状态；Alert 提示各平台常见路径参考。
+> - **搜索子串匹配修正（T7 附带）**：v0.4.1 用户反馈「搜张三能搜到，搜张搜不到」——根因 `tokenize` 把中文聚成整 token，原 `search_keyword` 精确匹配 postings key 漏命中。改为子串匹配：`key.contains(term)` 即命中，搜「张」命中 `张三`/`张三丰`，ASCII 场景同样受益（搜「ali」命中 `alice`）。新增 CJK + ASCII 子串测试覆盖。
+> 安全约束保持：tshark 探测/路径配置全本地，不调用网络；settings.json 仅写本地 app_config_dir；规则与样本不上传。版本状态约定见 `docs/04-版本标准.md`。
 
 ## 功能
 
@@ -24,7 +24,8 @@
 | v0.2.4 | 盲注聚合数据库格式还原：ReconstructedDatabase 交叉关联 4 类 read_target + GUI antd Table 按表渲染全量列 | 已发布 v0.2.4 |
 | v0.3.0 | pcap 流量包敏感数据提取（tshark 子进程 + HTTP 字段提取 + 双重 URL 解码 + 自动 base64 字段解码 + 敏感扫描 + PcapView 四段 GUI） | 已发布 v0.3.0 |
 | v0.4.0 | 7 界面架构性完整重构（统一预处理 6 类源 + 多标签规则引擎 + 统一搜索 SearchQuery 枚举 + Tools SQL 解析/正则解析） | 已发布 v0.4.0 |
-| v0.4.1 | 5 项缺陷修复：数据流打通 + 移除各界面 FileToolbar + ToolsView 下拉栏 + SQL 盲注特征自动跳转 + RegexTool 语句→构造正则 | 已发布 v0.4.1 |
+| v0.4.1 | 5 项缺陷修复：数据流打通 + 移除各界面 FileToolbar + ToolsView 下拉栏 + SQL 盲注特征自动跳转 + RegexTool 语句→构造正则 + 搜索子串匹配修正 | 已发布 v0.4.1 |
+| v0.4.2 | 设置模块首期：Sidebar 底部「设置」入口 + tshark 多平台自动检测 + 路径配置持久化 + SettingsView UI | 已发布 v0.4.2 |
 
 v0.1.0 已落地：
 - core pipeline：`detect_type` → `SourceReader` → `mask_pipeline` / `mask_pipeline_selected`（行选择，向后兼容）/ `mask_pipeline_columns`（列勾选） → `validate_pipeline`（校验） → `write_masked_csv` / `export_records_csv` / `export_records_xlsx`

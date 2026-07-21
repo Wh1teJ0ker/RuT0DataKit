@@ -48,9 +48,13 @@ impl PcapReader {
     /// - tshark 退出非 0 → `CoreError::Other(stderr)`。
     /// - 单行字段数不足时跳过该行（容错，避免 tshark 偶发空字段导致整批失败）。
     pub fn read(path: &Path) -> Result<Vec<HttpRequest>, CoreError> {
-        // 1. tshark 在场探测：`tshark --version` 退出 0 视为可用。
+        // v0.4.2：tshark 命令解析走 detect 模块的覆盖路径；无覆盖时回退到
+        // PATH 中的 `tshark`（v0.3.0 行为）。用户在 SettingsView 配置自定义路径
+        // 后，Tauri 命令层会调 `set_tshark_path` 注入，运行时立即生效。
+        let tshark_cmd = crate::pcap::resolve_tshark_cmd();
+        // 1. tshark 在场探测：`<tshark_cmd> --version` 退出 0 视为可用。
         //    不引入 which / which_cloud crate，零新增依赖。
-        match Command::new("tshark").arg("--version").output() {
+        match Command::new(&tshark_cmd).arg("--version").output() {
             Ok(out) if out.status.success() => {}
             Ok(_) | Err(_) => {
                 return Err(CoreError::DependencyMissing(
@@ -60,7 +64,7 @@ impl PcapReader {
         }
 
         // 2. 主提取调用。
-        let output = Command::new("tshark")
+        let output = Command::new(&tshark_cmd)
             .args([
                 "-r",
                 path.to_string_lossy().as_ref(),

@@ -85,6 +85,13 @@ export const initialState = {
   searchResults: null, // SearchResult 或 null
   searchElapsedMs: null, // Number 或 null
   filteredRowIndices: null, // Number[] 或 null（脱敏/导出 view 据此过滤行）
+  // v0.4.2 T7-3 设置模块状态：tshark 路径配置。
+  // tsharkPath：用户保存的覆盖路径（null=用 PATH/auto）；持久化在 settings.json。
+  // tsharkDetected：detect_tshark 命令返回的 { path, version } 或 null（未检测到）。
+  // tsharkLoading：探测/保存进行中标志，禁用按钮防重入。
+  tsharkPath: null,
+  tsharkDetected: null,
+  tsharkLoading: false,
 };
 
 function withRules(state, mutator) {
@@ -399,6 +406,19 @@ export function appReducer(state, action) {
     case "SET_FILTERED_ROW_INDICES": {
       const { filteredRowIndices } = action;
       return { ...state, filteredRowIndices };
+    }
+    // v0.4.2 T7-3：tshark 设置相关状态。
+    case "SET_TSHARK_PATH": {
+      const { tsharkPath } = action;
+      return { ...state, tsharkPath };
+    }
+    case "SET_TSHARK_DETECTED": {
+      const { tsharkDetected } = action;
+      return { ...state, tsharkDetected };
+    }
+    case "SET_TSHARK_LOADING": {
+      const { tsharkLoading } = action;
+      return { ...state, tsharkLoading };
     }
     // v0.4.0 PreprocessView 导入产物：整体覆盖 records（headers/rows/rowCount/sourceType）。
     // 切 view 不重置；只在导入新文件时覆盖。mask/validate/export 后续从此读取。

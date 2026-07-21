@@ -283,3 +283,28 @@ export async function detectSqlBlindFeatures(headers, rows) {
     rows,
   });
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// v0.4.2 T7-2 设置模块：tshark 多平台自动探测 + 路径配置持久化
+// 参数名 camelCase，由 Tauri 自动转 snake_case 传到 Rust 端。
+// ─────────────────────────────────────────────────────────────────────
+
+// 自动探测本机可用的 tshark。返回 { path: string|null, version: string|null }。
+// 探测顺序：用户已保存路径 → PATH 中 tshark → 各平台候选绝对路径。
+// 仅本机子进程探测，不调用网络（docs/00 §6 「不外发数据」约束）。
+export async function detectTshark() {
+  return tauriInvoke("detect_tshark");
+}
+
+// 从 app_config_dir/settings.json 读取用户保存的 tshark 覆盖路径。
+// 文件不存在 / 字段缺失返回 null。读到路径同时注入运行时，立即生效。
+export async function loadTsharkPath() {
+  return tauriInvoke("load_tshark_path");
+}
+
+// 把 tshark 覆盖路径保存到 app_config_dir/settings.json。
+// path 为 string 时写入；为 null 时清除自定义路径，回退到 PATH。
+// 同时注入运行时，立即生效（无需重启 app）。
+export async function saveTsharkPath(path) {
+  return tauriInvoke("save_tshark_path", { path });
+}

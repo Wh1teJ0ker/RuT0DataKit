@@ -37,6 +37,9 @@ fn main() {
             commands::run_validate_records,
             commands::search_records,
             commands::detect_sql_blind_features,
+            commands::detect_tshark,
+            commands::load_tshark_path,
+            commands::save_tshark_path,
         ])
         .run(tauri::generate_context!())
         .expect("error while running RuT0DataKit GUI");
