@@ -4,12 +4,13 @@
 全部处理在本地完成，不上传任何样本或规则。本仓库面向数据安全竞赛与红队场景中的
 "敏感数据快速清洗 / 解析" 需求，不依赖 Python 运行时。
 
-> **当前状态：v0.3.0 流量包处理切片（T3-1 ~ T3-5 全部 verified_complete，已 release_complete）。** v0.3.0 在 v0.2.4 日志盲注聚合数据库还原的基础上，新增 pcap 流量包敏感数据提取切片：
-> - **tshark 子进程 + HttpRequest 提取（T3-1）**：`crates/core/src/pcap/reader.rs::PcapReader::read` 调系统 `tshark`（`-Y "http.request" -T fields -e frame.number -e ip.src -e ip.dst -e http.request.method -e http.host -e http.request.uri -e http.file_data -e http.user_agent -E separator=\t -E occurrence=f`）→ TSV → `HttpRequest { frame_no, src_ip, dst_ip, method, host, uri, body, user_agent }`；`http.file_data` hex 串经手写 `hex_to_bytes` → `String::from_utf8_lossy`；tshark 缺失返回 `CoreError::DependencyMissing("tshark")`，不 panic。fixture `data.pcapng`（60290 帧 / 5000 HTTP POST）解出 ≥5000 HttpRequest。
-> - **解码（T3-2）**：`decoder.rs` 提供 `decode_url_twice`（独立实现避免循环依赖）+ `try_decode_base64_field`（手写 b64 decode，charset/length/printable_ratio 三重防误伤，UTF-8 only，GBK 留 v0.3.1+）+ `extract_decoded_fields`（JSON / form-urlencoded / 纯文本三降级，对每字段值递归 base64 解码）+ `reassemble_base64` 规则兜底。fixture 第一条 POST body 解出 7 字段全对（username=chenyong / name=付里夏旋 / idcard=506051200109055743 / phone=74733385248 / address=黑龙江省哈尔滨市通河县三站镇377号159室）。
-> - **扫描（T3-3）**：`scanner.rs::PcapScanner::scan` 复用 `DefaultSensitiveScan`，对每个 HttpRequest 拼装 `scan_text`（uri 双重 URL 解码 + body 解码出的字段值）→ 敏感扫描 → 每个 Finding 填 `location=frame:N` + `context={method} {host} -> {src_ip}`；产出 `Report { kind: "pcap_scan", summary: { total_requests, sensitive_hits, decoded_fragments, top_src_ips }, findings, extra: Value::Null }`。pipeline 新增 `pcap_scan` 薄包装；e2e `pcap_scan_full` 断言 ≥4000 sensitive hits 全绿。
-> - **命令 + GUI（T3-4）**：Tauri 新增 `scan_pcap_file` 命令（一次 IPC 返回 `{ entries, report }`）；`PcapView.jsx` 四段布局（① 导入 `.pcap/.pcapng` / ② 原始 HTTP 表 / ③ summary + top_src_ips Tag / ④ Findings 表 type Tag 着色）；侧栏 pcap 项启用；tshark 缺失 `message.error("流量分析需要系统 tshark，请先安装 Wireshark CLI (brew install wireshark)")`。
-> 仅敏感扫描，不做 SQLi 签名（fixture 无 SQLi）；`kind="pcap_scan"` 新增，向后兼容 v0.2.4。版本状态约定见 `docs/04-版本标准.md`。
+> **当前状态：v0.4.1 5 项缺陷修复（T6-1 ~ T6-6 全部 verified_complete，已 release_complete）。** v0.4.1 在 v0.4.0 7 界面架构性完整重构的基础上，针对用户反馈的 5 个问题做定向修复：
+> - **数据流打通（T6-1）**：`ExportView` 从读 `state.filePath`（SET_FILE 通道）迁移到读 `state.records`（SET_RECORDS 通道，与 `PreprocessView.handleImport` 唯一写入端对齐）；`computeExportArgs` fallback 到 records 作为后端 inputPath；新增 e2e `preprocess_to_search_finds_hits`（csv → `read_records` → `search_records(Keyword "张三")` 命中行数 ≥1 + cell 含「张三」）端到端验证「预处理 → 搜索」链路。
+> - **移除各界面 FileToolbar（T6-2）**：删除 `frontend/src/components/FileToolbar.jsx`（-106 行）+ `App.jsx` 移除 `NO_TOOLBAR_VIEWS` 集合与 `<FileToolbar/>` 渲染分支；导入唯一入口收敛到 `PreprocessView` 内置「选择文件」按钮（v0.4.0 设计本意）。
+> - **ToolsView 下拉栏（T6-3）**：`ToolsView` 由 antd `Tabs`（横版标签）改为 antd `Select`（下拉栏），`options=[{value:"sql",label:"SQL 解析"},{value:"regex",label:"正则解析"}]`，`onChange` dispatch `SET_TOOLS_ACTIVE_TAB`，默认 sql fallback。
+> - **SQL 盲注特征自动跳转（T6-4）**：core `looks_like_blind_probe(sql: &str) -> bool` 复用 `ascii_binary_regex` / `equality_regex` / `length_regex` 三类正则，不依赖 `response_body_size`（区别于 `extract_blind_probe`）；Tauri `detect_sql_blind_features(headers, rows) -> {detected, samples}`；GUI `PreprocessView.handleImport` 命中即自动跳转到 SqlParseTool 并预填样本，仅本地正则匹配，不外发数据。
+> - **RegexTool 语句→构造正则（T6-5）**：移除内置模板 Tab + 新增 `ConstructTab`（antd `TextArea` 语句 → `regexConstruct(statement)` → `pattern` `Paragraph` copyable + `matched_clues` `Tag` 列表 + 测试样例高亮）；core 新增 `crates/core/src/tools/regex_construct.rs::construct_regex(statement) -> Result<ConstructedRegex, CoreError>`，规则化推断 6 类线索（位数 / 字符集 / 锚定前缀 / 邮箱 / URL / 身份证），语义优先级 邮箱 > URL > 身份证 > 通用，末尾 `Regex::new` 校验保证 pattern 可编译；10 单测全绿。
+> 安全约束保持：全本地处理，规则与样本不上传。版本状态约定见 `docs/04-版本标准.md`。
 
 ## 功能
 
@@ -22,6 +23,8 @@
 | v0.2.3 | 盲注三轴优化：true_size 众数算法 + equality/length 类型 + GUI kind Tag/separator 高亮/Collapse 位置明细 | 已发布 v0.2.3 |
 | v0.2.4 | 盲注聚合数据库格式还原：ReconstructedDatabase 交叉关联 4 类 read_target + GUI antd Table 按表渲染全量列 | 已发布 v0.2.4 |
 | v0.3.0 | pcap 流量包敏感数据提取（tshark 子进程 + HTTP 字段提取 + 双重 URL 解码 + 自动 base64 字段解码 + 敏感扫描 + PcapView 四段 GUI） | 已发布 v0.3.0 |
+| v0.4.0 | 7 界面架构性完整重构（统一预处理 6 类源 + 多标签规则引擎 + 统一搜索 SearchQuery 枚举 + Tools SQL 解析/正则解析） | 已发布 v0.4.0 |
+| v0.4.1 | 5 项缺陷修复：数据流打通 + 移除各界面 FileToolbar + ToolsView 下拉栏 + SQL 盲注特征自动跳转 + RegexTool 语句→构造正则 | 已发布 v0.4.1 |
 
 v0.1.0 已落地：
 - core pipeline：`detect_type` → `SourceReader` → `mask_pipeline` / `mask_pipeline_selected`（行选择，向后兼容）/ `mask_pipeline_columns`（列勾选） → `validate_pipeline`（校验） → `write_masked_csv` / `export_records_csv` / `export_records_xlsx`
@@ -82,6 +85,22 @@ v0.3.0 流量包处理切片已落地：
 - **扫描 + pipeline + e2e（T3-3）**：`crates/core/src/pcap/scanner.rs::PcapScanner::scan(path, scan, rules)` 复用 `DefaultSensitiveScan`，对每个 HttpRequest 拼装 `scan_text = decode_url_twice(uri)` + body 经 `extract_decoded_fields` 解出的非空字段值（累加 `decoded_fragments`）→ `scan.scan(&scan_text, rules)` → 每个 Finding 填 `location=Some("frame:{frame_no}")` + `context=Some("{method} {host} -> {src_ip}")` + `extra=None` → 累加 `sensitive_hits` + `ip_counts: HashMap`；产出 `Report { source, kind: "pcap_scan", summary: { total_requests, sensitive_hits, decoded_fragments, top_src_ips（按 hits 倒序取前 5，每项 {ip, hits}） }, findings, extra: Value::Null }`。`pipeline/pcap_scan.rs::scan_pcap` 薄包装透传。e2e `pcap_scan_full`（`#[ignore]`，本机 tshark 在场手动跑）断言 ≥4000 sensitive hits + kind=="pcap_scan" + 含 idcard 类型全绿。
 - **命令 + GUI（T3-4）**：Tauri 新增 `scan_pcap_file(path) -> Result<Value, String>` 命令（一次 IPC 返回 `{ entries: Vec<HttpRequest>, report: Report }`，避免二次调用）；`main.rs` `generate_handler!` 注册（共 21 命令）；`pcap_sensitive_ruleset()` 独立 helper 返回 idcard/phone/name validators RuleSet（不污染 mask view 的 `load_default_mask_ruleset`，其 validators 空）。前端 `PcapView.jsx` 四段布局（镜像 LogView）：① 导入 `.pcap/.pcapng`（`select_file` → `detect_source_type === "pcap"` 校验 → `scanPcapFile`）；② 原始 HTTP 表（pageSize 50，body slice 200 预览）；③ 扫描按钮 + summary Descriptions + top_src_ips volcano Tag；④ Findings 表（type Tag 按 `TAG_COLOR_BY_TYPE` 着色：idcard=purple / phone=blue / bankcard=magenta / email=cyan / mac=geekblue / username=gold / name=green）。state 加 `pcapEntries` / `pcapReport` / `pcapLoading`；`Sidebar.jsx` 删除 pcap `disabled: true`，6 项全 active。tshark 缺失：`msg.includes("tshark") || msg.includes("DependencyMissing")` → `message.error("流量分析需要系统 tshark，请先安装 Wireshark CLI (brew install wireshark)")`。0 emoji / 0 原生 select 保持。
 - **仅敏感扫描，不做 SQLi 签名**（fixture 无 SQLi）；`kind="pcap_scan"` 新增，向后兼容 v0.2.4（旧 `csv_mask` / `log_scan` kind 不破）。
+
+v0.4.0 架构性完整重构已落地：
+- **统一预处理入口（界面 1）**：`read_records(path)` 在 core 层按 `detect_type(path)` 分派到 `CsvReader` / `XlsxReader` / `SqlReader`（按 `;` 切分语句、跳过字符串内分号，产出 `sql_text` + `statement_type` 两列）/ `JsonReader`（数组对象 union keys 作 headers、单值数组归 `value` 列、标量 to_string）/ `PcapRecordsReader`（tshark 缺失返回 `DependencyMissing("tshark")`）/ `LogRecordsReader`（同 v0.2.0 行解析口径产出统一列）。前端 `PreprocessView` 调 `read_records` 命令后写入 `state.records`，并暴露「搜索 / 数据脱敏 / 数据校验 / 数据导出」4 个跳转按钮。
+- **多标签规则引擎（界面 2）**：`FieldRule` 与 `MaskRule` 增加 `tags: Vec<String>`（默认空 Vec 向后兼容），`RuleSet::by_tag(tag)` / `by_tag_mask(tag)` 按标签过滤；一条规则可同时挂多个标签（如 `[mask, sensitive]` / `[validate, sensitive]`），让同一规则在脱敏 / 校验 / 搜索 / SQL 解析多个视图复用；`RulesView` Drawer 多标签编辑。
+- **统一搜索（界面 3）**：`search_records(records, query)` 统一入口，`SearchQuery` 枚举 `Keyword { terms, mode: And|Or }` / `Regex { pattern }` / `ExactField { field, value }`；keyword 走 `SearchIndex::build` 倒排索引 + `search_keyword`，regex 线性扫（非法 pattern 返回 `InvalidInput`），exact_field 按列名定位 + 精确匹配。`SearchView` 三选 Radio + 命中表（`<mark>` 高亮，无 `dangerouslySetInnerHTML`），「跳转脱敏 / 跳转导出」把命中行号去重排序写入 `state.filteredRowIndices`。
+- **数据脱敏/校验/导出（界面 4-6）**：四段垂直布局，MaskView/ValidateView 消费 `state.filteredRowIndices` 实现「仅搜索命中行」过滤；ExportView 单一 antd Table + 表头 Checkbox 勾选导出列 + 上下移调序 + 单元格预览 + 源数据 Select（脱敏后 / 校验后 / 原始）+ 行过滤 + 格式 Select（CSV / XLSX / JSON）。
+- **Tools 页面（界面 7）**：antd Tabs 下拉两个子工具——(a) **SQL 解析**：`parse_sqls(inputs) -> SqlParseResult { probes, aggregated, reconstructed, parsed_payloads }`，`extract_blind_probe(sql, response_body_size, source_ip)` 抽 `BlindProbe`（AsciiBinary / Equality / Length 三类），`reconstruct_database` 关联 4 类 read_target 自动还原数据库 schema/tables；非盲注 payload 走 `parse_payload` 兜底。(b) **正则解析**：`explain_regex(pattern) -> Vec<RegexTokenDesc>` 手写逐字符扫描 + 8 内置模板（v0.4.1 起改为语句→构造正则）。
+- **跨视图 state 不丢**：`App.jsx` 顶层 `useReducer` 内存常驻，`SET_VIEW` 只切 view 不重置数据；搜索命中行号、脱敏结果、校验结果、SQL 解析结果均跨视图保留。
+- **不外发数据**：全本地处理；规则与样本不上传（保留 v0.1.0 §6 安全约束）。
+
+v0.4.1 5 项缺陷修复已落地：
+- **T6-1 数据流打通**：`ExportView` 从读 `state.filePath`（SET_FILE 通道，v0.4.0 实现漏写）迁移到读 `state.records`（SET_RECORDS 通道，与 `PreprocessView.handleImport` 唯一写入端对齐）；`computeExportArgs` fallback 到 records 作为后端 inputPath；新增 e2e `preprocess_to_search_finds_hits`（csv → `read_records` → `search_records(Keyword "张三")` 命中行数 ≥1 + cell 含「张三」）端到端验证「预处理 → 搜索」链路，修复用户反馈「预处理导入后在搜索界面无法搜到」的根因。
+- **T6-2 移除各界面 FileToolbar**：删除 `frontend/src/components/FileToolbar.jsx`（-106 行）+ `App.jsx` 移除 `NO_TOOLBAR_VIEWS` 集合与 `<FileToolbar/>` 渲染分支；导入唯一入口收敛到 `PreprocessView` 内置「选择文件」按钮（v0.4.0 设计本意）；消除各界面顶部冗余的导入按钮。
+- **T6-3 ToolsView 下拉栏**：`ToolsView` 由 antd `Tabs`（横版标签）改为 antd `Select`（下拉栏），`options=[{value:"sql",label:"SQL 解析"},{value:"regex",label:"正则解析"}]`，`onChange` dispatch `SET_TOOLS_ACTIVE_TAB`，默认 sql fallback；用户反馈横版标签占位，下拉栏更紧凑。
+- **T6-4 SQL 盲注特征自动跳转**：core `looks_like_blind_probe(sql: &str) -> bool` 复用 `ascii_binary_regex` / `equality_regex` / `length_regex` 三类正则，不依赖 `response_body_size`（区别于 `extract_blind_probe`，可用于预处理阶段仅 SQL 文本场景）；Tauri `detect_sql_blind_features(headers, rows) -> {detected, samples}`；GUI `PreprocessView.handleImport` 命中即自动跳转到 SqlParseTool 并预填样本；仅本地正则匹配，不外发数据。
+- **T6-5 RegexTool 语句→构造正则**：移除内置模板 Tab + 新增 `ConstructTab`（antd `TextArea` 语句 → `regexConstruct(statement)` → `pattern` `Paragraph` copyable + `matched_clues` `Tag` 列表 + 测试样例高亮）；core 新增 `crates/core/src/tools/regex_construct.rs::construct_regex(statement) -> Result<ConstructedRegex, CoreError>`，规则化推断 6 类线索（位数 / 字符集 / 锚定前缀 / 邮箱 / URL / 身份证），语义优先级 邮箱 > URL > 身份证 > 通用，末尾 `Regex::new` 校验保证 pattern 可编译；10 单测全绿。用户反馈「不是要求内置模板，而是我给出一个语句，能自动化帮我构造」。
 
 ## 安装
 
@@ -229,6 +248,8 @@ cargo tauri dev
 | v0.2.3 | 盲注三轴优化：true_size 众数算法 + equality/length 类型 + GUI kind Tag/separator 高亮/Collapse 位置明细 | 已发布 v0.2.3 |
 | v0.2.4 | 盲注聚合数据库格式还原：ReconstructedDatabase 交叉关联 4 类 read_target + GUI antd Table 按表渲染全量列 | 已发布 v0.2.4 |
 | v0.3.0 | pcap 流量包敏感数据提取（tshark 子进程 + HTTP 字段提取 + 双重 URL 解码 + 自动 base64 字段解码 + 敏感扫描 + PcapView 四段 GUI） | 已发布 v0.3.0 |
+| v0.4.0 | 7 界面架构性完整重构（统一预处理 6 类源 + 多标签规则引擎 + 统一搜索 SearchQuery 枚举 + Tools SQL 解析/正则解析） | 已发布 v0.4.0 |
+| v0.4.1 | 5 项缺陷修复：数据流打通 + 移除各界面 FileToolbar + ToolsView 下拉栏 + SQL 盲注特征自动跳转 + RegexTool 语句→构造正则 | 已发布 v0.4.1 |
 
 版本判定标准见 `docs/04-版本标准.md`。
 
