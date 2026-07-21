@@ -234,8 +234,8 @@ export default function ExportView({ state, dispatch }) {
   };
 
   const handleExport = async () => {
-    if (!filePath) {
-      message.warning("请先导入文件");
+    if (!hasRecords) {
+      message.warning("请先到数据预处理导入文件");
       return;
     }
     if (exportColumns.length === 0) {
@@ -365,7 +365,7 @@ export default function ExportView({ state, dispatch }) {
           sticky
           columns={columns}
           dataSource={dataSource}
-          locale={{ emptyText: "请先导入文件并选择源数据" }}
+          locale={{ emptyText: "请先到数据预处理导入文件并选择源数据" }}
         />
 
         <div>

@@ -120,10 +120,10 @@ export function appReducer(state, action) {
         exportColumns: [...headers],
         exportFormat: "csv",
         actionHint: "",
-        // v0.4.0 T6-1：SET_FILE 不再清空 records——FileToolbar 走 SET_FILE 旧路径
-        // 与 PreprocessView 走 SET_RECORDS 是两套并行的导入入口；用户痛点是
-        // 经 SET_FILE 后 records 被清空导致 SearchView/ExportView 读不到数据。
-        // 此处保留 records 不动；若新文件确需覆盖 records，由调用方显式再
+        // v0.4.0 T6-1：SET_FILE 不再清空 records——顶部导入工具条已移除（T6-2），
+        // SET_FILE 仅由内部流程保留；与 PreprocessView 走 SET_RECORDS 是两套并行的
+        // 导入入口；用户痛点是经 SET_FILE 后 records 被清空导致 SearchView/ExportView
+        // 读不到数据。此处保留 records 不动；若新文件确需覆盖 records，由调用方显式再
         // dispatch SET_RECORDS（PreprocessView 流程已经这么做）。
         // records 字段交由 SET_RECORDS 单独管理。
       };

@@ -31,7 +31,7 @@ export default function LogView({ state, dispatch }) {
   const { message } = AntApp.useApp();
 
   // 导入 .log：select_file 拿路径 → 直接调 scanLogFile 拿 {entries, report}。
-  // 不复用 FileToolbar 的 load_preview（csv/xlsx 专用）。
+  // 不复用 csv/xlsx 专用的 load_preview。
   const handleSelectFile = async () => {
     dispatch({ type: "SET_LOG_LOADING", logLoading: true });
     try {
