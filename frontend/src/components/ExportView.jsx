@@ -26,8 +26,6 @@ const { Text } = Typography;
 export default function ExportView({ state, dispatch }) {
   const { message } = AntApp.useApp();
   const {
-    headers,
-    rows,
     maskedRows,
     validateResult,
     rules,
@@ -41,10 +39,31 @@ export default function ExportView({ state, dispatch }) {
     actionHint,
   } = state;
 
+  // v0.4.0 T6-1：数据源从 state.records 读取（与 SearchView/MaskView/ValidateView
+  // 对齐），不再依赖 SET_FILE 写入的 state.headers/state.rows——当用户从
+  // PreprocessView 走 SET_RECORDS 导入后 filePath 可能仍为 null，但 records 已
+  // 就绪。filePath 退化为后端导出命令的 inputPath（见 computeExportArgs），不
+  // 再作为 UI 启用条件。
+  const records = state.records;
+  const hasRecords =
+    records != null &&
+    Array.isArray(records.headers) &&
+    records.headers.length > 0 &&
+    Array.isArray(records.rows);
+  // ExportView 仍以 filePath 作为后端 export_records_csv 的 inputPath；当 records
+  // 存在但 filePath 为 null 时（如 SET_RECORDS-only 导入路径），用户能 SEE 预览
+  // （sourceRows 取自 records.rows），但导出按钮（handleExport）仍被
+  // `!filePath` 门控——records-only 导出需后端新增 records-based 导出命令，
+  // 留 T6-6 收尾讨论。此处仅做 UI 一致性打通，不重写后端导出契约。
+  const recHeaders = hasRecords ? records.headers : [];
+  const recRows = hasRecords ? records.rows : [];
+
   const sourceOptions = [
     { label: "脱敏后数据", value: "masked", disabled: !maskedRows },
     { label: "校验后数据", value: "validate", disabled: !validateResult },
-    { label: "原始数据", value: "raw", disabled: !filePath },
+    // T6-1：原始数据源的启用条件改为 hasRecords（而非 filePath），让
+    // PreprocessView 导入后即使无 filePath 也能看到原始数据预览。
+    { label: "原始数据", value: "raw", disabled: !hasRecords },
   ];
 
   const filterOptions = [
@@ -87,7 +106,7 @@ export default function ExportView({ state, dispatch }) {
   const sourceRows = useMemo(
     function computeSourceRows() {
       let out;
-      if (exportSource === "raw" || exportSource === "records") out = rows || [];
+      if (exportSource === "raw" || exportSource === "records") out = recRows;
       else if (exportSource === "masked") out = maskedRows || [];
       else if (exportSource === "validate") {
         if (!validateResult) return [];
@@ -118,7 +137,7 @@ export default function ExportView({ state, dispatch }) {
     },
     [
       exportSource,
-      rows,
+      recRows,
       maskedRows,
       validateResult,
       validateFilter,
@@ -134,12 +153,12 @@ export default function ExportView({ state, dispatch }) {
       sourceRows.slice(0, PREVIEW_ROW_LIMIT).map((row, idx) => {
         const obj = { key: idx };
         for (const h of columnOrder) {
-          const c = headers.indexOf(h);
+          const c = recHeaders.indexOf(h);
           obj[h] = c >= 0 ? row[c] : "";
         }
         return obj;
       }),
-    [sourceRows, columnOrder, headers]
+    [sourceRows, columnOrder, recHeaders]
   );
 
   // Table columns：遍历 columnOrder，title 内含 Checkbox + 上下移按钮。

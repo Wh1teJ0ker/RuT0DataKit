@@ -2492,3 +2492,74 @@ fn rules_multi_tag() {
     assert!(rs.by_tag_mask("nonexistent").is_empty());
     assert!(rs2.by_tag("nonexistent").is_empty());
 }
+
+/// 33. preprocess_to_search_finds_hits（v0.4.0 T6-1）：
+///
+/// 验证「数据预处理导入后搜索界面能搜到数据」的数据流闭环：用 read_records
+/// 读取 csv fixture（等价于 PreprocessView 走 preprocess_file 后写入
+/// state.records 的 (headers, rows)），调 search_records 用 fixture 内真实存在
+/// 的字段值（"张三" —— sample_mask.csv 第 2 行 name 列）作为 keyword 搜索，
+/// 断言 hits ≥ 1。这是 T6-1 数据流打通的回归保护：防止 ExportView/SearchView
+/// 因数据源切换再次断流。
+#[test]
+fn preprocess_to_search_finds_hits() {
+    use ruT0_data_kit_core::readers::read_records;
+    use ruT0_data_kit_core::search::{search_records, SearchMode, SearchQuery};
+
+    // 等价于 PreprocessView 调 preprocess_file → state.records。
+    let path = common::csv_path();
+    let records = read_records(&path).expect("read_records on sample_mask.csv must succeed");
+
+    // 确认 fixture 结构：6 列 headers，≥2 行数据。
+    assert!(
+        records.headers.len() >= 6,
+        "sample_mask.csv should have >=6 headers, got {}",
+        records.headers.len(),
+    );
+    assert!(
+        records.rows.len() >= 2,
+        "sample_mask.csv should have >=2 rows, got {}",
+        records.rows.len(),
+    );
+    // name 列存在（第 2 列，索引 1）。
+    let name_col = records
+        .headers
+        .iter()
+        .position(|h| h == "name")
+        .expect("sample_mask.csv must have a 'name' column");
+    // 真实存在的值：第 2 行（索引 0）的 name = "张三"。
+    let first_name = records.rows[0][name_col].clone();
+    assert_eq!(
+        first_name, "张三",
+        "first row name must be 张三, got {first_name}",
+    );
+
+    // 用 fixture 内真实字段值做 keyword 搜索，断言命中 ≥1。
+    let res = search_records(
+        &records,
+        &SearchQuery::Keyword {
+            terms: vec![first_name.clone()],
+            mode: SearchMode::Or,
+        },
+    )
+    .expect("keyword search must succeed");
+    assert!(
+        !res.hits.is_empty(),
+        "search_records(张三) must find >=1 hit on sample_mask.csv, got {}",
+        res.hits.len(),
+    );
+    // 每个命中应落在 name 列或其值含 "张三"。
+    for hit in &res.hits {
+        assert!(
+            records.rows
+                .get(hit.row)
+                .and_then(|r| r.get(hit.col))
+                .map(|v| v.contains(&first_name))
+                .unwrap_or(false),
+            "hit (row={}, col={}) value must contain 张三",
+            hit.row,
+            hit.col,
+        );
+    }
+}
+
