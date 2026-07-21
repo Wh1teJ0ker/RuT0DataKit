@@ -26,7 +26,7 @@ red-team workflows, and does not depend on a Python runtime.
 | v0.3.0 | Sensitive-data extraction from pcap (tshark subprocess + HTTP field extraction + double URL decode + auto base64 field decode + sensitive scan + PcapView four-section GUI) | Released v0.3.0 |
 | v0.4.0 | 7-view architectural refactor (unified preprocessing for 6 source types + multi-tag rule engine + unified SearchQuery enum + Tools SQL/regex parsing) | Released v0.4.0 |
 | v0.4.1 | Five-issue defect fix: data-flow wired + remove FileToolbar from views + ToolsView dropdown + SQL blind-injection feature auto-jump + RegexTool statement → constructed regex | Released v0.4.1 |
-| v0.4.2 | Settings module first installment: Sidebar-bottom "设置" entry + tshark multi-platform auto-detection + path configuration persistence + SettingsView UI | Released v0.4.2 |
+| v0.4.2 | Settings module first installment: Sidebar-bottom "设置" entry + tshark multi-platform auto-detection + path configuration persistence + SettingsView UI (+ 3 patch fixes: file-import dialog adds json/sql extensions / sidebar separated from main content scroll / mask+validate dropdowns use user rules instead of operator templates; version unchanged) | Released v0.4.2 |
 
 What v0.1.0 ships:
 - Core pipeline: `detect_type` → `SourceReader` → `mask_pipeline` / `mask_pipeline_selected` (row selection, backward compatible) / `mask_pipeline_columns` (column selection) → `validate_pipeline` (validation) → `write_masked_csv` / `export_records_csv` / `export_records_xlsx`
@@ -256,7 +256,7 @@ cargo tauri dev
 | v0.3.0 | Sensitive-data extraction from pcap (tshark subprocess + HTTP field extraction + double URL decode + auto base64 field decode + sensitive scan + PcapView four-section GUI) | Released v0.3.0 |
 | v0.4.0 | 7-view architectural refactor (unified preprocessing for 6 source types + multi-tag rule engine + unified SearchQuery enum + Tools SQL/regex parsing) | Released v0.4.0 |
 | v0.4.1 | Five-issue defect fix: data-flow wired + remove FileToolbar from views + ToolsView dropdown + SQL blind-injection feature auto-jump + RegexTool statement → constructed regex | Released v0.4.1 |
-| v0.4.2 | Settings module first installment: Sidebar-bottom "设置" entry + tshark multi-platform auto-detection + path configuration persistence + SettingsView UI | Released v0.4.2 |
+| v0.4.2 | Settings module first installment: Sidebar-bottom "设置" entry + tshark multi-platform auto-detection + path configuration persistence + SettingsView UI (+ 3 patch fixes: file-import dialog adds json/sql extensions / sidebar separated from main content scroll / mask+validate dropdowns use user rules instead of operator templates; version unchanged) | Released v0.4.2 |
 
 See `docs/04-版本标准.md` for the version acceptance criteria.
 

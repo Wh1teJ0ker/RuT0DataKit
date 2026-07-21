@@ -31,12 +31,25 @@ export default function App() {
   const view = state.activeView;
 
   return (
-    <Layout style={{ minHeight: "100vh" }}>
-      <Sider width={200} theme="light" style={{ borderRight: "1px solid #f0f0f0" }}>
+    <Layout style={{ height: "100vh", overflow: "hidden" }}>
+      <Sider
+        width={200}
+        theme="light"
+        style={{ height: "100vh", position: "sticky", top: 0, borderRight: "1px solid #f0f0f0" }}
+      >
         <Sidebar state={state} dispatch={dispatch} />
       </Sider>
-      <Layout>
-        <Content style={{ padding: 24, display: "flex", flexDirection: "column", gap: 16 }}>
+      <Layout style={{ height: "100vh", overflow: "hidden" }}>
+        <Content
+          style={{
+            padding: 24,
+            height: "100%",
+            overflowY: "auto",
+            display: "flex",
+            flexDirection: "column",
+            gap: 16,
+          }}
+        >
           {view === "preprocess" && <PreprocessView state={state} dispatch={dispatch} />}
           {view === "rules" && <RulesView state={state} dispatch={dispatch} />}
           {view === "search" && <SearchView state={state} dispatch={dispatch} />}

@@ -84,7 +84,7 @@ pub async fn select_file(app: AppHandle) -> Result<Option<String>, String> {
     let (tx, rx) = std::sync::mpsc::channel::<Option<std::path::PathBuf>>();
     app.dialog()
         .file()
-        .add_filter("数据文件", &["csv", "xlsx", "log", "pcap", "pcapng"])
+        .add_filter("数据文件", &["csv", "xlsx", "sql", "json", "log", "pcap", "pcapng"])
         .pick_file(move |path| {
             let v = path.and_then(|p| p.into_path().ok());
             let _ = tx.send(v);

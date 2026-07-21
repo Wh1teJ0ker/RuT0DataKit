@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useMemo } from "react";
 import {
   Card,
   Table,
@@ -8,6 +8,7 @@ import {
   Space,
   Empty,
   Tooltip,
+  Alert,
   App as AntApp,
 } from "antd";
 import {
@@ -15,17 +16,25 @@ import {
   ArrowRightOutlined,
   DeleteOutlined,
 } from "@ant-design/icons";
-import { VALIDATOR_DEFS, getValidatorDef } from "../validatorDefs.js";
-import { runValidateRecords, listValidateOpTypes } from "../tauri.js";
+import { runValidateRecords } from "../tauri.js";
 import { PREVIEW_ROW_LIMIT } from "../state.js";
-import ParamField, { buildDefaultParams } from "./ParamField.jsx";
 
 const { Text } = Typography;
 
 // 「不校验」选项的哨兵值。放在下拉源第一项，避免空字符串在 antd Select
-// 中触发 allowClear 警告，也避免与真实算子名冲突。与 MaskView 的 __no_mask__
+// 中触发 allowClear 警告，也避免与真实规则冲突。与 MaskView 的 __no_mask__
 // 哨兵保持对称，确保两个映射表结构一致。
 const NO_VALIDATE_SENTINEL = "__no_validate__";
+
+// 把一条规则摘要成下拉项 label：`field → validator(params)`，便于用户识别。
+function summarizeRule(r) {
+  const paramsStr = r.params
+    ? Object.entries(r.params)
+        .map(([k, v]) => `${k}=${v == null ? "" : String(v)}`)
+        .join(", ")
+    : "";
+  return `${r.field || "（未指定字段）"} → ${r.validator}${paramsStr ? ` (${paramsStr})` : ""}`;
+}
 
 // v0.4.0 T5-7：校验视图不再各自导入文件，统一消费 PreprocessView 产出的
 // state.records。无 records 时渲染 Empty 引导用户先去预处理导入。
@@ -37,40 +46,11 @@ function isValidateRule(r) {
 }
 
 // 数据校验主视图：四段垂直——①原始数据 ②表头-规则映射 ③预览（非法红底）④操作。
-// state/dispatch 从 props 透传；规则通过表头-规则映射 Table 直接 dispatch
-// ADD_RULE/UPDATE_RULE/REMOVE_RULE（kind:"validate"），不再嵌入 Form/ValidatorList。
+// v0.4.2 BUG 3 修正：段②下拉源从「算子模板」（listValidateOpTypes）改为
+// 「用户在 RulesView 创建的具体规则」（state.rules.validators）。用户为每个表头
+// 选一条已创建的规则，参数随规则带入。要改参数请去 RulesView 编辑规则。
 export default function ValidateView({ state, dispatch }) {
   const { message } = AntApp.useApp();
-  const [opTypes, setOpTypes] = useState([]);
-
-  useEffect(() => {
-    let alive = true;
-    listValidateOpTypes()
-      .then((list) => {
-        if (!alive) return;
-        if (Array.isArray(list) && list.length > 0) {
-          setOpTypes([
-            { name: NO_VALIDATE_SENTINEL, label: "不校验" },
-            ...list,
-          ]);
-        } else {
-          setOpTypes([
-            { name: NO_VALIDATE_SENTINEL, label: "不校验" },
-            ...VALIDATOR_DEFS.map((v) => ({ name: v.name, label: v.description })),
-          ]);
-        }
-      })
-      .catch(() => {
-        if (!alive) return;
-        setOpTypes([
-          { name: NO_VALIDATE_SENTINEL, label: "不校验" },
-          ...VALIDATOR_DEFS.map((v) => ({ name: v.name, label: v.description })),
-        ]);
-      });
-    return () => {
-      alive = false;
-    };
-  }, []);
 
   // v0.4.0 T5-7：数据源来自 PreprocessView 的 state.records（校验不再各自导入文件）。
   // 旧 SET_FILE 路径（state.headers/rows）保留兼容，但优先读 records；为空则
@@ -106,7 +86,8 @@ export default function ValidateView({ state, dispatch }) {
 
   // 段 ② 表头-规则映射 Table
   // 规则来源：会话级 validateOverrides 优先 + 全局 rules.validators 按 field 兜底。
-  // 临时选算子只写 validateOverrides，不污染全局规则库。
+  // v0.4.2 BUG 3：下拉源是「用户创建的具体校验规则」（taggedValidators），
+  // 不再是算子模板。选规则即把该规则作为 override 写入，参数随规则带入。
   const mappingData = useMemo(() => {
     return headers.map((h, idx) => ({ key: idx, header: h }));
   }, [headers]);
@@ -117,6 +98,15 @@ export default function ValidateView({ state, dispatch }) {
     () => (state.rules.validators || []).filter(isValidateRule),
     [state.rules.validators]
   );
+  // 下拉源：用户创建的校验规则。按规则在 ruleset 的下标作 value（保证唯一）。
+  const ruleOptions = useMemo(() => {
+    const opts = taggedValidators.map((r, i) => ({
+      value: i,
+      label: summarizeRule(r),
+    }));
+    return [{ value: NO_VALIDATE_SENTINEL, label: "不校验" }, ...opts];
+  }, [taggedValidators]);
+
   const resolveValidator = (header) => {
     if (state.validateOverrides && state.validateOverrides[header]) {
       return state.validateOverrides[header];
@@ -124,40 +114,30 @@ export default function ValidateView({ state, dispatch }) {
     return taggedValidators.find((r) => r.field === header) || null;
   };
 
-  const onChangeOp = (header, newOpName) => {
-    if (!newOpName || newOpName === NO_VALIDATE_SENTINEL) {
-      // 选择「不校验」= 清除该表头的会话级 override。
+  // 根据当前生效规则定位下拉 value。
+  const resolveValidatorOptionValue = (header) => {
+    const existing = resolveValidator(header);
+    if (!existing) return NO_VALIDATE_SENTINEL;
+    const idx = taggedValidators.findIndex(
+      (r) =>
+        r === existing ||
+        (r.field === existing.field && r.validator === existing.validator &&
+          JSON.stringify(r.params || {}) === JSON.stringify(existing.params || {}))
+    );
+    return idx >= 0 ? idx : NO_VALIDATE_SENTINEL;
+  };
+
+  const onChangeRule = (header, selectedValue) => {
+    if (selectedValue === NO_VALIDATE_SENTINEL) {
       dispatch({ type: "CLEAR_VALIDATE_OVERRIDE", header });
       return;
     }
-    const def = getValidatorDef(newOpName);
-    let params = buildDefaultParams(def);
-    // 若已有 override 或 rules 中有同 header，保留旧 params 兜底。
-    const existing = resolveValidator(header);
-    if (existing && existing.validator === newOpName && existing.params) {
-      const merged = { ...params };
-      for (const p of def.params) {
-        if (existing.params[p] != null) merged[p] = existing.params[p];
-      }
-      params = merged;
-    }
-    const rule = {
-      field: header,
-      validator: newOpName,
-      params,
-      description: undefined,
-    };
-    dispatch({ type: "SET_VALIDATE_OVERRIDE", header, rule });
-  };
-
-  const onChangeParam = (header, paramName, value) => {
-    const existing = resolveValidator(header);
-    if (!existing) return;
-    const params = { ...existing.params, [paramName]: value };
+    const rule = taggedValidators[selectedValue];
+    if (!rule) return;
     dispatch({
       type: "SET_VALIDATE_OVERRIDE",
       header,
-      rule: { ...existing, params },
+      rule: { ...rule },
     });
   };
 
@@ -185,29 +165,30 @@ export default function ValidateView({ state, dispatch }) {
       },
     },
     {
-      title: "校验算子",
+      title: "校验规则",
       dataIndex: "header",
-      key: "op",
-      width: 220,
+      key: "rule",
       render: (_, row) => {
-        const existing = resolveValidator(row.header);
-        const value = existing ? existing.validator : NO_VALIDATE_SENTINEL;
+        const value = resolveValidatorOptionValue(row.header);
         return (
           <Select
             value={value}
             showSearch
             style={{ width: "100%" }}
-            options={opTypes.map((o) => ({ label: o.label, value: o.name }))}
-            placeholder="选择校验算子"
-            onChange={(v) => onChangeOp(row.header, v)}
+            options={ruleOptions}
+            placeholder={
+              taggedValidators.length === 0
+                ? "暂无规则，请先到「规则管理」创建"
+                : "选择校验规则"
+            }
+            onChange={(v) => onChangeRule(row.header, v)}
           />
         );
       },
     },
     {
-      title: "参数",
-      key: "params",
-      width: 380,
+      title: "规则摘要",
+      key: "summary",
       render: (_, row) => {
         const existing = resolveValidator(row.header);
         if (!existing) {
@@ -217,30 +198,10 @@ export default function ValidateView({ state, dispatch }) {
             </Text>
           );
         }
-        const def = getValidatorDef(existing.validator);
-        if (!def.params || def.params.length === 0) {
-          return (
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              无参数
-            </Text>
-          );
-        }
         return (
-          <Space size="small" wrap>
-            {def.params.map((p) => (
-              <div key={p} style={{ display: "flex", flexDirection: "column" }}>
-                <ParamField
-                  paramName={p}
-                  def={def}
-                  value={existing.params?.[p]}
-                  onChange={(v) => onChangeParam(row.header, p, v)}
-                />
-                <Text type="secondary" style={{ fontSize: 10, marginTop: 2 }}>
-                  {def.paramDocs?.[p] || p}
-                </Text>
-              </div>
-            ))}
-          </Space>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            {summarizeRule(existing)}
+          </Text>
         );
       },
     },
@@ -411,19 +372,39 @@ export default function ValidateView({ state, dispatch }) {
           styles={{ body: { padding: 12 } }}
           extra={
             <Text type="secondary" style={{ fontSize: 12 }}>
-              为每个表头选择校验算子；未选择则该列不校验。映射为会话级临时配置，不影响规则库
+              为每个表头选择已创建的校验规则；未选择则该列不校验。要改参数请去「规则管理」编辑规则
             </Text>
           }
         >
           {hasRecords ? (
-            <Table
-              size="small"
-              pagination={false}
-              scroll={{ y: 240 }}
-              locale={{ emptyText: "导入文件后此处显示表头" }}
-              columns={mappingColumns}
-              dataSource={mappingData}
-            />
+            taggedValidators.length === 0 ? (
+              <Alert
+                type="info"
+                showIcon
+                message="暂无校验规则"
+                description="请先到「规则管理」创建校验规则，再回到此视图为表头映射规则"
+                action={
+                  <Button
+                    size="small"
+                    type="primary"
+                    onClick={() =>
+                      dispatch({ type: "SET_VIEW", activeView: "rules" })
+                    }
+                  >
+                    去创建
+                  </Button>
+                }
+              />
+            ) : (
+              <Table
+                size="small"
+                pagination={false}
+                scroll={{ y: 240 }}
+                locale={{ emptyText: "导入文件后此处显示表头" }}
+                columns={mappingColumns}
+                dataSource={mappingData}
+              />
+            )
           ) : (
             <Empty
               image={Empty.PRESENTED_IMAGE_SIMPLE}

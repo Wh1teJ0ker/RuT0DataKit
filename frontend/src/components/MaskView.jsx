@@ -17,16 +17,24 @@ import {
   ArrowRightOutlined,
   DeleteOutlined,
 } from "@ant-design/icons";
-import { MASKER_DEFS, getMaskerDef } from "../maskerDefs.js";
-import { applyRulesColsRecords, listMaskOpTypes } from "../tauri.js";
+import { applyRulesColsRecords } from "../tauri.js";
 import { PREVIEW_ROW_LIMIT } from "../state.js";
-import ParamField, { buildDefaultParams } from "./ParamField.jsx";
 
 const { Text } = Typography;
 
 // 「不脱敏」选项的哨兵值。放在下拉源第一项，避免空字符串在 antd Select
-// 中触发 allowClear 警告，也避免与真实算子名冲突。
+// 中触发 allowClear 警告，也避免与真实规则冲突。
 const NO_MASK_SENTINEL = "__no_mask__";
+
+// 把一条规则摘要成下拉项 label：`field → masker(params)`，便于用户在下拉里识别。
+function summarizeRule(r) {
+  const paramsStr = r.params
+    ? Object.entries(r.params)
+        .map(([k, v]) => `${k}=${v == null ? "" : String(v)}`)
+        .join(", ")
+    : "";
+  return `${r.field || "（未指定字段）"} → ${r.masker}${paramsStr ? ` (${paramsStr})` : ""}`;
+}
 
 // v0.4.0 T5-7：脱敏视图不再各自导入文件，统一消费 PreprocessView 产出的
 // state.records。无 records 时渲染 Empty 引导用户先去预处理导入。
@@ -38,35 +46,12 @@ function isMaskRule(r) {
 }
 
 // 数据脱敏主视图：四段垂直——①原始数据 ②表头-规则映射 ③预览 ④操作。
-// state/dispatch 从 props 透传；规则通过表头-规则映射 Table 直接 dispatch
-// ADD_RULE/UPDATE_RULE/REMOVE_RULE（kind:"mask"），不再嵌入独立规则表单组件。
+// v0.4.2 BUG 3 修正：段②下拉源从「算子模板」（listMaskOpTypes）改为
+// 「用户在 RulesView 创建的具体规则」（state.rules.maskers）。用户为每个表头
+// 选一条已创建的规则，参数随规则带入，不再在映射表里配参数。要改参数请去
+// RulesView 编辑规则。无规则时显示 Alert 引导用户去创建。
 export default function MaskView({ state, dispatch }) {
   const { message } = AntApp.useApp();
-  const [opTypes, setOpTypes] = useState([]);
-
-  useEffect(() => {
-    let alive = true;
-    listMaskOpTypes()
-      .then((list) => {
-        if (!alive) return;
-        if (Array.isArray(list) && list.length > 0) {
-          setOpTypes(list.map((o) => ({ name: o.name, label: o.label })));
-        } else {
-          setOpTypes(
-            MASKER_DEFS.map((m) => ({ name: m.name, label: m.description }))
-          );
-        }
-      })
-      .catch(() => {
-        if (!alive) return;
-        setOpTypes(
-          MASKER_DEFS.map((m) => ({ name: m.name, label: m.description }))
-        );
-      });
-    return () => {
-      alive = false;
-    };
-  }, []);
 
   // v0.4.0 T5-7：数据源来自 PreprocessView 的 state.records（脱敏不再各自导入文件）。
   // 旧 SET_FILE 路径（state.headers/rows）保留兼容，但优先读 records；为空则
@@ -115,7 +100,9 @@ export default function MaskView({ state, dispatch }) {
 
   // 段 ② 表头-规则映射 Table
   // 规则来源：会话级 maskOverrides 优先 + 全局 rules.maskers 按 field 兜底。
-  // 临时选算子只写 maskOverrides，不污染全局规则库。
+  // 临时选规则只写 maskOverrides，不污染全局规则库。
+  // v0.4.2 BUG 3：下拉源是「用户创建的具体规则」（taggedMaskers），
+  // 不再是算子模板。选规则即把该规则作为 override 写入，参数随规则带入。
   const mappingData = useMemo(() => {
     return headers.map((h, idx) => ({ key: idx, header: h }));
   }, [headers]);
@@ -126,6 +113,16 @@ export default function MaskView({ state, dispatch }) {
     () => (state.rules.maskers || []).filter(isMaskRule),
     [state.rules.maskers]
   );
+  // 下拉源：用户创建的脱敏规则。按规则在 ruleset 的下标作 value（保证唯一）。
+  // 多条规则 field 相同时全部出现在下拉，让用户挑具体哪一条。
+  const ruleOptions = useMemo(() => {
+    const opts = taggedMaskers.map((r, i) => ({
+      value: i,
+      label: summarizeRule(r),
+    }));
+    return [{ value: NO_MASK_SENTINEL, label: "不脱敏" }, ...opts];
+  }, [taggedMaskers]);
+
   const resolveMask = (header) => {
     if (state.maskOverrides && state.maskOverrides[header]) {
       return state.maskOverrides[header];
@@ -133,35 +130,35 @@ export default function MaskView({ state, dispatch }) {
     return taggedMaskers.find((r) => r.field === header) || null;
   };
 
-  const onChangeOp = (header, newOpName) => {
-    if (!newOpName || newOpName === NO_MASK_SENTINEL) {
-      // 选择「不脱敏」= 清除该表头的会话级 override。
+  // 根据某表头当前生效规则在下拉里定位 value：
+  // - 无规则 → NO_MASK_SENTINEL
+  // - override 命中 → 找到该 override 在 taggedMaskers 中的下标（按引用对比）；
+  //   找不到（用户自由输入的 override）则 fallback 到 field 模糊匹配
+  // - 兜底规则命中 → 该规则在 taggedMaskers 中的下标
+  const resolveMaskOptionValue = (header) => {
+    const existing = resolveMask(header);
+    if (!existing) return NO_MASK_SENTINEL;
+    const idx = taggedMaskers.findIndex(
+      (r) =>
+        r === existing ||
+        (r.field === existing.field && r.masker === existing.masker &&
+          JSON.stringify(r.params || {}) === JSON.stringify(existing.params || {}))
+    );
+    return idx >= 0 ? idx : NO_MASK_SENTINEL;
+  };
+
+  const onChangeRule = (header, selectedValue) => {
+    if (selectedValue === NO_MASK_SENTINEL) {
       dispatch({ type: "CLEAR_MASK_OVERRIDE", header });
       return;
     }
-    const def = getMaskerDef(newOpName);
-    let params = buildDefaultParams(def);
-    // 若已有 override 或 rules 中有同 header，保留旧 params 兜底。
-    const existing = resolveMask(header);
-    if (existing && existing.masker === newOpName && existing.params) {
-      const merged = { ...params };
-      for (const p of def.params) {
-        if (existing.params[p] != null) merged[p] = existing.params[p];
-      }
-      params = merged;
-    }
-    const rule = { field: header, masker: newOpName, params, description: undefined };
-    dispatch({ type: "SET_MASK_OVERRIDE", header, rule });
-  };
-
-  const onChangeParam = (header, paramName, value) => {
-    const existing = resolveMask(header);
-    if (!existing) return;
-    const params = { ...existing.params, [paramName]: value };
+    const rule = taggedMaskers[selectedValue];
+    if (!rule) return;
+    // 把规则原样作为 override 写入（保留 masker + params + description）。
     dispatch({
       type: "SET_MASK_OVERRIDE",
       header,
-      rule: { ...existing, params },
+      rule: { ...rule },
     });
   };
 
@@ -189,61 +186,39 @@ export default function MaskView({ state, dispatch }) {
       },
     },
     {
-      title: "脱敏算子",
+      title: "脱敏规则",
       dataIndex: "header",
-      key: "op",
-      width: 220,
+      key: "rule",
       render: (_, row) => {
-        const existing = resolveMask(row.header);
-        const value = existing ? existing.masker : NO_MASK_SENTINEL;
+        const value = resolveMaskOptionValue(row.header);
         return (
           <Select
             value={value}
             showSearch
             style={{ width: "100%" }}
-            options={[
-              { name: NO_MASK_SENTINEL, label: "不脱敏" },
-              ...opTypes,
-            ].map((o) => ({ label: o.label, value: o.name }))}
-            placeholder="选择脱敏算子"
-            onChange={(v) => onChangeOp(row.header, v)}
+            options={ruleOptions}
+            placeholder={
+              taggedMaskers.length === 0
+                ? "暂无规则，请先到「规则管理」创建"
+                : "选择脱敏规则"
+            }
+            onChange={(v) => onChangeRule(row.header, v)}
           />
         );
       },
     },
     {
-      title: "参数",
-      key: "params",
-      width: 380,
+      title: "规则摘要",
+      key: "summary",
       render: (_, row) => {
         const existing = resolveMask(row.header);
         if (!existing) {
-          return <Text type="secondary">不脱敏</Text>;
-        }
-        const def = getMaskerDef(existing.masker);
-        if (!def.params || def.params.length === 0) {
-          return (
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              无参数
-            </Text>
-          );
+          return <Text type="secondary" style={{ fontSize: 12 }}>不脱敏</Text>;
         }
         return (
-          <Space size="small" wrap>
-            {def.params.map((p) => (
-              <div key={p} style={{ display: "flex", flexDirection: "column" }}>
-                <ParamField
-                  paramName={p}
-                  def={def}
-                  value={existing.params?.[p]}
-                  onChange={(v) => onChangeParam(row.header, p, v)}
-                />
-                <Text type="secondary" style={{ fontSize: 10, marginTop: 2 }}>
-                  {def.paramDocs?.[p] || p}
-                </Text>
-              </div>
-            ))}
-          </Space>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            {summarizeRule(existing)}
+          </Text>
         );
       },
     },
@@ -415,19 +390,39 @@ export default function MaskView({ state, dispatch }) {
           styles={{ body: { padding: 12 } }}
           extra={
             <Text type="secondary" style={{ fontSize: 12 }}>
-              为每个表头选择脱敏算子；未选择则该列不脱敏。映射为会话级临时配置，不影响规则库
+              为每个表头选择已创建的脱敏规则；未选择则该列不脱敏。要改参数请去「规则管理」编辑规则
             </Text>
           }
         >
           {hasRecords ? (
-            <Table
-              size="small"
-              pagination={false}
-              scroll={{ y: 240 }}
-              locale={{ emptyText: "导入文件后此处显示表头" }}
-              columns={mappingColumns}
-              dataSource={mappingData}
-            />
+            taggedMaskers.length === 0 ? (
+              <Alert
+                type="info"
+                showIcon
+                message="暂无脱敏规则"
+                description="请先到「规则管理」创建脱敏规则，再回到此视图为表头映射规则"
+                action={
+                  <Button
+                    size="small"
+                    type="primary"
+                    onClick={() =>
+                      dispatch({ type: "SET_VIEW", activeView: "rules" })
+                    }
+                  >
+                    去创建
+                  </Button>
+                }
+              />
+            ) : (
+              <Table
+                size="small"
+                pagination={false}
+                scroll={{ y: 240 }}
+                locale={{ emptyText: "导入文件后此处显示表头" }}
+                columns={mappingColumns}
+                dataSource={mappingData}
+              />
+            )
           ) : (
             <Empty
               image={Empty.PRESENTED_IMAGE_SIMPLE}

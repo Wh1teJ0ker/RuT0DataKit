@@ -198,3 +198,92 @@ Phase 9 可执行：
 2. `docs/versions/0.4.2/更新日志.md` 版本状态 → `release_complete`
 3. 删除 `handoff/`（TASK-BOARD.md + 4 trio HANDOFF/REPORT/REVIEW 文件，如有）
 4. git commit + tag v0.4.2 + push GitHub SSH（`git@github.com:Wh1teJ0ker/RuT0DataKit.git`）
+
+---
+
+# §10. v0.4.2 patch 重审（2026-07-21 第二轮）
+
+## §10.0 重审结论
+
+**qa_passed**（patch 阶段第二轮，版本号保持 0.4.2 不变）。
+
+v0.4.2 发布后用户反馈 3 个 BUG（导入文件缺 json/sql 扩展名、Sidebar 与主页面一起滚动、脱敏/校验下拉显示算子模板而非用户规则）。代码已修复并经 T8-1（docs 同步）+ T8-2（code verify）双任务 reviewer pass + 主会话复核：
+- T8-1：docs/00/01/02/03/04 + README/README_EN + docs/versions/0.4.2/{更新日志,规划需求}.md 共 9 文件同步 patch 修复记录，reviewer 一次退回（D1 任务状态标乐观 / D2 口径限定 / D3 REPORT 描述），fix1 修复后 review_passed。
+- T8-2：纯验证任务，cargo build/test + npm run build + grep 证据全部命中，review_passed 一次通过。
+
+## §10.1 patch 修复审计矩阵
+
+| 修复 | 文件 | 根因 | 改动 | 证据 |
+|------|------|------|------|------|
+| A — json/sql 文件无法导入 | `src-tauri/src/commands.rs:87` | `select_file` 的 `add_filter` 数组缺 `sql`/`json` 后缀；core 的 `detect_type`/`read_records` 本支持 json/sql，但前端选文件对话框不让用户选 .json/.sql 文件 | `add_filter("数据文件", &["csv", "xlsx", "sql", "json", "log", "pcap", "pcapng"])` | `grep -n 'sql.*json.*log.*pcap' src-tauri/src/commands.rs` 命中 :87 |
+| B — Sidebar 与主页面一起滚动 | `frontend/src/App.jsx` | 原 Layout 用 `minHeight: "100vh"` 没锁高度，整页（侧边栏+主内容）一起滚动 | 外层 Layout/Sider/内 Layout 全锁 `height: "100vh" + overflow: "hidden"`，仅 `Content` 单独 `overflowY: auto` | `grep -n 'height.*100vh' frontend/src/App.jsx` 命中 :34/:38/:42 三处 + :38 Sider `position: sticky, top: 0` |
+| C — 脱敏/校验下拉显示算子模板 | `frontend/src/components/MaskView.jsx` + `ValidateView.jsx` | 段②下拉源调 `listMaskOpTypes`/`listValidateOpTypes` 返回算子**模板**清单（template / split_template ...），用户在 RulesView 创建的规则根本进不了脱敏/校验视图 | 下拉源改为 `state.rules.{maskers,validators}`（按 tag 筛选后），value 用规则下标，选规则即整条作为 override 写入（含 params）；删「参数」列改「规则摘要」列；无规则时 Alert 引导去 RulesView | `grep -n taggedMaskers/resolvedMaskOptionValue MaskView.jsx` 命中 16 处；`grep -n taggedValidators/resolveValidatorOptionValue ValidateView.jsx` 命中 13 处；旧 API `listMaskOpTypes`/`listValidateOpTypes` 在两文件中无调用残留（仅 :49 注释文本提到） |
+
+## §10.2 端到端验证证据
+
+| 命令 | 结果 |
+|------|------|
+| `cd src-tauri && cargo build --release` | Finished `release` profile，15.12s（binary 14,043,296 bytes，Jul 21 23:28） |
+| `cargo test -p ruT0-data-kit-core` | lib 327 passed / 3 ignored；bin 10 passed；log_scan 12 passed；log 11 passed；logsign 31 passed；doc-tests 0 — **全部 0 failed** |
+| `cd frontend && npm run build` | vite v5.4.21 / 3009 modules / built in 2.14s（仅有既有 chunk size warning，与 patch 修复无关） |
+| grep 证据 | 3 个修复在源码中真实存在；旧 API 在 MaskView/ValidateView 中已删除（仅 RuleDrawer 仍用，属合理保留：规则模板创建入口，非 BUG 涉及的段②下拉） |
+
+## §10.3 文档一致性审计
+
+| 文档 | 是否同步 patch 修复 | 一致性 |
+|------|---------------------|--------|
+| `docs/00-需求文档.md` | ✅ §v0.4.2 末尾追加 patch 修复段 | 一致 |
+| `docs/01-页面与交互说明.md` | ✅ §1.3 追加 patch 说明 + 界面 4/5 段②描述更新 | 一致 |
+| `docs/02-技术设计文档.md` | ✅ 新增 §2.13.5（A/B/C 三子节） | 一致 |
+| `docs/03-开发任务清单.md` | ✅ v0.4.2 表追加 T8-1/T8-2/T8-3 三行 + 阶段划分追加 patch 阶段 | 一致（T8-1=in_progress 待本审计后回填 verified_complete / T8-2=verified_complete / T8-3=本审计后回填 verified_complete） |
+| `docs/04-版本标准.md` | ✅ milestones 0.4.2 行追加 patch 备注 + 新增 patch 验收口径段 | 一致 |
+| `docs/versions/0.4.2/更新日志.md` | ✅ 版本范围追加 3 项 + 任务进度表追加 3 行 + patch 验证记录段 | 一致 |
+| `docs/versions/0.4.2/规划需求.md` | ✅ 版本范围追加 3 项 + 任务清单表追加 3 行 | 一致 |
+| `README.md` | ✅ v0.4.2 功能表行追加 patch 后缀 | 一致 |
+| `README_EN.md` | ✅ v0.4.2 功能表行追加英文等价 patch 说明 | 一致 |
+
+无文档比代码更乐观的描述（patch 修复都已实施且 e2e 通过）。
+
+## §10.4 任务完成度
+
+| 任务 | scope | reviewer 结论 | 主会话判定 |
+|------|-------|---------------|-----------|
+| T8-1 | docs 同步 3 个 BUG 修复到 9 文件 | fix1 review_passed（一次退回：D1 任务状态乐观 / D2 口径限定 / D3 REPORT 描述，已修） | verified_complete |
+| T8-2 | code verify（cargo test + npm build + grep 证据） | review_passed（一次通过） | verified_complete |
+| T8-3 | Release QA 重审（本段） | — | verified_complete |
+
+## §10.5 约束遵守
+
+- **不外发数据**：3 个修复均为本地行为（文件过滤器扩展、CSS Layout 调整、下拉源改为 state 内规则），无网络调用 ✅
+- **零新依赖**：3 个修复均未引入新 crate 或新 npm 包 ✅
+- **向后兼容**：
+  - 修复 A：仅在文件对话框加扩展名，core 的 read_records 行为不变 ✅
+  - 修复 B：仅改 CSS Layout，所有 view 逻辑不变 ✅
+  - 修复 C：MaskView/ValidateView 仍兼容旧 ruleset（无 tag 规则仍按 isMaskRule/isValidateRule 兜底）；RuleDrawer 仍用 listMaskOpTypes/listValidateOpTypes 创建规则模板（合理保留） ✅
+
+## §10.6 已知问题与遗留
+
+| 问题 | 严重级别 | 状态 |
+|------|----------|------|
+| `listMaskOpTypes` / `listValidateOpTypes` 在 RuleDrawer 仍被调用 | 非阻塞 | 合理保留：RuleDrawer 用于规则模板创建入口，与 BUG C「段②下拉」是不同语义，不在本次修复范围 |
+| `frontend/package.json` 版本号未 bump | 非阻塞 | 前端 package.json 版本号非发布门禁必选项；tauri.conf.json version 已决定 bundle 产物版本 |
+| chunk-size warning | 非阻塞 | Vite 既有 warning，与 patch 修复无关 |
+
+无 critical / major 阻塞问题。
+
+## §10.7 发布门禁结论
+
+**qa_passed**（patch 阶段第二轮）。
+
+- 端到端验收已通过且有证据（§10.2） ✅
+- 关键验证命令已运行并通过（cargo build/test + npm run build 全绿） ✅
+- 没有未解决的 critical 或 major 问题（§10.6） ✅
+- `docs/` 与实际实现一致，没有比代码更乐观的完成态描述（§10.3） ✅
+- QA 报告已写入 `docs/qa/versions/0.4.2/QA-审计报告.md`（本段） ✅
+
+## §10.8 Phase 9 后续动作（patch 阶段）
+
+1. `docs/03-开发任务清单.md` / `docs/versions/0.4.2/{更新日志,规划需求}.md` 三文件 T8-1 行回填 `verified_complete`、T8-3 行回填 `verified_complete`（patch 任务全部收口）
+2. 删除 `handoff/TASK-BOARD.md`（patch 阶段闭环完成）
+3. git commit + push（**不新增 tag**，版本号保持 v0.4.2，仅新增 commit 记录 patch 修复）
+4. 不重新打包 .dmg（patch 不 bump 版本号）

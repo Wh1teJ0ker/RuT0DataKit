@@ -25,7 +25,7 @@
 | v0.3.0 | pcap 流量包敏感数据提取（tshark 子进程 + HTTP 字段提取 + 双重 URL 解码 + 自动 base64 字段解码 + 敏感扫描 + PcapView 四段 GUI） | 已发布 v0.3.0 |
 | v0.4.0 | 7 界面架构性完整重构（统一预处理 6 类源 + 多标签规则引擎 + 统一搜索 SearchQuery 枚举 + Tools SQL 解析/正则解析） | 已发布 v0.4.0 |
 | v0.4.1 | 5 项缺陷修复：数据流打通 + 移除各界面 FileToolbar + ToolsView 下拉栏 + SQL 盲注特征自动跳转 + RegexTool 语句→构造正则 + 搜索子串匹配修正 | 已发布 v0.4.1 |
-| v0.4.2 | 设置模块首期：Sidebar 底部「设置」入口 + tshark 多平台自动检测 + 路径配置持久化 + SettingsView UI | 已发布 v0.4.2 |
+| v0.4.2 | 设置模块首期：Sidebar 底部「设置」入口 + tshark 多平台自动检测 + 路径配置持久化 + SettingsView UI（+ 3 项 patch 修复：文件导入对话框补 json/sql 扩展名 / 侧边栏与主页面分离滚动 / 脱敏校验下拉改用用户规则，版本号不变） | 已发布 v0.4.2 |
 
 v0.1.0 已落地：
 - core pipeline：`detect_type` → `SourceReader` → `mask_pipeline` / `mask_pipeline_selected`（行选择，向后兼容）/ `mask_pipeline_columns`（列勾选） → `validate_pipeline`（校验） → `write_masked_csv` / `export_records_csv` / `export_records_xlsx`
