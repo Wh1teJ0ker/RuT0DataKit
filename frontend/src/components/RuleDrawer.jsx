@@ -25,6 +25,7 @@ import { VALIDATOR_DEFS, getValidatorDef } from "../validatorDefs.js";
 import {
   listMaskOpTypes,
   listValidateOpTypes,
+  listRuleTags,
   previewMaskRuleValue,
   previewValidateRuleValue,
 } from "../tauri.js";
@@ -56,6 +57,30 @@ export default function RuleDrawer({ state, dispatch }) {
     mask: MASKER_DEFS.map((m) => ({ name: m.name, label: m.description })),
     validate: VALIDATOR_DEFS.map((v) => ({ name: v.name, label: v.description })),
   });
+
+  // 可选标签下拉源：来自 list_rule_tags 命令（预置标签 ∪ 当前 ruleset tag），
+  // 合并当前编辑规则已有 tags（避免编辑态丢掉未在列表中的自定义 tag）。
+  // rulesJson 取自 state.rules 序列化，编辑/新增态共用同一份下拉。
+  const [tagOptions, setTagOptions] = React.useState([]);
+  const rulesJson = React.useMemo(() => {
+    const r = state.rules || { maskers: [], validators: [] };
+    return JSON.stringify({ maskers: r.maskers, validators: r.validators });
+  }, [state.rules]);
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const tags = await listRuleTags(rulesJson);
+        if (cancelled) return;
+        setTagOptions(Array.isArray(tags) ? tags : []);
+      } catch {
+        if (!cancelled) setTagOptions([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [rulesJson]);
   React.useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -106,6 +131,7 @@ export default function RuleDrawer({ state, dispatch }) {
         field: editingRule.field,
         op: opVal,
         description: editingRule.description || "",
+        tags: Array.isArray(editingRule.tags) ? [...editingRule.tags] : [],
       };
       for (const p of curDef.params) {
         const v =
@@ -125,6 +151,7 @@ export default function RuleDrawer({ state, dispatch }) {
       form.setFieldsValue({
         kind: k,
         op: firstOp,
+        tags: [],
         ...buildDefaultParams(firstDef),
       });
     }
@@ -172,10 +199,12 @@ export default function RuleDrawer({ state, dispatch }) {
     const k = values.kind || "mask";
     const curDef = k === "mask" ? getMaskerDef(values.op) : getValidatorDef(values.op);
     const params = normalizeParams(curDef, values);
+    const tags = Array.isArray(values.tags) ? values.tags.filter((t) => t && t.trim()).map((t) => t.trim()) : [];
     const rule = {
       field: values.field,
       description: values.description ? values.description : undefined,
       params,
+      tags,
     };
     if (k === "mask") rule.masker = values.op;
     else rule.validator = values.op;
@@ -287,6 +316,20 @@ export default function RuleDrawer({ state, dispatch }) {
             </Paragraph>
           </div>
         ) : null}
+
+        <Form.Item
+          label="标签"
+          name="tags"
+          extra="可选：规则分组标签，供按标签过滤；可直接输入自定义标签"
+        >
+          <Select
+            mode="tags"
+            placeholder="选择或输入标签（如 mask / sensitive）"
+            options={tagOptions.map((t) => ({ label: t, value: t }))}
+            tokenSeparators={[",", " "]}
+            style={{ width: "100%" }}
+          />
+        </Form.Item>
 
         {def && def.params.length === 0 ? (
           <Text type="secondary" style={{ fontSize: 12 }}>

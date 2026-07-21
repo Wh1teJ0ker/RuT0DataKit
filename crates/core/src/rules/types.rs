@@ -29,6 +29,11 @@ pub struct FieldRule {
     /// 规则说明，仅文档用途，不影响运行行为。
     #[serde(default)]
     pub description: Option<String>,
+    /// 规则标签，供 `RuleSet::by_tag` 分组过滤使用（如 validate / sensitive）。
+    ///
+    /// 旧 YAML 不含 tags 字段时默认为空 Vec，向后兼容。
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 /// 一条字段脱敏规则。
@@ -44,6 +49,11 @@ pub struct MaskRule {
     /// 规则说明，仅文档用途，不影响运行行为。
     #[serde(default)]
     pub description: Option<String>,
+    /// 规则标签，供 `RuleSet::by_tag_mask` 分组过滤使用（如 mask / sensitive）。
+    ///
+    /// 旧 YAML 不含 tags 字段时默认为空 Vec，向后兼容。
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 /// 规则集合：从单份 YAML 反序列化得到的所有校验 + 脱敏规则。
@@ -53,6 +63,29 @@ pub struct RuleSet {
     pub validators: Vec<FieldRule>,
     #[serde(default)]
     pub maskers: Vec<MaskRule>,
+}
+
+impl RuleSet {
+    /// 返回 `validators` 中 `tags` 包含 `tag` 的校验规则引用。
+    ///
+    /// 大小写敏感；`tags` 为空时返回空切片。用于按标签（validate / sensitive /
+    /// search / sql_parse）筛选规则集合。
+    pub fn by_tag(&self, tag: &str) -> Vec<&FieldRule> {
+        self.validators
+            .iter()
+            .filter(|r| r.tags.iter().any(|t| t == tag))
+            .collect()
+    }
+
+    /// 返回 `maskers` 中 `tags` 包含 `tag` 的脱敏规则引用。
+    ///
+    /// 语义同 [`RuleSet::by_tag`]，作用于脱敏侧。
+    pub fn by_tag_mask(&self, tag: &str) -> Vec<&MaskRule> {
+        self.maskers
+            .iter()
+            .filter(|r| r.tags.iter().any(|t| t == tag))
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -106,5 +139,81 @@ validators:
         let rs: RuleSet = serde_yml::from_str("").unwrap();
         assert!(rs.validators.is_empty());
         assert!(rs.maskers.is_empty());
+    }
+
+    #[test]
+    fn parses_ruleset_with_tags() {
+        let yaml = r#"
+validators:
+  - field: id
+    validator: regex
+    tags: [validate, sensitive]
+maskers:
+  - field: id
+    masker: template
+    tags: [mask, sensitive]
+"#;
+        let rs: RuleSet = serde_yml::from_str(yaml).unwrap();
+        assert_eq!(rs.validators[0].tags, vec!["validate", "sensitive"]);
+        assert_eq!(rs.maskers[0].tags, vec!["mask", "sensitive"]);
+    }
+
+    #[test]
+    fn old_yaml_without_tags_defaults_to_empty_vec() {
+        // 兼容性：旧 YAML 不含 tags 字段，反序列化成功且 tags 为空 Vec。
+        let yaml = r#"
+validators:
+  - field: id
+    validator: idcard
+maskers:
+  - field: phone
+    masker: phone_mask
+"#;
+        let rs: RuleSet = serde_yml::from_str(yaml).unwrap();
+        assert!(rs.validators[0].tags.is_empty());
+        assert!(rs.maskers[0].tags.is_empty());
+    }
+
+    #[test]
+    fn by_tag_filters_validators() {
+        let yaml = r#"
+validators:
+  - field: id
+    validator: regex
+    tags: [validate, sensitive]
+  - field: name
+    validator: regex
+    tags: [validate]
+  - field: phone
+    validator: regex
+    tags: [sensitive]
+maskers: []
+"#;
+        let rs: RuleSet = serde_yml::from_str(yaml).unwrap();
+        let validate_hits: Vec<_> = rs.by_tag("validate").into_iter().map(|r| r.field.as_str()).collect();
+        assert_eq!(validate_hits, ["id", "name"]);
+        let sensitive_hits: Vec<_> = rs.by_tag("sensitive").into_iter().map(|r| r.field.as_str()).collect();
+        assert_eq!(sensitive_hits, ["id", "phone"]);
+        assert!(rs.by_tag("nonexistent").is_empty());
+    }
+
+    #[test]
+    fn by_tag_mask_filters_maskers() {
+        let yaml = r#"
+validators: []
+maskers:
+  - field: id
+    masker: template
+    tags: [mask, sensitive]
+  - field: phone
+    masker: template
+    tags: [mask]
+"#;
+        let rs: RuleSet = serde_yml::from_str(yaml).unwrap();
+        let mask_hits: Vec<_> = rs.by_tag_mask("mask").into_iter().map(|r| r.field.as_str()).collect();
+        assert_eq!(mask_hits, ["id", "phone"]);
+        let sensitive_hits: Vec<_> = rs.by_tag_mask("sensitive").into_iter().map(|r| r.field.as_str()).collect();
+        assert_eq!(sensitive_hits, ["id"]);
+        assert!(rs.by_tag_mask("nonexistent").is_empty());
     }
 }

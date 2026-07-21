@@ -129,6 +129,115 @@ use std::collections::HashMap;
 use regex::Regex;
 
 use crate::log::LogEntry;
+
+/// 从一条 SQL 文本提取所有盲注探针（v0.2.4 T5-9 重构）。
+///
+/// 把 v0.2.2/v0.2.3 写死在 [`BlindAggregator::collect_from_entries`] 内的
+/// 「SQL 文本 → [`BlindProbe`]」逻辑独立成纯函数，使 [`crate::tools::sql_parse`]
+/// 能直接接受纯 SQL 输入复用同一份提取逻辑，而 `log_scan` 路径继续调用它
+/// 保持完全兼容。
+///
+/// - `sql`：已解码的完整 SQL 文本（caller 保证已 URL 解码，本函数不再解码）。
+/// - `response_body_size`：HTTP 响应 body 字节数；`None` 时返回空 Vec
+///   （无 body size 无法判真假，与 v0.2.4 `LogEntry.size = None` 跳过行为一致）。
+/// - `source_ip`：来源 IP；`None` 视为空串（tools::sql_parse 路径无 IP 来源时用空）。
+///
+/// 三类正则（ascii_binary / equality / length）各跑一次，同一条 SQL 可能
+/// 同时命中多类（少见），全部返回。`line_no` 固定 0（tools 路径无日志行号；
+/// `collect_from_entries` 在调用方覆盖真实 `line_no`）。
+pub fn extract_blind_probe(
+    sql: &str,
+    response_body_size: Option<u64>,
+    source_ip: Option<&str>,
+) -> Vec<BlindProbe> {
+    extract_blind_probe_with_line(sql, response_body_size, source_ip, 0)
+}
+
+/// 与 [`extract_blind_probe`] 同语义，但允许调用方传入 `line_no`（log_scan 路径
+/// 用真实日志行号）。`collect_from_entries` 内部调它以保持 v0.2.4 行为完全一致。
+pub fn extract_blind_probe_with_line(
+    sql: &str,
+    response_body_size: Option<u64>,
+    source_ip: Option<&str>,
+    line_no: usize,
+) -> Vec<BlindProbe> {
+    let size = match response_body_size {
+        Some(s) => s,
+        None => return Vec::new(),
+    };
+    let ip = source_ip.unwrap_or("").to_string();
+    let lower = sql.to_lowercase();
+    let re_ascii = ascii_binary_regex();
+    let re_eq = equality_regex();
+    let re_len = length_regex();
+    let mut probes: Vec<BlindProbe> = Vec::new();
+
+    // AsciiBinary：1=read_target、2=char_position、3=comparator、4=threshold。
+    for caps in re_ascii.captures_iter(&lower) {
+        let read_target = caps.get(1).map(|m| m.as_str().to_string());
+        let char_position = caps.get(2).and_then(|m| m.as_str().parse::<u32>().ok());
+        let threshold = caps.get(4).and_then(|m| m.as_str().parse::<u32>().ok());
+        if let (Some(rt), Some(pos), Some(thr)) = (read_target, char_position, threshold) {
+            probes.push(BlindProbe {
+                read_target: rt,
+                char_position: pos,
+                threshold: thr,
+                body_size: size,
+                source_ip: ip.clone(),
+                line_no,
+                probe_kind: ProbeKind::AsciiBinary,
+                equality_char: None,
+            });
+        }
+    }
+
+    // Equality：1=read_target、2=char_position、3='c' 单字符、4=char(N) ascii。
+    for caps in re_eq.captures_iter(&lower) {
+        let read_target = caps.get(1).map(|m| m.as_str().to_string());
+        let char_position = caps.get(2).and_then(|m| m.as_str().parse::<u32>().ok());
+        let eq_char = if let Some(c) = caps.get(3) {
+            c.as_str().chars().next()
+        } else if let Some(n) = caps.get(4) {
+            n.as_str().parse::<u32>().ok().and_then(char::from_u32)
+        } else {
+            None
+        };
+        if let (Some(rt), Some(pos), Some(c)) = (read_target, char_position, eq_char) {
+            // threshold 填字符 ascii 值作哨兵（equality 不走二分路径）。
+            let thr = c as u32;
+            probes.push(BlindProbe {
+                read_target: rt,
+                char_position: pos,
+                threshold: thr,
+                body_size: size,
+                source_ip: ip.clone(),
+                line_no,
+                probe_kind: ProbeKind::Equality,
+                equality_char: Some(c),
+            });
+        }
+    }
+
+    // Length：1=read_target、2=comparator、3=threshold。
+    for caps in re_len.captures_iter(&lower) {
+        let read_target = caps.get(1).map(|m| m.as_str().to_string());
+        let threshold = caps.get(3).and_then(|m| m.as_str().parse::<u32>().ok());
+        if let (Some(rt), Some(thr)) = (read_target, threshold) {
+            probes.push(BlindProbe {
+                read_target: rt,
+                char_position: 0, // 哨兵：length 无位置维度。
+                threshold: thr,
+                body_size: size,
+                source_ip: ip.clone(),
+                line_no,
+                probe_kind: ProbeKind::Length,
+                equality_char: None,
+            });
+        }
+    }
+
+    probes
+}
 /// 盲注探针类型（v0.2.3）。
 ///
 /// - [`ProbeKind::AsciiBinary`]：`ascii(substr((<rt>),<pos>,1))<cmp><thr>`
@@ -257,107 +366,39 @@ impl BlindAggregator {
     /// - 三类正则各跑一次：ascii_binary / equality / length。同一条 entry
     ///   可能同时命中多类（少见），全部 push。
     /// - `size` 为 `None` 的 entry 跳过（无 body size 无法判真假）。
+    ///
+    /// v0.2.4（T5-9）重构：本方法不再内联正则，改对每条 entry 调
+    /// [`extract_blind_probe_with_line`]，与 [`crate::tools::sql_parse`] 共享
+    /// 同一份「SQL 文本 → BlindProbe」逻辑，保持 v0.2.4 log_scan 路径完全兼容。
     pub fn collect_from_entries(entries: &[LogEntry]) -> Self {
-        let re_ascii = ascii_binary_regex();
-        let re_eq = equality_regex();
-        let re_len = length_regex();
         let mut probes = Vec::new();
         for entry in entries {
             if entry.method.is_empty() || entry.path.is_empty() {
                 continue;
             }
-            let size = match entry.size {
-                Some(s) => s,
-                None => continue,
-            };
             // 优先 decoded_query，None 时用 decoded_path。
             let text = match entry.decoded_query.as_deref() {
                 Some(q) => q,
                 None => entry.decoded_path.as_str(),
             };
-            let lower = text.to_lowercase();
-
-            // AsciiBinary：1=read_target、2=char_position、3=comparator、4=threshold。
-            for caps in re_ascii.captures_iter(&lower) {
-                let read_target = caps.get(1).map(|m| m.as_str().to_string());
-                let char_position = caps
-                    .get(2)
-                    .and_then(|m| m.as_str().parse::<u32>().ok());
-                let threshold = caps
-                    .get(4)
-                    .and_then(|m| m.as_str().parse::<u32>().ok());
-                match (read_target, char_position, threshold) {
-                    (Some(rt), Some(pos), Some(thr)) => {
-                        probes.push(BlindProbe {
-                            read_target: rt,
-                            char_position: pos,
-                            threshold: thr,
-                            body_size: size,
-                            source_ip: entry.ip.clone(),
-                            line_no: entry.line_no,
-                            probe_kind: ProbeKind::AsciiBinary,
-                            equality_char: None,
-                        });
-                    }
-                    _ => continue,
-                }
-            }
-
-            // Equality：1=read_target、2=char_position、3='c' 单字符、4=char(N) ascii。
-            for caps in re_eq.captures_iter(&lower) {
-                let read_target = caps.get(1).map(|m| m.as_str().to_string());
-                let char_position = caps
-                    .get(2)
-                    .and_then(|m| m.as_str().parse::<u32>().ok());
-                let eq_char = if let Some(c) = caps.get(3) {
-                    c.as_str().chars().next()
-                } else if let Some(n) = caps.get(4) {
-                    n.as_str().parse::<u32>().ok().and_then(char::from_u32)
-                } else {
-                    None
-                };
-                match (read_target, char_position, eq_char) {
-                    (Some(rt), Some(pos), Some(c)) => {
-                        // threshold 填字符 ascii 值作哨兵（equality 不走二分路径）。
-                        let thr = c as u32;
-                        probes.push(BlindProbe {
-                            read_target: rt,
-                            char_position: pos,
-                            threshold: thr,
-                            body_size: size,
-                            source_ip: entry.ip.clone(),
-                            line_no: entry.line_no,
-                            probe_kind: ProbeKind::Equality,
-                            equality_char: Some(c),
-                        });
-                    }
-                    _ => continue,
-                }
-            }
-
-            // Length：1=read_target、2=comparator、3=threshold。
-            for caps in re_len.captures_iter(&lower) {
-                let read_target = caps.get(1).map(|m| m.as_str().to_string());
-                let threshold = caps
-                    .get(3)
-                    .and_then(|m| m.as_str().parse::<u32>().ok());
-                match (read_target, threshold) {
-                    (Some(rt), Some(thr)) => {
-                        probes.push(BlindProbe {
-                            read_target: rt,
-                            char_position: 0, // 哨兵：length 无位置维度。
-                            threshold: thr,
-                            body_size: size,
-                            source_ip: entry.ip.clone(),
-                            line_no: entry.line_no,
-                            probe_kind: ProbeKind::Length,
-                            equality_char: None,
-                        });
-                    }
-                    _ => continue,
-                }
-            }
+            let mut p = extract_blind_probe_with_line(
+                text,
+                entry.size,
+                Some(entry.ip.as_str()),
+                entry.line_no,
+            );
+            probes.append(&mut p);
         }
+        Self { probes }
+    }
+
+    /// 从已构造的 [`BlindProbe`] 列表构建聚合器（v0.2.4 T5-9 新增）。
+    ///
+    /// 供 [`crate::tools::sql_parse`] 直接喂入由 [`extract_blind_probe`] 抽取
+    /// 的探针，绕开 `LogEntry` 耦合。`log_scan` 路径仍走
+    /// [`collect_from_entries`](Self::collect_from_entries)，二者最终都进入
+    /// 同一 [`aggregate`](Self::aggregate) 算法。
+    pub fn collect_from_probes(probes: Vec<BlindProbe>) -> Self {
         Self { probes }
     }
 

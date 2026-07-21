@@ -17,9 +17,16 @@ pub use mask::{mask_pipeline, mask_pipeline_selected, MaskResult, MaskSummary};
 pub use pcap_scan::scan_pcap;
 pub use validate::{validate_pipeline, ValidateResult, ValidateSummary};
 
+/// v0.4.0 T5-5：搜索统一入口（薄包装，re-export 自 `search` 模块）。
+///
+/// 调用方既可以从 `pipeline::search_records` 也可以从 `search::search_records`
+/// 进入，两者等价；保留 pipeline 入口语义为「表格数据通用处理入口」。
+pub use crate::search::{search_records, SearchHit, SearchMode, SearchQuery, SearchResult};
+
 use std::path::Path;
 
 use crate::error::CoreError;
+use crate::readers::Records;
 
 /// 被处理的数据源类型。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,13 +35,17 @@ pub enum SourceType {
     Xlsx,
     Log,
     Pcap,
+    /// v0.4.0 新增：`.sql` 文件。
+    Sql,
+    /// v0.4.0 新增：`.json` 文件。
+    Json,
     Unknown,
 }
 
 /// 根据路径后缀探测数据源类型。
 ///
-/// `.csv`→Csv、`.xlsx`→Xlsx、`.log`→Log、`.pcap`/`.pcapng`→Pcap，
-/// 其余 `Unknown`。仅按后缀判定，不读取 magic。
+/// `.csv`→Csv、`.xlsx`→Xlsx、`.log`→Log、`.pcap`/`.pcapng`→Pcap、`.sql`→Sql、
+/// `.json`→Json，其余 `Unknown`。仅按后缀判定，不读取 magic。
 pub fn detect_type(path: &Path) -> Result<SourceType, CoreError> {
     let ext = path
         .extension()
@@ -46,9 +57,20 @@ pub fn detect_type(path: &Path) -> Result<SourceType, CoreError> {
         "xlsx" => SourceType::Xlsx,
         "log" => SourceType::Log,
         "pcap" | "pcapng" => SourceType::Pcap,
+        "sql" => SourceType::Sql,
+        "json" => SourceType::Json,
         _ => SourceType::Unknown,
     };
     Ok(t)
+}
+
+/// 统一读取入口：按 [`detect_type`] dispatch 到对应 reader，把文件读成
+/// [`Records`]。
+///
+/// 实际委托给 [`crate::readers::read_records`]，这里仅做 re-export 语义的
+/// 短路径，方便调用方从 `pipeline` 入口取数据。
+pub fn read_records(path: &Path) -> Result<Records, CoreError> {
+    crate::readers::read_records(path)
 }
 
 #[cfg(test)]
@@ -76,6 +98,14 @@ mod tests {
         assert_eq!(
             detect_type(Path::new("a.pcapng")).unwrap(),
             SourceType::Pcap
+        );
+        assert_eq!(
+            detect_type(Path::new("a.sql")).unwrap(),
+            SourceType::Sql
+        );
+        assert_eq!(
+            detect_type(Path::new("a.json")).unwrap(),
+            SourceType::Json
         );
         assert_eq!(
             detect_type(Path::new("a.txt")).unwrap(),

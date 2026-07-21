@@ -81,8 +81,7 @@ mod tests {
                 field: "phone".into(),
                 masker: "template".into(),
                 params: Some(phone_template_params()),
-            description: None,
-            }],
+            description: None,            tags: Vec::new(),            }],
         };
         let result = mask_pipeline(&records, &rules).expect("mask");
 

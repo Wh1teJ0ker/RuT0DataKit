@@ -1,4 +1,4 @@
-import React, { useMemo } from "react";
+import React, { useMemo, useState } from "react";
 import {
   Card,
   Select,
@@ -7,10 +7,12 @@ import {
   Checkbox,
   Space,
   Typography,
+  Switch,
+  Alert,
   App as AntApp,
 } from "antd";
 import { ArrowUpOutlined, ArrowDownOutlined, DownloadOutlined } from "@ant-design/icons";
-import { saveDialog, exportRecordsCsv, exportRecordsXlsx } from "../tauri.js";
+import { saveDialog, exportRecordsCsv, exportRecordsXlsx, exportRecordsJson } from "../tauri.js";
 import { PREVIEW_ROW_LIMIT } from "../state.js";
 
 const { Text } = Typography;
@@ -19,6 +21,8 @@ const { Text } = Typography;
 // 格式 Select（CSV / XLSX）+ 导出按钮。主体为单一 antd Table：表头内含
 // Checkbox（勾选导出列）+ 上下移按钮（调序），单元格直接预览数据。
 // 未勾选的列仍渲染单元格（让用户看到取消勾选的效果），导出时只写 exportColumns。
+// v0.4.0 T5-13：消费 SearchView 跳转携带的 filteredRowIndices——当源数据为
+// raw / records 且开启「仅搜索命中行」开关时，预览与导出都按命中行过滤。
 export default function ExportView({ state, dispatch }) {
   const { message } = AntApp.useApp();
   const {
@@ -52,6 +56,7 @@ export default function ExportView({ state, dispatch }) {
   const formatOptions = [
     { label: "CSV", value: "csv" },
     { label: "XLSX", value: "xlsx" },
+    { label: "JSON", value: "json" },
   ];
 
   const moveColumn = (from, to) => {
@@ -69,29 +74,58 @@ export default function ExportView({ state, dispatch }) {
     dispatch({ type: "SET_EXPORT_COLUMNS", exportColumns: next });
   };
 
+  // v0.4.0 T5-13：搜索命中行过滤（仅对 raw / records 源生效）。
+  const hasFiltered =
+    Array.isArray(state.filteredRowIndices) && state.filteredRowIndices.length > 0;
+  const [onlyFiltered, setOnlyFiltered] = useState(true); // 跳转过来默认开启
+
   // 根据当前 exportSource 计算预览源数据行。
-  // - raw：原始行；masked：脱敏后行；validate：校验结果行（可按 valid/invalid 过滤）。
+  // - raw / records：原始行（"raw" 为旧别名，归一到 "records" 语义）；
+  // - masked：脱敏后行；validate：校验结果行（可按 valid/invalid 过滤）。
+  // v0.4.0 T5-13：当源为 raw/records 且开启 onlyFiltered 且 hasFiltered 时，
+  // 按 filteredRowIndices 过滤。
   const sourceRows = useMemo(
     function computeSourceRows() {
-      if (exportSource === "raw") return rows || [];
-      if (exportSource === "masked") return maskedRows || [];
-      if (exportSource === "validate") {
+      let out;
+      if (exportSource === "raw" || exportSource === "records") out = rows || [];
+      else if (exportSource === "masked") out = maskedRows || [];
+      else if (exportSource === "validate") {
         if (!validateResult) return [];
         const vrows = validateResult.rows || [];
-        if (validateFilter === "all") return vrows;
-        const matrix = validateResult.valid_matrix || [];
-        return vrows.filter((_, i) => {
-          const rowValid = matrix[i] || [];
-          const allValid = rowValid.every((v) => v !== false);
-          const anyInvalid = rowValid.some((v) => v === false);
-          if (validateFilter === "valid") return allValid;
-          if (validateFilter === "invalid") return anyInvalid;
-          return true;
-        });
+        if (validateFilter === "all") out = vrows;
+        else {
+          const matrix = validateResult.valid_matrix || [];
+          out = vrows.filter((_, i) => {
+            const rowValid = matrix[i] || [];
+            const allValid = rowValid.every((v) => v !== false);
+            const anyInvalid = rowValid.some((v) => v === false);
+            if (validateFilter === "valid") return allValid;
+            if (validateFilter === "invalid") return anyInvalid;
+            return true;
+          });
+        }
+      } else return [];
+      // 搜索命中行过滤只对 raw/records 源生效（masked 行号已变，validate 已有自己的 filter）。
+      if (
+        onlyFiltered &&
+        hasFiltered &&
+        (exportSource === "raw" || exportSource === "records")
+      ) {
+        const set = new Set(state.filteredRowIndices);
+        out = out.filter((_, idx) => set.has(idx));
       }
-      return [];
+      return out;
     },
-    [exportSource, rows, maskedRows, validateResult, validateFilter]
+    [
+      exportSource,
+      rows,
+      maskedRows,
+      validateResult,
+      validateFilter,
+      onlyFiltered,
+      hasFiltered,
+      state.filteredRowIndices,
+    ]
   );
 
   // Table dataSource：截断 PREVIEW_ROW_LIMIT 行，按 columnOrder 顺序转对象数组。
@@ -145,12 +179,17 @@ export default function ExportView({ state, dispatch }) {
   );
 
   // 计算导出参数：rulesJson + selectedRowIndices。
-  // 对「原始数据」源传空规则集避免脱敏；校验源按行过滤筛选行索引。
+  // 对「原始数据」源（raw / records）传空规则集避免脱敏；校验源按行过滤筛选行索引。
+  // v0.4.0 T5-13：raw/records 源且开启搜索命中行过滤时，selectedRowIndices
+  // 取 filteredRowIndices（与后端 selectedRowIndices 语义对齐——传入要保留的行号）。
   const computeExportArgs = () => {
     let rulesJson;
     let selectedRowIndices = null;
-    if (exportSource === "raw") {
+    if (exportSource === "raw" || exportSource === "records") {
       rulesJson = JSON.stringify({ maskers: [], validators: [] });
+      if (onlyFiltered && hasFiltered) {
+        selectedRowIndices = [...state.filteredRowIndices].sort((a, b) => a - b);
+      }
     } else {
       rulesJson = JSON.stringify(rules);
     }
@@ -193,7 +232,8 @@ export default function ExportView({ state, dispatch }) {
       return;
     }
     const { rulesJson, selectedRowIndices } = computeExportArgs();
-    const ext = exportFormat === "xlsx" ? "xlsx" : "csv";
+    const ext =
+      exportFormat === "xlsx" ? "xlsx" : exportFormat === "json" ? "json" : "csv";
     const defaultName = `export_${Date.now()}.${ext}`;
     const outPath = await saveDialog(defaultName, ext);
     if (!outPath) {
@@ -212,6 +252,8 @@ export default function ExportView({ state, dispatch }) {
       ];
       if (exportFormat === "xlsx") {
         await exportRecordsXlsx(...args);
+      } else if (exportFormat === "json") {
+        await exportRecordsJson(...args);
       } else {
         await exportRecordsCsv(...args);
       }
@@ -227,6 +269,24 @@ export default function ExportView({ state, dispatch }) {
   return (
     <Card title="数据导出" styles={{ body: { padding: 12 } }}>
       <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+        {hasFiltered && (exportSource === "raw" || exportSource === "records") && (
+          <Alert
+            type="info"
+            showIcon
+            message={
+              <Space size="small">
+                <Switch
+                  size="small"
+                  checked={onlyFiltered}
+                  onChange={setOnlyFiltered}
+                />
+                <Text style={{ fontSize: 13 }}>
+                  仅导出搜索命中行（{state.filteredRowIndices.length} 行）
+                </Text>
+              </Space>
+            }
+          />
+        )}
         <Space size="middle" wrap>
           <span>
             <Text type="secondary" style={{ fontSize: 12, marginRight: 8 }}>

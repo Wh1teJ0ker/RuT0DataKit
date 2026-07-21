@@ -133,8 +133,7 @@ mod tests {
                 params: None,
                 regex: None,
                 message: None,
-                description: None,
-            }],
+                description: None,                tags: Vec::new(),            }],
             maskers: vec![],
         };
         let scan = DefaultSensitiveScan::new();
@@ -157,8 +156,7 @@ mod tests {
                 params: None,
                 regex: None,
                 message: None,
-                description: None,
-            }],
+                description: None,                tags: Vec::new(),            }],
             maskers: vec![],
         };
         let scan = DefaultSensitiveScan::new();
@@ -180,8 +178,7 @@ mod tests {
                 params: None,
                 regex: Some(r"TKN-[A-Z0-9]{6}".into()),
                 message: None,
-                description: None,
-            }],
+                description: None,                tags: Vec::new(),            }],
             maskers: vec![],
         };
         let scan = DefaultSensitiveScan::new();
@@ -202,16 +199,14 @@ mod tests {
                     params: None,
                     regex: None,
                     message: None,
-                    description: None,
-                },
+                    description: None,                    tags: Vec::new(),                },
                 FieldRule {
                     field: "p".into(),
                     validator: "phone".into(),
                     params: None,
                     regex: None,
                     message: None,
-                    description: None,
-                },
+                    description: None,                    tags: Vec::new(),                },
             ],
             maskers: vec![],
         };
@@ -233,8 +228,7 @@ mod tests {
                 params: None,
                 regex: None,
                 message: None,
-                description: None,
-            }],
+                description: None,                tags: Vec::new(),            }],
             maskers: vec![],
         };
         let scan = DefaultSensitiveScan::new();

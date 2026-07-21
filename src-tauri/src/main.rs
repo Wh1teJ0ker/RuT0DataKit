@@ -25,8 +25,18 @@ fn main() {
             commands::preview_validate_rule_value,
             commands::list_mask_op_types,
             commands::list_validate_op_types,
+            commands::list_rule_tags,
             commands::scan_log_file,
             commands::scan_pcap_file,
+            commands::preprocess_file,
+            commands::explain_regex,
+            commands::generate_regex,
+            commands::list_regex_templates,
+            commands::parse_sql_tool,
+            commands::export_records_json,
+            commands::apply_rules_cols_records,
+            commands::run_validate_records,
+            commands::search_records,
         ])
         .run(tauri::generate_context!())
         .expect("error while running RuT0DataKit GUI");

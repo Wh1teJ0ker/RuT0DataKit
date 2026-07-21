@@ -68,6 +68,173 @@ pub fn list_validate_op_types() -> Vec<(&'static str, &'static str)> {
     ]
 }
 
+/// 一个预置模板条目：只导出元信息，不绑定具体 `MaskOp` / `ValidateOp` 实例，
+/// 避免与 `operator.rs` 耦合。T5-4 GUI 消费此结构按标签分组渲染常用模板。
+///
+/// 字段说明：
+/// - `name`：模板短名（用作规则 `masker` / `validator` 字段或模板引用 key）。
+/// - `label`：人类可读名称（GUI 标签）。
+/// - `tags`：分组标签（如 `mask` / `validate` / `sensitive` / `search` / `sql_parse`）。
+/// - `params_template`：参数样例（YAML/JSON 片段的弱类型映射），供 GUI 预填。
+///   `None` 表示该模板无需预置参数（由调用方按算子类型自行编辑）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct PresetEntry {
+    pub name: &'static str,
+    pub label: &'static str,
+    pub tags: &'static [&'static str],
+    pub params_template: Option<serde_yml::Mapping>,
+}
+
+/// 内部静态描述：与 [`PresetEntry`] 同构但 `params_template` 用 `&[&str]`
+/// 键值对表示，便于在 `static` 上下文声明，运行期再组装为 `Mapping`。
+struct PresetSpec {
+    name: &'static str,
+    label: &'static str,
+    tags: &'static [&'static str],
+    /// `(key, raw_yaml_value)` 对；`raw_yaml_value` 会经 `serde_yml` 解析为
+    /// `serde_yml::Value`，支持数字 / 字符串 / 布尔。
+    params: &'static [(&'static str, &'static str)],
+}
+
+/// 内置预置模板全集（按标签分组）。
+///
+/// 维护原则：
+/// - 不硬编码 `MaskOp` / `ValidateOp` 实例，只导出元信息 + 参数样例。
+/// - `params` 中值字符串经 `serde_yml::from_str` 解析为 `Value`，键名与
+///   `default_mask.yaml` / 通用算子 params 对齐。
+/// - 新增标签（如 `search` / `sql_parse`）时在此追加 `PresetSpec`。
+static PRESET_SPECS: &[PresetSpec] = &[
+    // ===== mask 标签：脱敏侧常用模板 =====
+    PresetSpec {
+        name: "template_idcard",
+        label: "身份证号脱敏（保留前6后4）",
+        tags: &["mask", "sensitive"],
+        params: &[
+            ("keep_prefix", "6"),
+            ("keep_suffix", "4"),
+            ("mask_char", r#""*""#),
+            ("mask_min_len", "8"),
+            ("min_len", "18"),
+            ("max_len", "18"),
+            ("cjk", "false"),
+        ],
+    },
+    PresetSpec {
+        name: "template_phone",
+        label: "手机号脱敏（保留前3后4）",
+        tags: &["mask", "sensitive"],
+        params: &[
+            ("keep_prefix", "3"),
+            ("keep_suffix", "4"),
+            ("mask_char", r#""*""#),
+            ("mask_min_len", "4"),
+            ("min_len", "11"),
+            ("max_len", "11"),
+            ("cjk", "false"),
+        ],
+    },
+    PresetSpec {
+        name: "template_name_cjk",
+        label: "中文姓名脱敏（CJK 分支）",
+        tags: &["mask", "sensitive"],
+        params: &[
+            ("keep_prefix", "1"),
+            ("keep_suffix", "1"),
+            ("mask_char", r#""*""#),
+            ("mask_min_len", "1"),
+            ("cjk", "true"),
+        ],
+    },
+    PresetSpec {
+        name: "split_template_email",
+        label: "邮箱本地部分脱敏",
+        tags: &["mask", "sensitive"],
+        params: &[
+            ("separator", r#""@""#),
+            ("segment_index", "0"),
+            ("keep_prefix", "1"),
+            ("keep_suffix", "1"),
+            ("mask_char", r#""*""#),
+            ("mask_min_len", "1"),
+            ("cjk", "true"),
+        ],
+    },
+    // ===== validate 标签：校验侧常用模板 =====
+    PresetSpec {
+        name: "validate_idcard",
+        label: "身份证号格式校验",
+        tags: &["validate", "sensitive"],
+        params: &[("pattern", r"'^\d{17}[0-9Xx]$'")],
+    },
+    PresetSpec {
+        name: "validate_phone",
+        label: "手机号格式校验",
+        tags: &["validate", "sensitive"],
+        params: &[("pattern", r"'^\d{11}$'")],
+    },
+    PresetSpec {
+        name: "validate_email",
+        label: "邮箱格式校验",
+        tags: &["validate", "sensitive"],
+        // EMAIL_REGEX 是 const &str，无法在 static 切片字面量里内联拼接，
+        // 直接写字面量正则；值与 EMAIL_REGEX 保持同步。
+        // 用单引号 YAML 字符串：反斜杠按字面量处理，无需双重转义。
+        params: &[(
+            "pattern",
+            r"'^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$'",
+        )],
+    },
+    PresetSpec {
+        name: "validate_bankcard",
+        label: "银行卡号格式校验",
+        tags: &["validate", "sensitive"],
+        params: &[("pattern", r"'^\d{16,19}$'")],
+    },
+    // ===== sensitive 标签：由 mask / validate 条目同时携带，
+    // 通过 list_tagged_presets("sensitive") 可一次性取回所有敏感字段模板。
+    // 这里不再重复列举，filter 已覆盖。=====
+];
+
+/// 把 `PresetSpec.params` 组装为 `serde_yml::Mapping`。
+///
+/// 值字符串走 `serde_yml::from_str` 解析，因此 `"6"` → 整数 6、`"true"` →
+/// 布尔、`r#""*""#` → 字符串 `"*"`，与 `default_mask.yaml` 类型一致。
+fn build_params_template(spec: &PresetSpec) -> Option<serde_yml::Mapping> {
+    if spec.params.is_empty() {
+        return None;
+    }
+    let mut m = serde_yml::Mapping::new();
+    for (k, raw_v) in spec.params {
+        let value: serde_yml::Value = serde_yml::from_str(raw_v).expect("PresetSpec params raw YAML must parse");
+        m.insert(serde_yml::Value::String((*k).into()), value);
+    }
+    Some(m)
+}
+
+/// 把 `PresetSpec` 转为运行期 `PresetEntry`。
+fn spec_to_entry(spec: &PresetSpec) -> PresetEntry {
+    PresetEntry {
+        name: spec.name,
+        label: spec.label,
+        tags: spec.tags,
+        params_template: build_params_template(spec),
+    }
+}
+
+/// 按标签返回预置模板清单。
+///
+/// 至少覆盖 `mask` / `validate` / `sensitive` 三类标签。返回条目的 `tags`
+/// 任一匹配即纳入。未匹配标签返回空 Vec（不报错）。本函数**不构造任何
+/// `MaskOp` / `ValidateOp` 实例**，仅返回元信息 + 参数样例，下游可基于
+/// `params_template` 渲染 GUI 表单或生成规则草稿。
+pub fn list_tagged_presets(tag: &str) -> Vec<PresetEntry> {
+    PRESET_SPECS
+        .iter()
+        .filter(|s| s.tags.iter().any(|t| *t == tag))
+        .map(spec_to_entry)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -81,6 +248,53 @@ mod tests {
         let val = list_validate_op_types();
         let val_names: Vec<&str> = val.iter().map(|(n, _)| *n).collect();
         assert_eq!(val_names, ["regex", "algorithm", "regex_with_guard"]);
+    }
+
+    #[test]
+    fn list_tagged_presets_covers_mask_validate_sensitive() {
+        // mask 标签：至少 4 条脱敏模板。
+        let mask_presets = list_tagged_presets("mask");
+        assert!(mask_presets.len() >= 4, "mask presets: {}", mask_presets.len());
+        assert!(mask_presets.iter().all(|p| p.tags.contains(&"mask")));
+
+        // validate 标签：至少 4 条校验模板。
+        let validate_presets = list_tagged_presets("validate");
+        assert!(validate_presets.len() >= 4, "validate presets: {}", validate_presets.len());
+        assert!(validate_presets.iter().all(|p| p.tags.contains(&"validate")));
+
+        // sensitive 标签：mask + validate 中带 sensitive 的并集，至少 8 条。
+        let sensitive_presets = list_tagged_presets("sensitive");
+        assert!(sensitive_presets.len() >= 8, "sensitive presets: {}", sensitive_presets.len());
+        assert!(sensitive_presets.iter().all(|p| p.tags.contains(&"sensitive")));
+
+        // mask / validate 应不重叠（name 不同），sensitive 与二者交集一致。
+        let mask_names: Vec<&str> = mask_presets.iter().map(|p| p.name).collect();
+        let val_names: Vec<&str> = validate_presets.iter().map(|p| p.name).collect();
+        for n in &mask_names {
+            assert!(!val_names.contains(n), "mask preset {n} should not appear in validate");
+        }
+
+        // 每条 mask/validate 模板都带 params_template（非 None），便于 GUI 预填。
+        for p in mask_presets.iter().chain(validate_presets.iter()) {
+            assert!(p.params_template.is_some(), "preset {} should carry params_template", p.name);
+        }
+
+        // 未知标签返回空 Vec（不报错）。
+        assert!(list_tagged_presets("nonexistent_tag").is_empty());
+    }
+
+    #[test]
+    fn preset_entry_params_template_roundtrips_through_serde() {
+        // params_template 序列化后能反序列化为 Mapping，确保 GUI 拿到的参数样例可用。
+        let mask_presets = list_tagged_presets("mask");
+        let p = mask_presets
+            .iter()
+            .find(|p| p.name == "template_idcard")
+            .expect("template_idcard preset");
+        let m = p.params_template.as_ref().expect("params_template");
+        let s = serde_yml::to_string(m).unwrap();
+        let back: serde_yml::Mapping = serde_yml::from_str(&s).unwrap();
+        assert_eq!(back, *m);
     }
 
     #[test]

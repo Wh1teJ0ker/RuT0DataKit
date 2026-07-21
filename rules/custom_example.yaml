@@ -7,9 +7,12 @@
 #   mask_min_len               脱敏段至少插入多少个 mask_char
 #   min_len / max_len          可选：值总字符数不在区间内时原样返回
 #   cjk                        true 走 CJK 姓名/邮箱本地部分分支（默认 false）
+#   tags                       规则标签，供 RuleSet::by_tag_mask 过滤；
+#                              旧 YAML 不含 tags 时默认空 Vec（向后兼容）。
 maskers:
   - field: customer_id
     masker: template
+    tags: [mask]
     params:
       keep_prefix: 2
       keep_suffix: 2
@@ -18,6 +21,7 @@ maskers:
       cjk: false
   - field: phone
     masker: template
+    tags: [mask, sensitive]
     params:
       keep_prefix: 3
       keep_suffix: 4

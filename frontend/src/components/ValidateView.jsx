@@ -16,7 +16,7 @@ import {
   DeleteOutlined,
 } from "@ant-design/icons";
 import { VALIDATOR_DEFS, getValidatorDef } from "../validatorDefs.js";
-import { runValidate, listValidateOpTypes } from "../tauri.js";
+import { runValidateRecords, listValidateOpTypes } from "../tauri.js";
 import { PREVIEW_ROW_LIMIT } from "../state.js";
 import ParamField, { buildDefaultParams } from "./ParamField.jsx";
 
@@ -26,6 +26,15 @@ const { Text } = Typography;
 // 中触发 allowClear 警告，也避免与真实算子名冲突。与 MaskView 的 __no_mask__
 // 哨兵保持对称，确保两个映射表结构一致。
 const NO_VALIDATE_SENTINEL = "__no_validate__";
+
+// v0.4.0 T5-7：校验视图不再各自导入文件，统一消费 PreprocessView 产出的
+// state.records。无 records 时渲染 Empty 引导用户先去预处理导入。
+// 规则筛选：全局 rules.validators 中带 "validate" 标签的规则归校验侧；无标签
+// 规则默认归 validate（向后兼容旧 ruleset）。会话级 validateOverrides 仍按 header 合并。
+function isValidateRule(r) {
+  const tags = r.tags || [];
+  return tags.length === 0 || tags.includes("validate");
+}
 
 // 数据校验主视图：四段垂直——①原始数据 ②表头-规则映射 ③预览（非法红底）④操作。
 // state/dispatch 从 props 透传；规则通过表头-规则映射 Table 直接 dispatch
@@ -63,41 +72,56 @@ export default function ValidateView({ state, dispatch }) {
     };
   }, []);
 
+  // v0.4.0 T5-7：数据源来自 PreprocessView 的 state.records（校验不再各自导入文件）。
+  // 旧 SET_FILE 路径（state.headers/rows）保留兼容，但优先读 records；为空则
+  // 渲染 Empty 引导用户回到预处理视图导入文件。
+  const records = state.records || null;
+  const hasRecords =
+    records && Array.isArray(records.headers) && records.headers.length > 0;
+  const headers = hasRecords ? records.headers : [];
+  const rows = hasRecords ? records.rows : [];
+  const rowCount = hasRecords && records.rowCount != null
+    ? records.rowCount
+    : rows.length;
+
   // 段 ① 原始数据 Table
   const rawData = useMemo(() => {
-    return state.rows.slice(0, PREVIEW_ROW_LIMIT).map((row, idx) => {
+    return rows.slice(0, PREVIEW_ROW_LIMIT).map((row, idx) => {
       const o = { key: idx };
-      state.headers.forEach((h, c) => {
+      headers.forEach((h, c) => {
         o[h] = row[c] != null ? row[c] : "";
       });
       return o;
     });
-  }, [state.rows, state.headers]);
+  }, [rows, headers]);
 
   const rawColumns = useMemo(() => {
-    return state.headers.map((h) => ({
+    return headers.map((h) => ({
       title: h,
       dataIndex: h,
       key: h,
       ellipsis: true,
     }));
-  }, [state.headers]);
+  }, [headers]);
 
   // 段 ② 表头-规则映射 Table
   // 规则来源：会话级 validateOverrides 优先 + 全局 rules.validators 按 field 兜底。
   // 临时选算子只写 validateOverrides，不污染全局规则库。
   const mappingData = useMemo(() => {
-    return state.headers.map((h, idx) => ({ key: idx, header: h }));
-  }, [state.headers]);
+    return headers.map((h, idx) => ({ key: idx, header: h }));
+  }, [headers]);
 
   // 取某表头当前生效的规则（override 优先，rules 兜底）。返回 null 表示不校验。
+  // v0.4.0 T5-7：全局兜底规则只取「无标签 或 含 validate 标签」的子集（by_tag 语义）。
+  const taggedValidators = useMemo(
+    () => (state.rules.validators || []).filter(isValidateRule),
+    [state.rules.validators]
+  );
   const resolveValidator = (header) => {
     if (state.validateOverrides && state.validateOverrides[header]) {
       return state.validateOverrides[header];
     }
-    return (
-      state.rules.validators.find((r) => r.field === header) || null
-    );
+    return taggedValidators.find((r) => r.field === header) || null;
   };
 
   const onChangeOp = (header, newOpName) => {
@@ -259,8 +283,8 @@ export default function ValidateView({ state, dispatch }) {
   // 段 ③ 预览 Table（非法单元格红底）
   const vrHeaders = useMemo(() => {
     if (!state.validateResult) return [];
-    return state.validateResult.headers || state.headers;
-  }, [state.validateResult, state.headers]);
+    return state.validateResult.headers || headers;
+  }, [state.validateResult, headers]);
 
   const previewData = useMemo(() => {
     if (!state.validateResult || !state.validateResult.rows) return [];
@@ -313,21 +337,22 @@ export default function ValidateView({ state, dispatch }) {
 
   // 段 ④ onRun
   // 应用时合并 override 优先 + 全局 rules 兜底，组成临时 RuleSet。
-  // 全局规则库不被污染。
+  // 全局规则库不被污染。v0.4.0 T5-7：全局兜底只取「无标签 或 含 validate 标签」子集，
+  // 对应 RuleSet::by_tag("validate") + 无标签规则兼容。
   const effectiveValidators = useMemo(() => {
     const map = new Map();
-    for (const r of state.rules.validators) {
+    for (const r of taggedValidators) {
       map.set(r.field, r);
     }
     for (const r of Object.values(state.validateOverrides || {})) {
       map.set(r.field, r);
     }
     return Array.from(map.values());
-  }, [state.rules.validators, state.validateOverrides]);
+  }, [taggedValidators, state.validateOverrides]);
 
   const onRun = async () => {
-    if (!state.filePath) {
-      message.warning("请先导入文件");
+    if (!hasRecords) {
+      message.warning("请先到数据预处理导入文件");
       return;
     }
     if (effectiveValidators.length === 0) {
@@ -338,7 +363,7 @@ export default function ValidateView({ state, dispatch }) {
     dispatch({ type: "SET_HINT", actionHint: "正在运行校验..." });
     try {
       const rulesJson = JSON.stringify({ maskers: [], validators: effectiveValidators });
-      const r = await runValidate(state.filePath, rulesJson);
+      const r = await runValidateRecords(records.headers, records.rows, rulesJson);
       dispatch({ type: "SET_VALIDATE", validateResult: r });
       dispatch({ type: "SET_HINT", actionHint: "校验完成" });
     } catch (e) {
@@ -358,19 +383,26 @@ export default function ValidateView({ state, dispatch }) {
           styles={{ body: { padding: 12 } }}
           extra={
             <Text type="secondary" style={{ fontSize: 12 }}>
-              共 {state.rowCount} 行 / 显示前 {PREVIEW_ROW_LIMIT} 行
+              共 {rowCount} 行 / 显示前 {PREVIEW_ROW_LIMIT} 行
             </Text>
           }
         >
-          <Table
-            size="small"
-            pagination={false}
-            scroll={{ y: 240, x: "max-content" }}
-            sticky
-            locale={{ emptyText: "导入文件后此处显示原始数据" }}
-            columns={rawColumns}
-            dataSource={rawData}
-          />
+          {hasRecords ? (
+            <Table
+              size="small"
+              pagination={false}
+              scroll={{ y: 240, x: "max-content" }}
+              sticky
+              locale={{ emptyText: "导入文件后此处显示原始数据" }}
+              columns={rawColumns}
+              dataSource={rawData}
+            />
+          ) : (
+            <Empty
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+              description="请先到数据预处理导入文件"
+            />
+          )}
         </Card>
 
         {/* 段 ② 表头-规则映射 */}
@@ -383,14 +415,21 @@ export default function ValidateView({ state, dispatch }) {
             </Text>
           }
         >
-          <Table
-            size="small"
-            pagination={false}
-            scroll={{ y: 240 }}
-            locale={{ emptyText: "导入文件后此处显示表头" }}
-            columns={mappingColumns}
-            dataSource={mappingData}
-          />
+          {hasRecords ? (
+            <Table
+              size="small"
+              pagination={false}
+              scroll={{ y: 240 }}
+              locale={{ emptyText: "导入文件后此处显示表头" }}
+              columns={mappingColumns}
+              dataSource={mappingData}
+            />
+          ) : (
+            <Empty
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+              description="请先到数据预处理导入文件"
+            />
+          )}
         </Card>
 
         {/* 段 ③ 预览 */}

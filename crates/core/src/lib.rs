@@ -6,6 +6,9 @@
 //! （SQLi 签名引擎，6 类内置 YAML 签名）。
 //! v0.3.0 新增 pcap 模块（tshark 子进程 + HTTP 字段提取 + base64 重组 +
 //! 敏感扫描，产出 `kind="pcap_scan"` 报告）。
+//! v0.4.0 readers 新增 `SqlReader` / `JsonReader` / `PcapRecordsReader` /
+//! `LogRecordsReader`，统一 `read_records(path) -> Records` 入口，pcap/log
+//! 不再只产 Report，也能转成表格参与预处理。
 
 pub mod error;
 pub mod log;
@@ -17,4 +20,6 @@ pub mod readers;
 pub mod report;
 pub mod rules;
 pub mod scan;
+pub mod search;
+pub mod tools;
 pub mod validators;

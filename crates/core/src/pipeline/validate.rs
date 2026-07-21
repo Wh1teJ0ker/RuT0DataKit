@@ -128,8 +128,7 @@ mod tests {
                 params: None,
                 regex: None,
                 message: None,
-                description: None,
-            }],
+                description: None,                tags: Vec::new(),            }],
             maskers: vec![],
         };
 
@@ -174,8 +173,7 @@ mod tests {
                 params: None,
                 regex: None,
                 message: None,
-                description: None,
-            }],
+                description: None,                tags: Vec::new(),            }],
             maskers: vec![],
         };
         let r = validate_pipeline(&records, &rules).expect("validate");

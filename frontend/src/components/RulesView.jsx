@@ -11,6 +11,7 @@ import {
   Spin,
   Alert,
   Input,
+  Select,
   App as AntApp,
 } from "antd";
 import {
@@ -23,9 +24,33 @@ import {
   CloseCircleOutlined,
 } from "@ant-design/icons";
 import RuleDrawer from "./RuleDrawer.jsx";
-import { previewMaskRuleValue, previewValidateRuleValue } from "../tauri.js";
+import { previewMaskRuleValue, previewValidateRuleValue, listRuleTags } from "../tauri.js";
 
 const { Text, Paragraph } = Typography;
+
+// antd Tag 预置色板（与 antd 文档一致）：tag 颜色按字符串哈希取模映射，
+// 同一 tag 始终同色。
+const TAG_PRESET_COLORS = [
+  "magenta",
+  "red",
+  "volcano",
+  "orange",
+  "gold",
+  "lime",
+  "green",
+  "cyan",
+  "blue",
+  "geekblue",
+  "purple",
+];
+
+function tagColor(tag) {
+  let h = 0;
+  for (let i = 0; i < tag.length; i++) {
+    h = (h * 31 + tag.charCodeAt(i)) >>> 0;
+  }
+  return TAG_PRESET_COLORS[h % TAG_PRESET_COLORS.length];
+}
 
 // 规则管理视图（独立系统）：不依赖任何数据文件导入。
 // - 右上角仅保留「添加规则」按钮（不再有保存为 YAML / 从 YAML 加载）。
@@ -33,13 +58,42 @@ const { Text, Paragraph } = Typography;
 // - 试运行改为用户在卡片内手动输入一个样例值，直接对算子跑一次，
 //   完全不读取已导入数据文件，规则管理与数据文件彻底解耦。
 export default function RulesView({ state, dispatch }) {
-  const { rules } = state;
+  const { rules, rulesTagFilter } = state;
+
+  // 可选标签列表：来自 list_rule_tags 命令（预置标签 ∪ 当前 ruleset 出现的 tag）。
+  // Drawer 加载/编辑时也会拉，但这里只用于顶部过滤 Select；失败退化为空数组。
+  const [tagOptions, setTagOptions] = React.useState([]);
+  const rulesJson = React.useMemo(() => {
+    return JSON.stringify({
+      maskers: rules.maskers,
+      validators: rules.validators,
+    });
+  }, [rules]);
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const tags = await listRuleTags(rulesJson);
+        if (cancelled) return;
+        setTagOptions(Array.isArray(tags) ? tags : []);
+      } catch {
+        if (!cancelled) setTagOptions([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [rulesJson]);
 
   // 合并 maskers + validators 为单一列表，每条带 __kind / __index。
   const merged = [
     ...rules.maskers.map((r, i) => ({ ...r, __kind: "mask", __index: i })),
     ...rules.validators.map((r, i) => ({ ...r, __kind: "validate", __index: i })),
   ];
+  // 按标签过滤：rulesTagFilter 为 null 时显示全部，否则只显示 tags 含该 tag 的规则。
+  const filtered = rulesTagFilter
+    ? merged.filter((r) => Array.isArray(r.tags) && r.tags.includes(rulesTagFilter))
+    : merged;
 
   const handleAdd = () => {
     dispatch({ type: "SET_EDITING_RULE", rule: { kind: "mask" } });
@@ -73,23 +127,55 @@ export default function RulesView({ state, dispatch }) {
         />
       ) : (
         <>
-          <div style={{ marginBottom: 8 }}>
+          <div style={{ marginBottom: 8, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
             <Text type="secondary" style={{ fontSize: 12 }}>
               共 {rules.maskers.length + rules.validators.length} 条规则
               （脱敏 {rules.maskers.length} · 校验 {rules.validators.length}）
             </Text>
+            <Select
+              size="small"
+              style={{ width: 180 }}
+              placeholder="按标签过滤"
+              value={rulesTagFilter ?? "__all__"}
+              onChange={(v) => {
+                dispatch({
+                  type: "SET_RULES_TAG_FILTER",
+                  tag: v === "__all__" ? null : v,
+                });
+              }}
+              options={[
+                { label: "全部", value: "__all__" },
+                ...tagOptions.map((t) => ({ label: t, value: t })),
+              ]}
+              allowClear
+              onClear={() =>
+                dispatch({ type: "SET_RULES_TAG_FILTER", tag: null })
+              }
+            />
+            {rulesTagFilter ? (
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                当前过滤：{rulesTagFilter}（命中 {filtered.length} 条）
+              </Text>
+            ) : null}
           </div>
-          <List
-            dataSource={merged}
-            renderItem={(item) => (
-              <RuleCard
-                key={`${item.__kind}-${item.__index}`}
-                item={item}
-                onEdit={handleEdit}
-                onRemove={handleRemove}
-              />
-            )}
-          />
+          {filtered.length === 0 ? (
+            <Empty
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+              description={`无带「${rulesTagFilter}」标签的规则`}
+            />
+          ) : (
+            <List
+              dataSource={filtered}
+              renderItem={(item) => (
+                <RuleCard
+                  key={`${item.__kind}-${item.__index}`}
+                  item={item}
+                  onEdit={handleEdit}
+                  onRemove={handleRemove}
+                />
+              )}
+            />
+          )}
         </>
       )}
       <RuleDrawer state={state} dispatch={dispatch} />
@@ -149,6 +235,15 @@ function RuleCard({ item, onEdit, onRemove }) {
             <Text type="secondary" style={{ fontSize: 12 }}>
               ({paramsStr})
             </Text>
+          ) : null}
+          {item.tags && item.tags.length ? (
+            <Space size={4} wrap>
+              {item.tags.map((t) => (
+                <Tag key={t} color={tagColor(t)} style={{ margin: 0 }}>
+                  {t}
+                </Tag>
+              ))}
+            </Space>
           ) : null}
         </Space>
         {item.description ? (

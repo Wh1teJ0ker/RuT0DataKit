@@ -21,7 +21,9 @@ pub use operator::{
     apply_mask_op, apply_validate_op, AlgorithmOp, AlgoKind, ConstReplaceOp, GuardKind, MaskOp,
     MatchMode, RegexOp, RegexReplaceOp, RegexWithGuardOp, SplitTemplateOp, TemplateOp, ValidateOp,
 };
-pub use presets::{list_mask_op_types, list_validate_op_types};
+pub use presets::{
+    list_mask_op_types, list_tagged_presets, list_validate_op_types, PresetEntry,
+};
 pub use registry::{MaskerRegistry, ValidatorRegistry};
 pub use types::{FieldRule, MaskRule, RuleSet};
 
@@ -90,6 +92,7 @@ mod tests {
             regex: Some(r"^1\d{10}$".into()),
             message: Some("bad phone".into()),
             description: None,
+            tags: Vec::new(),
         };
         let v = build_validator(&rule, &reg).expect("regex fallback should produce validator");
         assert!(v.validate("13800138000").valid);
@@ -113,6 +116,7 @@ mod tests {
             regex: None,
             message: None,
             description: None,
+            tags: Vec::new(),
         };
         let v = build_validator(&rule, &reg).expect("registry lookup should produce validator");
         assert!(v.validate("anything").valid);
@@ -128,6 +132,7 @@ mod tests {
             regex: None,
             message: None,
             description: None,
+            tags: Vec::new(),
         };
         assert!(build_validator(&rule, &reg).is_none());
     }
@@ -142,6 +147,7 @@ mod tests {
             regex: Some("(".into()),
             message: None,
             description: None,
+            tags: Vec::new(),
         };
         assert!(build_validator(&rule, &reg).is_none());
     }
@@ -164,6 +170,7 @@ mod tests {
             masker: "template".into(),
             params: Some(params),
             description: None,
+            tags: Vec::new(),
         };
         let m = build_masker(&rule).expect("template masker should be built");
         assert_eq!(m.mask("110101199001011234"), "110101********1234");
@@ -180,6 +187,7 @@ mod tests {
                 masker: name.into(),
                 params: None,
                 description: None,
+                tags: Vec::new(),
             };
             assert!(
                 build_masker(&rule).is_none(),
@@ -197,6 +205,7 @@ mod tests {
                 masker: name.into(),
                 params: None,
                 description: None,
+                tags: Vec::new(),
             };
             assert!(
                 build_masker(&rule).is_some(),

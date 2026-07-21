@@ -846,8 +846,7 @@ mod tests {
             params: Some(params),
             regex: None,
             message: None,
-            description: None,
-        };
+            description: None,            tags: Vec::new(),        };
         let op = ValidateOp::from_rule(&rule).expect("regex op");
         assert!(matches!(op, ValidateOp::Regex(_)));
         assert!(apply_validate_op(&op, "zhangsan@example.com").valid);
@@ -871,8 +870,7 @@ mod tests {
                 params: Some(params),
                 regex: None,
                 message: None,
-                description: None,
-            };
+                description: None,                tags: Vec::new(),            };
             let op = ValidateOp::from_rule(&rule).expect("algorithm op");
             match &op {
                 ValidateOp::Algorithm(a) => assert_eq!(a.algo, kind, "algo {algo_str}"),
@@ -887,8 +885,7 @@ mod tests {
             params: None,
             regex: None,
             message: None,
-            description: None,
-        };
+            description: None,            tags: Vec::new(),        };
         let op = ValidateOp::from_rule(&rule).expect("algorithm default");
         assert!(matches!(op, ValidateOp::Algorithm(AlgorithmOp { algo: AlgoKind::IdCard })));
 
@@ -899,8 +896,7 @@ mod tests {
             params: None,
             regex: None,
             message: None,
-            description: None,
-        };
+            description: None,            tags: Vec::new(),        };
         assert!(ValidateOp::from_rule(&rule).is_none());
     }
 
@@ -917,8 +913,7 @@ mod tests {
             params: Some(params),
             regex: None,
             message: None,
-            description: None,
-        };
+            description: None,            tags: Vec::new(),        };
         let op = ValidateOp::from_rule(&rule).expect("guard phone op");
         assert!(matches!(op, ValidateOp::RegexWithGuard(_)));
         assert!(apply_validate_op(&op, "13812345678").valid);
@@ -935,8 +930,7 @@ mod tests {
             params: Some(params),
             regex: None,
             message: None,
-            description: None,
-        };
+            description: None,            tags: Vec::new(),        };
         let op = ValidateOp::from_rule(&rule).expect("guard mac op");
         assert!(matches!(op, ValidateOp::RegexWithGuard(_)));
         assert!(apply_validate_op(&op, "AA:BB:CC:DD:EE:FF").valid);

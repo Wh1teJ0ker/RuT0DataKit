@@ -19,8 +19,9 @@ pub mod loader;
 pub mod payload_parser;
 
 pub use blind_aggregator::{
-    AggregatedResult, BlindAggregator, BlindProbe, PositionDetail, ProbeKind,
-    ReconstructedDatabase, ReconstructedRow, ReconstructedTable,
+    extract_blind_probe, extract_blind_probe_with_line, AggregatedResult, BlindAggregator,
+    BlindProbe, PositionDetail, ProbeKind, ReconstructedDatabase, ReconstructedRow,
+    ReconstructedTable,
 };
 pub use loader::{load_builtin_signatures, load_signatures_from_str, BUILTIN_YAML};
 pub use payload_parser::{parse_payload, ParsedPayload};

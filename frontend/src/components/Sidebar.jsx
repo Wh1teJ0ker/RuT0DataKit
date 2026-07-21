@@ -1,31 +1,27 @@
 import { Menu } from "antd";
 import {
+  AppstoreOutlined,
+  SettingOutlined,
+  SearchOutlined,
   SafetyCertificateOutlined,
   CheckCircleOutlined,
   DownloadOutlined,
-  SettingOutlined,
-  ProfileOutlined,
-  WifiOutlined,
+  ToolOutlined,
 } from "@ant-design/icons";
 
-// 6 个 nav item：6 active（mask/validate/export/rules/log/pcap）。
-// 受控：selectedKeys 来自 state.activeView，onClick dispatch SET_VIEW。
+// v0.4.0 Sidebar：7 项 active，按用户主流程排序：
+//   数据预处理 → 规则管理 → 搜索 → 数据脱敏 → 数据校验 → 数据导出 → Tools。
+// 原 log/pcap 独立项删除（其能力下沉到搜索 / Tools，LogView/PcapView 文件保留供后续复用）。
+// 无 disabled 项；点击 dispatch SET_VIEW，未实现的 view 由 App.jsx 渲染占位 Card。
 export default function Sidebar({ state, dispatch }) {
   const items = [
+    { key: "preprocess", icon: <AppstoreOutlined />, label: "数据预处理" },
+    { key: "rules", icon: <SettingOutlined />, label: "规则管理" },
+    { key: "search", icon: <SearchOutlined />, label: "搜索" },
     { key: "mask", icon: <SafetyCertificateOutlined />, label: "数据脱敏" },
     { key: "validate", icon: <CheckCircleOutlined />, label: "数据校验" },
     { key: "export", icon: <DownloadOutlined />, label: "数据导出" },
-    { key: "rules", icon: <SettingOutlined />, label: "规则管理" },
-    {
-      key: "log",
-      icon: <ProfileOutlined />,
-      label: "日志扫描",
-    },
-    {
-      key: "pcap",
-      icon: <WifiOutlined />,
-      label: "流量分析",
-    },
+    { key: "tools", icon: <ToolOutlined />, label: "Tools" },
   ];
 
   return (

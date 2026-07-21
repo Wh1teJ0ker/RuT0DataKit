@@ -5,7 +5,7 @@
 //! 状态策略：每个 command 独立重算（v0.1.0 最简），不在 command 间缓存
 //! `MaskResult`。若需缓存可后续引入 `tauri::State<Mutex<...>>`。
 //!
-//! 命令清单（共 20 个）：
+//! 命令清单（共 21 个）：
 //! - `select_file` / `detect_source_type` / `run_mask` / `export_masked_csv`：
 //!   v0.1.0 原命令（4 个），保留不破坏。
 //! - `load_preview` / `apply_rules` / `export_selected_csv`：T0-11 新增（3 个），
@@ -25,6 +25,9 @@
 //! - `preview_mask_rule_value` / `preview_validate_rule_value`：
 //!   T0-23 新增（2 个），直接对用户输入值跑算子，规则管理试运行不再依赖
 //!   已导入文件的首行。
+//! - `list_rule_tags`：T5-4 新增（1 个），返回预置标签 ∪ 当前 ruleset 出现
+//!   过的 tag 的并集 `Vec<String>`，供前端 tags Select 下拉源与「按标签过滤」
+//!   使用。
 //! - `scan_log_file`：T2-5 新增（1 个），v0.2.0 日志扫描 GUI 入口：读 .log
 //!   → 跑 core `log_scan::scan_log`（签名引擎 + 弱口令 grep + 敏感扫描）
 //!   → 一次 IPC 返回 `{ entries, report }`，前端 LogView 同时拿到原始日志
@@ -43,11 +46,17 @@ use ruT0_data_kit_core::pipeline::{
 };
 use ruT0_data_kit_core::readers::{CsvReader, SourceReader, XlsxReader};
 use ruT0_data_kit_core::report::csv_report::{build_csv_mask_report, write_masked_csv};
+use ruT0_data_kit_core::tools::{
+    explain_regex as core_explain_regex, generate_regex as core_generate_regex,
+    list_regex_templates as core_list_regex_templates, parse_sqls as core_parse_sqls,
+    RegexTokenDesc, SqlParseInput, SqlParseResult, TemplateMeta,
+};
 use ruT0_data_kit_core::rules::{
     apply_mask_op, apply_validate_op, build_validator,
     list_mask_op_types as core_list_mask_op_types,
-    list_validate_op_types as core_list_validate_op_types, load_default_mask_ruleset,
-    load_ruleset, FieldRule, MaskOp, RuleSet, ValidateOp, ValidatorRegistry,
+    list_tagged_presets, list_validate_op_types as core_list_validate_op_types,
+    load_default_mask_ruleset, load_ruleset, FieldRule, MaskOp, RuleSet, ValidateOp,
+    ValidatorRegistry,
 };
 use ruT0_data_kit_core::scan::DefaultSensitiveScan;
 use serde_json::{json, Value};
@@ -61,6 +70,8 @@ fn source_type_name(t: SourceType) -> &'static str {
         SourceType::Xlsx => "xlsx",
         SourceType::Log => "log",
         SourceType::Pcap => "pcap",
+        SourceType::Sql => "sql",
+        SourceType::Json => "json",
         SourceType::Unknown => "unknown",
     }
 }
@@ -473,6 +484,7 @@ pub fn preview_validate_rule(
         regex: regex.clone(),
         message: message.clone(),
         description: None,
+        tags: Vec::new(),
     };
     let result = if let Some(op) = ValidateOp::from_rule(&rule) {
         apply_validate_op(&op, &input)
@@ -533,6 +545,7 @@ pub fn preview_validate_rule_value(
         regex: regex.clone(),
         message: message.clone(),
         description: None,
+        tags: Vec::new(),
     };
     let result = if let Some(op) = ValidateOp::from_rule(&rule) {
         apply_validate_op(&op, &input)
@@ -567,6 +580,58 @@ pub fn list_validate_op_types() -> Result<Value, String> {
         .map(|(n, l)| json!({ "name": n, "label": l }))
         .collect();
     Ok(Value::Array(items))
+}
+
+/// 返回规则可选标签的并集：预置标签（mask / validate / sensitive 等）∪
+/// 当前 `rules_json` 中 `maskers` / `validators` 实际出现过的所有 tag。
+///
+/// 前端 `RuleDrawer` 的 tags Select(mode=multiple) 与 `RulesView` 的「按标签
+/// 过滤」Select 共用此下拉源。预置标签来自 core `list_tagged_presets`（对
+/// `mask` / `validate` / `sensitive` / `search` / `sql_parse` 等已知标签取
+/// 并集），用户在 ruleset 里自定义的 tag 也会被合并进来。
+///
+/// `rules_json` 为 None / 空字符串 / 反序列化失败时退化为仅返回预置标签，
+/// 不抛错（避免 Drawer 加载阶段因临时无效 JSON 阻塞表单）。
+#[tauri::command]
+pub fn list_rule_tags(rules_json: Option<String>) -> Result<Vec<String>, String> {
+    // 预置标签并集：对已知标签集合逐个调 list_tagged_presets，命中即纳入。
+    // 这里用静态标签清单而非遍历所有 PresetEntry 的 tags，避免 core 暴露
+    // 额外的「列出全部标签」API；新增标签只需在此清单追加。
+    let known_tags = [
+        "mask",
+        "validate",
+        "sensitive",
+        "search",
+        "sql_parse",
+    ];
+    let mut set: HashSet<String> = HashSet::new();
+    for tag in known_tags.iter() {
+        if !list_tagged_presets(tag).is_empty() {
+            set.insert((*tag).to_string());
+        }
+    }
+
+    // 合并 ruleset 中实际出现过的 tag。
+    if let Some(json_str) = rules_json.as_deref() {
+        if !json_str.trim().is_empty() {
+            if let Ok(rules) = parse_ruleset_json(json_str) {
+                for r in &rules.maskers {
+                    for t in &r.tags {
+                        set.insert(t.clone());
+                    }
+                }
+                for r in &rules.validators {
+                    for t in &r.tags {
+                        set.insert(t.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    let mut tags: Vec<String> = set.into_iter().collect();
+    tags.sort();
+    Ok(tags)
 }
 
 /// 用 csv crate 写 UTF-8 CSV（表头 + 数据行）。
@@ -664,6 +729,34 @@ pub fn scan_pcap_file(path: String) -> Result<Value, String> {
     }))
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// v0.4.0 数据预处理归一化命令
+// ─────────────────────────────────────────────────────────────────────
+
+/// 把任意支持格式的文件（csv/xlsx/sql/json/pcap/log）统一读成 `Records`，
+/// 前端 PreviewView / 后续 mask/validate/export 复用同一份表格。
+///
+/// - csv/xlsx/sql/json：按后缀走对应 reader。
+/// - pcap：调 `PcapRecordsReader` 适配器（tshark 缺失时返回
+///   `DependencyMissing("tshark")`，前端弹提示并禁用按钮）。
+/// - log：调 `LogRecordsReader` 适配器。
+/// - 不识别的后缀：返回 `Err("unsupported source type")`。
+///
+/// 返回 `{ headers, rows, source_type, row_count }`，与 `load_preview` 形态
+/// 对齐，前端可复用同一渲染逻辑。
+#[tauri::command]
+pub fn preprocess_file(path: String) -> Result<Value, String> {
+    let p = Path::new(&path);
+    let t = detect_type(p).map_err(|e| e.to_string())?;
+    let records = ruT0_data_kit_core::readers::read_records(p).map_err(|e| e.to_string())?;
+    Ok(json!({
+        "headers": records.headers,
+        "rows": records.rows,
+        "source_type": source_type_name(t),
+        "row_count": records.rows.len(),
+    }))
+}
+
 /// v0.3.0 pcap 默认敏感扫描规则集：idcard / phone / name 三类内置 validator。
 ///
 /// 与日志扫描口径对齐：fixture 仅含 PII（身份证 / 中文姓名 / 手机号），不跑
@@ -680,6 +773,7 @@ fn pcap_sensitive_ruleset() -> RuleSet {
                 regex: None,
                 message: None,
                 description: None,
+                tags: Vec::new(),
             },
             FieldRule {
                 field: "phone".into(),
@@ -688,6 +782,7 @@ fn pcap_sensitive_ruleset() -> RuleSet {
                 regex: None,
                 message: None,
                 description: None,
+                tags: Vec::new(),
             },
             FieldRule {
                 field: "name".into(),
@@ -696,8 +791,284 @@ fn pcap_sensitive_ruleset() -> RuleSet {
                 regex: None,
                 message: None,
                 description: None,
+                tags: Vec::new(),
             },
         ],
         maskers: vec![],
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// v0.5.0 正则工具命令
+// ─────────────────────────────────────────────────────────────────────
+
+/// 解释正则字符串的每个 token，返回 `{ token, kind, description, position }` 列表。
+///
+/// 非法正则（`regex::Regex::new` 失败）返回 `Err`，不 panic。
+#[tauri::command]
+pub fn explain_regex(pattern: String) -> Result<Vec<RegexTokenDesc>, String> {
+    core_explain_regex(&pattern).map_err(|e| e.to_string())
+}
+
+/// 按模板名 + 参数生成可编译的正则骨架。
+///
+/// 模板名见 `list_regex_templates`；不识别的模板名 / 参数返回 `Err`。
+#[tauri::command]
+pub fn generate_regex(
+    template_name: String,
+    params: HashMap<String, String>,
+) -> Result<String, String> {
+    core_generate_regex(&template_name, &params).map_err(|e| e.to_string())
+}
+
+/// 列出所有预置正则模板的元信息（name / description / params_schema）。
+#[tauri::command]
+pub fn list_regex_templates() -> Result<Vec<TemplateMeta>, String> {
+    Ok(core_list_regex_templates())
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// v0.5.0 T5-9 SQL 解析工具命令
+// ─────────────────────────────────────────────────────────────────────
+
+/// 对一批纯 SQL 文本做盲注探针提取 + 聚类 + 数据库还原（v0.5.0 T5-9）。
+///
+/// 调 core 的 `tools::parse_sqls`：接受 `Vec<SqlParseInput>`（每项含 sql +
+/// 可选 response_body_size + 可选 source_ip），返回 `SqlParseResult`
+/// `{ probes, aggregated, reconstructed, parsed_payloads }`。
+///
+/// 与 `scan_log_file` 的区别：本命令不读日志文件、不依赖 `LogEntry`，前端
+/// 直接粘贴 SQL 文本列表即可还原数据库结构（T5-10 GUI 调用）。
+#[tauri::command]
+pub fn parse_sql_tool(inputs: Vec<SqlParseInput>) -> Result<SqlParseResult, String> {
+    Ok(core_parse_sqls(inputs))
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// v0.6.0 T5-8 新增命令：JSON 导出
+// ─────────────────────────────────────────────────────────────────────
+
+/// 与 [`export_records_csv`] 同签名同流程，但写 JSON（v0.6.0 T5-8）。
+///
+/// 流程：read_records_auto → mask_pipeline_columns → project_columns →
+/// 可选行过滤 → 把每行按 `column_order` 映射为 `HashMap<String, String>`
+/// （headers 做 key），用 `serde_json` 序列化为 JSON 数组写盘。每行扁平对象，
+/// value 全为字符串，不做嵌套（v0.6.0 scope）。
+#[tauri::command]
+pub fn export_records_json(
+    input_path: String,
+    rules_json: String,
+    selected_columns: Vec<String>,
+    column_order: Vec<String>,
+    selected_row_indices: Option<Vec<usize>>,
+    out_path: String,
+) -> Result<(), String> {
+    let rules = parse_ruleset_json(&rules_json)?;
+    let records = read_records_auto(&input_path)?;
+    let selected: HashSet<String> = selected_columns.iter().cloned().collect();
+    let result = mask_pipeline_columns(&records, &rules, &selected).map_err(|e| e.to_string())?;
+    let (headers, mut rows) = project_columns(&result.masked, &selected_columns, &column_order);
+    if let Some(indices) = selected_row_indices {
+        let idx_set: HashSet<usize> = indices.into_iter().collect();
+        rows = rows
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| idx_set.contains(i))
+            .map(|(_, r)| r)
+            .collect();
+    }
+    write_json(&headers, &rows, &out_path)
+}
+
+/// 把 `headers` + `rows` 序列化为 JSON 数组写盘。每行一个对象，key=headers[i]，
+/// value=rows[r][i]（字符串）。空表头/空行也合法（输出 `[]` 或 `[{}]`）。
+fn write_json(headers: &[String], rows: &[Vec<String>], out_path: &str) -> Result<(), String> {
+    let arr: Vec<HashMap<&str, &str>> = rows
+        .iter()
+        .map(|row| {
+            headers
+                .iter()
+                .enumerate()
+                .map(|(i, h)| (h.as_str(), row.get(i).map(|s| s.as_str()).unwrap_or("")))
+                .collect()
+        })
+        .collect();
+    let json_str = serde_json::to_string(&arr).map_err(|e| format!("JSON 序列化失败: {e}"))?;
+    std::fs::write(out_path, json_str).map_err(|e| format!("写入失败: {e}"))
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// v0.4.0 T5-7 records-based 脱敏 / 校验命令
+// ─────────────────────────────────────────────────────────────────────
+// 与 `apply_rules_cols` / `run_validate` 区别：入参不再走文件路径，而是直接
+// 接收 PreprocessView 产出的 `Records`（headers + rows），避免脱敏/校验视图
+// 再读盘；前端 MaskView/ValidateView 切到 state.records 作为数据源后调用本命令。
+// 返回结构与文件路径版一致，便于前端复用渲染逻辑。
+
+/// 对 `selected_columns` 中的列应用 `rules.maskers`，未勾选列原样（v0.4.0 T5-7）。
+///
+/// 输入 `headers` / `rows` 即 PreprocessView 归一化产物；后端直接拼装
+/// `Records`，不再走 `read_records_auto`。返回结构同 [`apply_rules_cols`]。
+#[tauri::command]
+pub fn apply_rules_cols_records(
+    headers: Vec<String>,
+    rows: Vec<Vec<String>>,
+    rules_json: String,
+    selected_columns: Vec<String>,
+) -> Result<Value, String> {
+    let rules = parse_ruleset_json(&rules_json)?;
+    let records = ruT0_data_kit_core::readers::Records { headers, rows };
+    let selected: HashSet<String> = selected_columns.iter().cloned().collect();
+    let result = mask_pipeline_columns(&records, &rules, &selected).map_err(|e| e.to_string())?;
+    Ok(json!({
+        "headers": result.masked.headers,
+        "masked_rows": result.masked.rows,
+        "summary": result.summary,
+        "skipped_fields": result.skipped_fields,
+    }))
+}
+
+/// 跑校验 pipeline：对 `rules.validators` 逐 cell 校验，产出 valid_matrix（v0.4.0 T5-7）。
+///
+/// 输入 `headers` / `rows` 即 PreprocessView 归一化产物；返回结构同
+/// [`run_validate`]。
+#[tauri::command]
+pub fn run_validate_records(
+    headers: Vec<String>,
+    rows: Vec<Vec<String>>,
+    rules_json: String,
+) -> Result<Value, String> {
+    let rules = parse_ruleset_json(&rules_json)?;
+    let records = ruT0_data_kit_core::readers::Records { headers, rows };
+    let result = validate_pipeline(&records, &rules).map_err(|e| e.to_string())?;
+    Ok(json!({
+        "headers": result.headers,
+        "rows": result.rows,
+        "valid_matrix": result.valid_matrix,
+        "summary": result.summary,
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 写一份临时 CSV 测试数据并返回路径。调用方负责清理。
+    fn write_temp_csv(headers: &[&str], rows: &[Vec<&str>]) -> std::path::PathBuf {
+        let mut dir = std::env::temp_dir();
+        dir.push(format!(
+            "rut0_t5_8_{}.csv",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let file = std::fs::File::create(&dir).unwrap();
+        let mut wtr = csv::Writer::from_writer(file);
+        wtr.write_record(headers).unwrap();
+        for r in rows {
+            wtr.write_record(r).unwrap();
+        }
+        wtr.flush().unwrap();
+        dir
+    }
+
+    fn empty_ruleset() -> String {
+        serde_json::json!({ "maskers": [], "validators": [] }).to_string()
+    }
+
+    /// 验证 JSON 行数 = 原始行数，key = headers 子集（按勾选列过滤）。
+    #[test]
+    fn export_records_json_filters_columns_and_preserves_rows() {
+        let csv_path =
+            write_temp_csv(&["id", "name", "phone"], &[vec!["1", "alice", "138"], vec!["2", "bob", "139"]]);
+        let out = csv_path.with_extension("json");
+        let selected = vec!["id".to_string(), "phone".to_string()];
+        let order = vec!["phone".to_string(), "id".to_string()];
+        export_records_json(
+            csv_path.to_string_lossy().into_owned(),
+            empty_ruleset(),
+            selected,
+            order,
+            None,
+            out.to_string_lossy().into_owned(),
+        )
+        .unwrap();
+
+        let body = std::fs::read_to_string(&out).unwrap();
+        let parsed: Vec<HashMap<String, String>> = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed.len(), 2, "行数应等于原始行数");
+        // key 应是 selected_columns 子集（不含 name）
+        for row in &parsed {
+            assert!(row.contains_key("id"));
+            assert!(row.contains_key("phone"));
+            assert!(!row.contains_key("name"));
+        }
+        // column_order 控制顺序：phone 在 id 之前（HashMap 无序但 values 应正确）
+        assert_eq!(parsed[0].get("id").unwrap(), "1");
+        assert_eq!(parsed[0].get("phone").unwrap(), "138");
+        assert_eq!(parsed[1].get("id").unwrap(), "2");
+        assert_eq!(parsed[1].get("phone").unwrap(), "139");
+
+        let _ = std::fs::remove_file(&csv_path);
+        let _ = std::fs::remove_file(&out);
+    }
+
+    /// 验证 selected_row_indices 只保留指定行。
+    #[test]
+    fn export_records_json_filters_rows_by_indices() {
+        let csv_path = write_temp_csv(
+            &["id", "name"],
+            &[vec!["1", "a"], vec!["2", "b"], vec!["3", "c"]],
+        );
+        let out = csv_path.with_extension("json");
+        export_records_json(
+            csv_path.to_string_lossy().into_owned(),
+            empty_ruleset(),
+            vec!["id".to_string(), "name".to_string()],
+            vec![],
+            Some(vec![0, 2]),
+            out.to_string_lossy().into_owned(),
+        )
+        .unwrap();
+
+        let body = std::fs::read_to_string(&out).unwrap();
+        let parsed: Vec<HashMap<String, String>> = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed.len(), 2, "只保留索引 0/2 两行");
+        assert_eq!(parsed[0].get("id").unwrap(), "1");
+        assert_eq!(parsed[1].get("id").unwrap(), "3");
+
+        let _ = std::fs::remove_file(&csv_path);
+        let _ = std::fs::remove_file(&out);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// v0.4.0 T5-5 搜索命令
+// ─────────────────────────────────────────────────────────────────────
+
+/// 对预处理后的 `Records`（前端传入 `headers` + `rows`）跑搜索，返回命中列表。
+///
+/// `query_json` 是 core `SearchQuery` 的 JSON 序列化，形如：
+/// - `{"kind":"keyword","terms":["foo"],"mode":"or"}`
+/// - `{"kind":"regex","pattern":"@example\\.com$"}`
+/// - `{"kind":"exact_field","field":"name","value":"Alice"}`
+///
+/// 与 `preprocess_file` 配合：前端先调 `preprocess_file` 拿到 `{headers, rows}`，
+/// 再把同样的数据 + 查询条件传到这里。不在 Tauri State 缓存索引——每次现建，
+/// v0.4.0 大文件（10w×10）性能基线 < 5s 满足交互式需求。
+///
+/// 返回 `SearchResult { hits: Vec<SearchHit> }`，每条 hit 含 row/col/field/
+/// value/snippet（snippet ±20 字符上下文，UTF-8 友好）。非法正则返回
+/// `Err`，不 panic（core 端 `CoreError::InvalidInput` → 字符串）。
+#[tauri::command]
+pub fn search_records(
+    headers: Vec<String>,
+    rows: Vec<Vec<String>>,
+    query_json: String,
+) -> Result<ruT0_data_kit_core::search::SearchResult, String> {
+    let query: ruT0_data_kit_core::search::SearchQuery =
+        serde_json::from_str(&query_json).map_err(|e| format!("query_json 解析失败: {e}"))?;
+    let records = ruT0_data_kit_core::readers::Records { headers, rows };
+    ruT0_data_kit_core::search::search_records(&records, &query).map_err(|e| e.to_string())
 }

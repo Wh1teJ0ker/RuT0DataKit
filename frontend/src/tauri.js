@@ -34,6 +34,39 @@ export async function runValidate(inputPath, rulesJson) {
   return tauriInvoke("run_validate", { inputPath, rulesJson });
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// v0.4.0 T5-7 records-based 脱敏 / 校验命令封装
+// ─────────────────────────────────────────────────────────────────────
+// 入参不再走文件路径，而是直接传 PreprocessView 归一化产出的
+// headers + rows，避免 MaskView/ValidateView 再读盘。参数名 camelCase，
+// 由 Tauri 自动转 snake_case 传到 Rust 端。
+
+// 对 selected_columns 中的列应用 rules.maskers，未勾选列原样。
+// 返回 { headers, masked_rows, summary, skipped_fields }，与 applyRulesCols 一致。
+export async function applyRulesColsRecords(
+  headers,
+  rows,
+  rulesJson,
+  selectedColumns
+) {
+  return tauriInvoke("apply_rules_cols_records", {
+    headers,
+    rows,
+    rulesJson,
+    selectedColumns,
+  });
+}
+
+// 跑校验 pipeline，返回 { headers, rows, valid_matrix, summary }，
+// 与 runValidate 一致。
+export async function runValidateRecords(headers, rows, rulesJson) {
+  return tauriInvoke("run_validate_records", {
+    headers,
+    rows,
+    rulesJson,
+  });
+}
+
 // 应用列脱敏 → 投影列 → 可选按行索引过滤 → 写 CSV。
 export async function exportRecordsCsv(
   inputPath,
@@ -63,6 +96,25 @@ export async function exportRecordsXlsx(
   outPath
 ) {
   return tauriInvoke("export_records_xlsx", {
+    inputPath,
+    rulesJson,
+    selectedColumns,
+    columnOrder,
+    selectedRowIndices,
+    outPath,
+  });
+}
+
+// 同 exportRecordsCsv，但写 JSON（每行扁平对象，headers 做 key）。
+export async function exportRecordsJson(
+  inputPath,
+  rulesJson,
+  selectedColumns,
+  columnOrder,
+  selectedRowIndices,
+  outPath
+) {
+  return tauriInvoke("export_records_json", {
     inputPath,
     rulesJson,
     selectedColumns,
@@ -122,6 +174,13 @@ export async function listValidateOpTypes() {
   return tauriInvoke("list_validate_op_types");
 }
 
+// 规则可选标签并集（预置标签 ∪ 当前 ruleset 出现过的 tag）：
+// 供 RuleDrawer 的 tags Select 下拉源与 RulesView「按标签过滤」共用。
+// rulesJson 为当前编辑态的 RuleSet JSON 序列化（可为 null/空串，退化为仅预置标签）。
+export async function listRuleTags(rulesJson) {
+  return tauriInvoke("list_rule_tags", { rulesJson: rulesJson ?? null });
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // T2-5 新增命令封装：日志扫描（v0.2.0）
 // 参数名 camelCase，由 Tauri 自动转 snake_case 传到 Rust 端。
@@ -139,10 +198,77 @@ export async function scanLogFile(path) {
 // 参数名 camelCase，由 Tauri 自动转 snake_case 传到 Rust 端。
 // ─────────────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────────
+// v0.4.0 数据预处理归一化命令（T5-2 提供）
+// 参数名 camelCase，由 Tauri 自动转 snake_case 传到 Rust 端。
+// ─────────────────────────────────────────────────────────────────────
+
+// 读取任意支持格式（csv/xlsx/sql/json/pcap/log）统一归一为 Records。
+// 返回 { headers, rows, source_type, row_count }，与 load_preview 形态对齐。
+// PreprocessView 入口；后续 mask/validate/export 复用同一份 records。
+export async function preprocessFile(path) {
+  return tauriInvoke("preprocess_file", { path });
+}
+
 // 读取 .pcap/.pcapng 并跑流量扫描 pipeline，一次返回 { entries, report }。
 //   - entries：HttpRequest 数组，前端用于原始 HTTP 请求表渲染。
 //   - report：含 findings + summary（total_requests/sensitive_hits/
 //     decoded_fragments/top_src_ips）。tshark 缺失时抛错，前端弹提示。
 export async function scanPcapFile(path) {
   return tauriInvoke("scan_pcap_file", { path });
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// T5-11/T5-12 新增命令封装：正则解释 / 模板生成 / 模板清单（v0.4.0 Tools Tab）
+// 参数名 camelCase，由 Tauri 自动转 snake_case 传到 Rust 端。
+// ─────────────────────────────────────────────────────────────────────
+
+// 解释一条正则字符串，返回 RegexTokenDesc 数组：
+//   { token, kind, description, position }，kind ∈
+//   literal/char_class/quantifier/anchor/group/backref/assertion/escape/unsupported。
+// 非法正则返回 Err(String)，前端 message.error 提示。
+export async function explainRegex(pattern) {
+  return tauriInvoke("explain_regex", { pattern });
+}
+
+// 按模板名 + 参数生成正则字符串。params 为 HashMap<String,String> 形态的
+// 普通对象，键名对应模板 params_schema.key。模板名见 list_regex_templates。
+export async function generateRegex(templateName, params) {
+  return tauriInvoke("generate_regex", {
+    templateName,
+    params: params || {},
+  });
+}
+
+// 列出预置正则模板（email/phone_cn/idcard_cn/ipv4/url/sql_injection_*/mac）：
+//   [{ name, description, params_schema: [{ key, description, required, default }] }]
+export async function listRegexTemplates() {
+  return tauriInvoke("list_regex_templates");
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// T5-9/T5-10 新增命令封装：SQL 探针序列解析（v0.4.0 Tools Tab）
+// ─────────────────────────────────────────────────────────────────────
+
+// 解析多行 SQL 探针序列，返回 SqlParseResult（还原数据库 + 探针明细）。
+// inputs 为 SqlParseInput 数组，每行一条。
+export async function parseSqlTool(inputs) {
+  return tauriInvoke("parse_sql_tool", { inputs });
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// T5-5/T5-6 新增命令封装：搜索（v0.4.0 搜索界面）
+// ─────────────────────────────────────────────────────────────────────
+
+// 对一组 records 执行搜索。queryJson 为 SearchQuery 的 JSON 字符串：
+//   - {"kind":"keyword","terms":["a","b"],"mode":"and"|"or"}
+//   - {"kind":"regex","pattern":"..."}
+//   - {"kind":"exact_field","field":"name","value":"Alice"}
+// 返回 SearchResult { hits: [{ row, col, field, value, snippet }] }。
+export async function searchRecords(headers, rows, queryJson) {
+  return tauriInvoke("search_records", {
+    headers,
+    rows,
+    queryJson,
+  });
 }
