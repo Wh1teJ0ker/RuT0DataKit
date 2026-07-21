@@ -47,9 +47,9 @@ use ruT0_data_kit_core::pipeline::{
 use ruT0_data_kit_core::readers::{CsvReader, SourceReader, XlsxReader};
 use ruT0_data_kit_core::report::csv_report::{build_csv_mask_report, write_masked_csv};
 use ruT0_data_kit_core::tools::{
-    explain_regex as core_explain_regex, generate_regex as core_generate_regex,
-    list_regex_templates as core_list_regex_templates, parse_sqls as core_parse_sqls,
-    RegexTokenDesc, SqlParseInput, SqlParseResult, TemplateMeta,
+    construct_regex as core_construct_regex, explain_regex as core_explain_regex,
+    parse_sqls as core_parse_sqls, ConstructedRegex, RegexTokenDesc, SqlParseInput,
+    SqlParseResult,
 };
 use ruT0_data_kit_core::rules::{
     apply_mask_op, apply_validate_op, build_validator,
@@ -810,21 +810,13 @@ pub fn explain_regex(pattern: String) -> Result<Vec<RegexTokenDesc>, String> {
     core_explain_regex(&pattern).map_err(|e| e.to_string())
 }
 
-/// 按模板名 + 参数生成可编译的正则骨架。
+/// v0.4.1 T6-5：从自然语言描述构造正则。
 ///
-/// 模板名见 `list_regex_templates`；不识别的模板名 / 参数返回 `Err`。
+/// 纯本地规则化推断（位数 / 字符集 / 锚定前缀 / 邮箱 / URL / 身份证），
+/// 不调用网络。无法识别线索时返回 `Err`。
 #[tauri::command]
-pub fn generate_regex(
-    template_name: String,
-    params: HashMap<String, String>,
-) -> Result<String, String> {
-    core_generate_regex(&template_name, &params).map_err(|e| e.to_string())
-}
-
-/// 列出所有预置正则模板的元信息（name / description / params_schema）。
-#[tauri::command]
-pub fn list_regex_templates() -> Result<Vec<TemplateMeta>, String> {
-    Ok(core_list_regex_templates())
+pub fn regex_construct(statement: String) -> Result<ConstructedRegex, String> {
+    core_construct_regex(&statement).map_err(|e| e.to_string())
 }
 
 // ─────────────────────────────────────────────────────────────────────

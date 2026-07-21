@@ -62,15 +62,14 @@ export const initialState = {
   sqlParseInput: "",
   sqlParseResult: null,
   // T5-12 正则解析子界面状态
-  // regexSubTab：RegexTool 内部子 Tab（"explain" | "template"），切 view 不重置。
+  // regexSubTab：RegexTool 内部子 Tab（"explain" | "construct"），切 view 不重置。
   regexSubTab: "explain",
   // 解析 Tab
   regexExplainInput: "",
   regexExplainResult: null, // Vec<RegexTokenDesc> 或 null
-  // 模板 Tab
-  regexTemplateSelected: null, // 模板 name 或 null
-  regexTemplateParams: {}, // { [key]: string }
-  regexGenerated: null, // 生成出的正则字符串或 null
+  // 构造 Tab（v0.4.1 T6-5：自然语言描述 → 正则）
+  regexConstructInput: "",
+  regexConstructResult: null, // { pattern, explanation, matched_clues } 或 null
   // T5-6 搜索界面状态：searchMode 三选 "keyword" | "regex" | "exact_field"。
   // searchResults 为后端 SearchResult { hits: [{ row, col, field, value, snippet }] } 或 null。
   // searchElapsedMs 单次查询耗时（前端 performance.now 差值），命中数取 hits.length。
@@ -352,17 +351,13 @@ export function appReducer(state, action) {
       const { regexExplainResult } = action;
       return { ...state, regexExplainResult };
     }
-    case "SET_REGEX_TEMPLATE_SELECTED": {
-      const { regexTemplateSelected } = action;
-      return { ...state, regexTemplateSelected };
+    case "SET_REGEX_CONSTRUCT_INPUT": {
+      const { regexConstructInput } = action;
+      return { ...state, regexConstructInput };
     }
-    case "SET_REGEX_TEMPLATE_PARAMS": {
-      const { regexTemplateParams } = action;
-      return { ...state, regexTemplateParams: { ...regexTemplateParams } };
-    }
-    case "SET_REGEX_GENERATED": {
-      const { regexGenerated } = action;
-      return { ...state, regexGenerated };
+    case "SET_REGEX_CONSTRUCT_RESULT": {
+      const { regexConstructResult } = action;
+      return { ...state, regexConstructResult };
     }
     // ─────────────────────────────────────────────────────────────────────
     // T5-6 搜索界面状态：查询输入 + 结果 + 耗时 + 跳转携带的行号集合。

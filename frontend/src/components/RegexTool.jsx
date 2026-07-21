@@ -1,18 +1,15 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
 import {
   Card,
   Tabs,
   Input,
   Button,
   Table,
-  Select,
-  Form,
   Alert,
   Empty,
   Typography,
   Space,
-  InputNumber,
-  Switch,
+  Tag,
   App as AntApp,
 } from "antd";
 import {
@@ -20,21 +17,18 @@ import {
   ExperimentOutlined,
   CopyOutlined,
 } from "@ant-design/icons";
-import {
-  explainRegex,
-  generateRegex,
-  listRegexTemplates,
-} from "../tauri.js";
+import { explainRegex, regexConstruct } from "../tauri.js";
 
 const { TextArea } = Input;
 const { Text, Paragraph } = Typography;
 
-// 正则解析 / 模板生成子界面（v0.4.0 Tools Tab 的「正则解析」页）。
+// 正则解析 / 构造子界面（v0.4.0 Tools Tab 的「正则解析」页）。
 //
 // 两个子 Tab：
 //   ① 解析：输入正则 → 调 explain_regex → antd Table 显示 token 解释。
-//   ② 模板：选模板 → 按 params_schema 填参数 → 调 generate_regex →
-//           生成正则 + 测试样例输入框 + 用前端 new RegExp 跑 match 高亮命中片段。
+//   ② 构造（v0.4.1 T6-5）：输入一句自然语言描述 → 调 regex_construct →
+//      返回 { pattern, explanation, matched_clues }，前端展示 pattern +
+//      matched_clues（Tag list）+ 测试样例高亮（复用 highlightMatches）。
 //
 // state/dispatch 从 props 透传；子 Tab 选中与各子状态写入全局 state，切 view 不丢。
 //
@@ -238,93 +232,41 @@ function ExplainTab({ state, dispatch }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// 子组件：模板 Tab
+// 子组件：构造 Tab（v0.4.1 T6-5：自然语言描述 → 正则）
 // ─────────────────────────────────────────────────────────────────────
-function TemplateTab({ state, dispatch }) {
+function ConstructTab({ state, dispatch }) {
   const { message } = AntApp.useApp();
-  const [templates, setTemplates] = useState([]);
-  const [loadingTemplates, setLoadingTemplates] = useState(false);
-  const [generating, setGenerating] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [testInput, setTestInput] = useState("");
   const [testError, setTestError] = useState(null);
   const [testHighlight, setTestHighlight] = useState(null);
 
-  // 拉取模板清单
-  useEffect(() => {
-    let alive = true;
-    setLoadingTemplates(true);
-    listRegexTemplates()
-      .then((list) => {
-        if (!alive) return;
-        setTemplates(Array.isArray(list) ? list : []);
-      })
-      .catch((e) => {
-        if (!alive) return;
-        message.error(`加载模板清单失败: ${e}`);
-      })
-      .finally(() => {
-        if (!alive) return;
-        setLoadingTemplates(false);
-      });
-    return () => {
-      alive = false;
-    };
-  }, []);
+  const result = state.regexConstructResult; // { pattern, explanation, matched_clues }
 
-  const selectedName = state.regexTemplateSelected;
-  const selectedMeta = useMemo(
-    () => templates.find((t) => t.name === selectedName) || null,
-    [templates, selectedName]
-  );
-
-  // 选中模板时把 params 初始化为 default
-  const onSelectTemplate = (name) => {
-    dispatch({ type: "SET_REGEX_TEMPLATE_SELECTED", regexTemplateSelected: name });
-    const meta = templates.find((t) => t.name === name) || null;
-    const init = {};
-    (meta?.params_schema || []).forEach((p) => {
-      init[p.key] = p.default != null ? p.default : "";
-    });
-    dispatch({ type: "SET_REGEX_TEMPLATE_PARAMS", regexTemplateParams: init });
-    dispatch({ type: "SET_REGEX_GENERATED", regexGenerated: null });
-    setTestInput("");
-    setTestHighlight(null);
-    setTestError(null);
-  };
-
-  const onParamChange = (key, value) => {
-    const next = { ...state.regexTemplateParams, [key]: value };
-    dispatch({ type: "SET_REGEX_TEMPLATE_PARAMS", regexTemplateParams: next });
-  };
-
-  const onGenerate = async () => {
-    if (!selectedName) {
-      message.warning("请先选择模板");
+  const onConstruct = async () => {
+    const s = state.regexConstructInput || "";
+    if (!s.trim()) {
+      message.warning("请输入描述语句");
       return;
     }
-    setGenerating(true);
+    setLoading(true);
     setTestError(null);
     setTestHighlight(null);
     try {
-      // 后端 params 为 HashMap<String,String>；number/boolean 统一转 string。
-      const params = {};
-      for (const [k, v] of Object.entries(state.regexTemplateParams || {})) {
-        params[k] = v == null ? "" : String(v);
-      }
-      const r = await generateRegex(selectedName, params);
-      dispatch({ type: "SET_REGEX_GENERATED", regexGenerated: r });
+      const r = await regexConstruct(s);
+      dispatch({ type: "SET_REGEX_CONSTRUCT_RESULT", regexConstructResult: r });
     } catch (e) {
-      message.error(`生成失败: ${e}`);
-      dispatch({ type: "SET_REGEX_GENERATED", regexGenerated: null });
+      message.error(`构造失败: ${e}`);
+      dispatch({ type: "SET_REGEX_CONSTRUCT_RESULT", regexConstructResult: null });
     } finally {
-      setGenerating(false);
+      setLoading(false);
     }
   };
 
   const onTest = () => {
-    const pattern = state.regexGenerated;
+    const pattern = result?.pattern;
     if (!pattern) {
-      message.warning("请先生成正则");
+      message.warning("请先构造正则");
       return;
     }
     if (!testInput) {
@@ -335,11 +277,7 @@ function TemplateTab({ state, dispatch }) {
     try {
       const { source, flags } = adaptRegexForJs(pattern);
       const re = new RegExp(source, flags);
-      const nodes = highlightMatches(testInput, re);
-      setTestHighlight(nodes);
-      if (nodes.length === 0 || (nodes.length === 1 && nodes[0].type === "span")) {
-        // 全无命中
-      }
+      setTestHighlight(highlightMatches(testInput, re));
     } catch (e) {
       setTestHighlight(null);
       setTestError(`本地 RegExp 执行失败: ${String(e).replace(/^Error: /, "")}`);
@@ -352,78 +290,40 @@ function TemplateTab({ state, dispatch }) {
   }, [testHighlight]);
 
   return (
-    <Card title="正则模板生成" styles={{ body: { padding: 12 } }}>
+    <Card title="正则构造" styles={{ body: { padding: 12 } }}>
       <Space direction="vertical" size="middle" style={{ width: "100%" }}>
-        <div>
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            选择一个预置模板，按参数表单填值后生成正则；可在测试样例输入框中用前端 RegExp 跑 match 查看命中高亮。
-          </Text>
-        </div>
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          输入一句自然语言描述（如「11 位手机号」「大写字母 8 位」「以 1 开头 11 位」「邮箱」「http 链接」「18 位身份证」），自动构造正则。
+        </Text>
+        <Space.Compact style={{ width: "100%" }}>
+          <TextArea
+            value={state.regexConstructInput}
+            onChange={(e) =>
+              dispatch({
+                type: "SET_REGEX_CONSTRUCT_INPUT",
+                regexConstructInput: e.target.value,
+              })
+            }
+            placeholder="例如：以 1 开头 11 位"
+            autoSize={{ minRows: 1, maxRows: 4 }}
+            onPressEnter={(e) => {
+              if (e.ctrlKey || e.metaKey) onConstruct();
+            }}
+          />
+          <Button
+            type="primary"
+            icon={<PlayCircleOutlined />}
+            loading={loading}
+            onClick={onConstruct}
+            style={{ marginLeft: 8 }}
+          >
+            构造
+          </Button>
+        </Space.Compact>
 
-        <Form layout="vertical" style={{ maxWidth: 720 }}>
-          <Form.Item label="模板">
-            <Select
-              placeholder="选择模板"
-              loading={loadingTemplates}
-              value={selectedName || undefined}
-              onChange={onSelectTemplate}
-              options={templates.map((t) => ({
-                label: `${t.name} — ${t.description}`,
-                value: t.name,
-              }))}
-              allowClear
-              onClear={() =>
-                dispatch({
-                  type: "SET_REGEX_TEMPLATE_SELECTED",
-                  regexTemplateSelected: null,
-                })
-              }
-            />
-          </Form.Item>
-
-          {selectedMeta && selectedMeta.params_schema.length > 0 ? (
-            selectedMeta.params_schema.map((p) => (
-              <Form.Item
-                key={p.key}
-                label={
-                  <Space size={4}>
-                    <Text strong>{p.key}</Text>
-                    {p.required ? (
-                      <Text type="danger" style={{ fontSize: 12 }}>
-                        *
-                      </Text>
-                    ) : null}
-                    <Text type="secondary" style={{ fontSize: 12 }}>
-                      {p.description}
-                    </Text>
-                  </Space>
-                }
-              >
-                <ParamInput
-                  param={p}
-                  value={state.regexTemplateParams?.[p.key]}
-                  onChange={(v) => onParamChange(p.key, v)}
-                />
-              </Form.Item>
-            ))
-          ) : null}
-
-          <Form.Item>
-            <Button
-              type="primary"
-              icon={<PlayCircleOutlined />}
-              loading={generating}
-              onClick={onGenerate}
-              disabled={!selectedName}
-            >
-              生成
-            </Button>
-          </Form.Item>
-        </Form>
-
-        {state.regexGenerated != null ? (
+        {result ? (
           <Card
-            title="生成结果"
+            title="构造结果"
             size="small"
             styles={{ body: { padding: 12 } }}
             extra={
@@ -431,7 +331,7 @@ function TemplateTab({ state, dispatch }) {
                 size="small"
                 icon={<CopyOutlined />}
                 onClick={() => {
-                  navigator.clipboard?.writeText(state.regexGenerated);
+                  navigator.clipboard?.writeText(result.pattern);
                   message.success("已复制");
                 }}
               >
@@ -440,12 +340,27 @@ function TemplateTab({ state, dispatch }) {
             }
           >
             <Paragraph copyable style={{ fontFamily: "monospace", marginBottom: 12 }}>
-              {state.regexGenerated}
+              {result.pattern}
             </Paragraph>
-
+            <div style={{ marginBottom: 8 }}>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                推断依据：
+              </Text>
+              {result.matched_clues && result.matched_clues.length > 0 ? (
+                <Space size={4} wrap style={{ marginLeft: 8 }}>
+                  {result.matched_clues.map((c, i) => (
+                    <Tag key={i}>{c}</Tag>
+                  ))}
+                </Space>
+              ) : (
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  无
+                </Text>
+              )}
+            </div>
             <Space.Compact style={{ width: "100%" }}>
               <Input
-                placeholder="测试样例（如 a@b.com）"
+                placeholder="测试样例（如 13800138000）"
                 value={testInput}
                 onChange={(e) => setTestInput(e.target.value)}
                 onPressEnter={onTest}
@@ -458,7 +373,6 @@ function TemplateTab({ state, dispatch }) {
                 测试
               </Button>
             </Space.Compact>
-
             {testError ? (
               <Alert
                 type="error"
@@ -467,7 +381,6 @@ function TemplateTab({ state, dispatch }) {
                 style={{ marginTop: 8 }}
               />
             ) : null}
-
             {testHighlight != null && !testError ? (
               <div
                 style={{
@@ -495,53 +408,12 @@ function TemplateTab({ state, dispatch }) {
         ) : (
           <Empty
             image={Empty.PRESENTED_IMAGE_SIMPLE}
-            description="选择模板并生成后此处显示正则与测试样例"
+            description="输入描述语句后点击「构造」"
           />
         )}
       </Space>
     </Card>
   );
-}
-
-// 模板参数输入控件：按后端 params_schema 的 kind 渲染。
-// 后端 ParamSchema 当前只有 key/description/required/default 四字段，无 kind；
-// 按值类型推断（default 是 "true"/"false" → boolean，纯数字 → number，否则 string）。
-// HANDOFF 要求最小实现支持 string/number/boolean 三类，这里以 default 值形态推断。
-function ParamInput({ param, value, onChange }) {
-  const defVal = param.default;
-  let kind = "string";
-  if (defVal === "true" || defVal === "false") {
-    kind = "boolean";
-  } else if (defVal != null && /^-?\d+(\.\d+)?$/.test(defVal)) {
-    kind = "number";
-  }
-  switch (kind) {
-    case "boolean":
-      return (
-        <Switch
-          checked={value === "true" || value === true}
-          onChange={(v) => onChange(v ? "true" : "false")}
-        />
-      );
-    case "number":
-      return (
-        <InputNumber
-          style={{ width: 240 }}
-          value={value == null || value === "" ? null : Number(value)}
-          onChange={(v) => onChange(v == null ? "" : String(v))}
-        />
-      );
-    case "string":
-    default:
-      return (
-        <Input
-          style={{ width: 240 }}
-          value={value == null ? "" : String(value)}
-          placeholder={param.description}
-          onChange={(e) => onChange(e.target.value)}
-        />
-      );
-  }
 }
 
 export default function RegexTool({ state, dispatch }) {
@@ -553,7 +425,7 @@ export default function RegexTool({ state, dispatch }) {
       }
       items={[
         { key: "explain", label: "解析", children: <ExplainTab state={state} dispatch={dispatch} /> },
-        { key: "template", label: "模板生成", children: <TemplateTab state={state} dispatch={dispatch} /> },
+        { key: "construct", label: "构造", children: <ConstructTab state={state} dispatch={dispatch} /> },
       ]}
     />
   );

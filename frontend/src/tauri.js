@@ -233,17 +233,14 @@ export async function explainRegex(pattern) {
 
 // 按模板名 + 参数生成正则字符串。params 为 HashMap<String,String> 形态的
 // 普通对象，键名对应模板 params_schema.key。模板名见 list_regex_templates。
-export async function generateRegex(templateName, params) {
-  return tauriInvoke("generate_regex", {
-    templateName,
-    params: params || {},
-  });
-}
+// （v0.4.1 T6-5：模板生成已移除，下方保留接口注释作为历史参考。）
 
-// 列出预置正则模板（email/phone_cn/idcard_cn/ipv4/url/sql_injection_*/mac）：
-//   [{ name, description, params_schema: [{ key, description, required, default }] }]
-export async function listRegexTemplates() {
-  return tauriInvoke("list_regex_templates");
+// ─────────────────────────────────────────────────────────────────────
+// v0.4.1 T6-5：从自然语言描述构造正则，返回 {pattern, explanation, matched_clues}。
+// 纯本地规则化推断，不调用网络。
+// ─────────────────────────────────────────────────────────────────────
+export async function regexConstruct(statement) {
+  return tauriInvoke("regex_construct", { statement });
 }
 
 // ─────────────────────────────────────────────────────────────────────
