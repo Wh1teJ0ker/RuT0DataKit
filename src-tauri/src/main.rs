@@ -37,6 +37,7 @@ fn main() {
             commands::apply_rules_cols_records,
             commands::run_validate_records,
             commands::search_records,
+            commands::detect_sql_blind_features,
         ])
         .run(tauri::generate_context!())
         .expect("error while running RuT0DataKit GUI");

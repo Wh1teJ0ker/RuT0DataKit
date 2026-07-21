@@ -55,7 +55,7 @@ export const initialState = {
   // UI
   actionHint: "",
   loading: false,
-  // T5-10/T5-12 Tools Tab 状态。toolsActiveTab：ToolsView 顶部 Tab 选中项
+  // T5-10/T5-12 Tools Tab 状态。toolsActiveTab：ToolsView 顶部下拉栏选中项
   // （"sql" | "regex"），切 view 不重置；切 Tab 也不清各自子状态。
   toolsActiveTab: "sql",
   // T5-10 SQL 解析子界面状态

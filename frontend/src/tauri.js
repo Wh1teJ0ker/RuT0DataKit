@@ -272,3 +272,17 @@ export async function searchRecords(headers, rows, queryJson) {
     queryJson,
   });
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// v0.4.1 T6-4 SQL 盲注探针特征检测
+// ─────────────────────────────────────────────────────────────────────
+
+// 扫描预处理后的 records 找 SQL 盲注探针特征行。
+// 返回 { detected: bool, samples: string[] }，samples 上限 50。
+// 仅本地正则匹配，不调用网络（docs/00 §6 「不外发数据」约束）。
+export async function detectSqlBlindFeatures(headers, rows) {
+  return tauriInvoke("detect_sql_blind_features", {
+    headers,
+    rows,
+  });
+}

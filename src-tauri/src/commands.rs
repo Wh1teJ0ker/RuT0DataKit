@@ -1072,3 +1072,38 @@ pub fn search_records(
     let records = ruT0_data_kit_core::readers::Records { headers, rows };
     ruT0_data_kit_core::search::search_records(&records, &query).map_err(|e| e.to_string())
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// v0.4.1 T6-4 SQL 盲注探针特征检测
+// ─────────────────────────────────────────────────────────────────────
+
+/// 扫描预处理后的 `Records` 找 SQL 盲注探针特征行（v0.4.1 T6-4）。
+///
+/// 遍历 `rows` 所有 cell 调 core `looks_like_blind_probe`，命中则收集该 cell
+/// 原文。返回 `{ detected: bool, samples: Vec<String> }`，`samples` 上限 50
+/// 避免过大。`headers` 暂未用于过滤（保留参数以与 records 结构对齐）。
+///
+/// 仅本地正则匹配，不调用网络（满足 docs/00 §6 「不外发数据」约束）。
+/// PreprocessView `handleImport` 成功后调它；`detected=true` 时前端 dispatch
+/// `SET_VIEW("tools")` + `SET_TOOLS_ACTIVE_TAB("sql")` + `SET_SQL_PARSE_INPUT`
+/// 自动跳转 SqlParseTool 并预填命中行。
+#[tauri::command]
+pub fn detect_sql_blind_features(
+    headers: Vec<String>,
+    rows: Vec<Vec<String>>,
+) -> Result<Value, String> {
+    use ruT0_data_kit_core::logsign::blind_aggregator::looks_like_blind_probe;
+    let _ = &headers; // 暂未用于过滤，保留参数以与 records 结构对齐
+    let mut samples: Vec<String> = Vec::new();
+    for row in &rows {
+        for cell in row {
+            if !cell.is_empty() && looks_like_blind_probe(cell) && samples.len() < 50 {
+                samples.push(cell.clone());
+            }
+        }
+    }
+    Ok(json!({
+        "detected": !samples.is_empty(),
+        "samples": samples,
+    }))
+}

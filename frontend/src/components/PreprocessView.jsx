@@ -16,7 +16,7 @@ import {
   CheckCircleOutlined,
   CodeOutlined,
 } from "@ant-design/icons";
-import { tauriInvoke, preprocessFile } from "../tauri.js";
+import { tauriInvoke, preprocessFile, detectSqlBlindFeatures } from "../tauri.js";
 import { PREVIEW_ROW_LIMIT } from "../state.js";
 
 const { Text } = Typography;
@@ -52,6 +52,23 @@ export default function PreprocessView({ state, dispatch }) {
           type: "SET_RECORDS",
           records: { headers, rows, rowCount, sourceType },
         });
+        // v0.4.1 T6-4：导入后扫描 SQL 盲注探针特征，命中则自动跳转
+        // SqlParseTool 并预填命中行。detect 失败不阻塞主流程。
+        try {
+          const detect = await detectSqlBlindFeatures(headers, rows);
+          if (detect && detect.detected) {
+            dispatch({ type: "SET_VIEW", activeView: "tools" });
+            dispatch({ type: "SET_TOOLS_ACTIVE_TAB", toolsActiveTab: "sql" });
+            dispatch({
+              type: "SET_SQL_PARSE_INPUT",
+              sqlParseInput: (detect.samples || []).join("\n"),
+            });
+            message.success("检测到 SQL 盲注特征，已自动跳转到 SQL 解析工具");
+            return;
+          }
+        } catch (e) {
+          console.warn("detect_sql_blind_features failed:", e);
+        }
         dispatch({ type: "SET_HINT", actionHint: "" });
       } catch (e) {
         showError(`预处理失败: ${e}`);

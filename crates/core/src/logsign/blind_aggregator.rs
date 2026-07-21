@@ -130,6 +130,21 @@ use regex::Regex;
 
 use crate::log::LogEntry;
 
+/// 纯文本 SQL 盲注探针特征检测（v0.4.1 T6-4）。
+///
+/// 与 [`extract_blind_probe`] 共享同一份 `ascii_binary_regex / equality_regex
+/// / length_regex`，但不依赖 `response_body_size`——只要任一正则在 `sql`
+/// （lowercase）中命中即返回 `true`。供 Tauri `detect_sql_blind_features`
+/// 在 PreprocessView 导入后做轻量扫描，命中则自动跳转 SqlParseTool。
+///
+/// 仅做本地正则匹配，不调用网络（满足 docs/00 §6 「不外发数据」约束）。
+pub fn looks_like_blind_probe(sql: &str) -> bool {
+    let lower = sql.to_lowercase();
+    ascii_binary_regex().is_match(&lower)
+        || equality_regex().is_match(&lower)
+        || length_regex().is_match(&lower)
+}
+
 /// 从一条 SQL 文本提取所有盲注探针（v0.2.4 T5-9 重构）。
 ///
 /// 把 v0.2.2/v0.2.3 写死在 [`BlindAggregator::collect_from_entries`] 内的
@@ -1307,6 +1322,29 @@ mod tests {
         e.path.clear();
         let agg = BlindAggregator::collect_from_entries(&[e]);
         assert!(agg.probes.is_empty());
+    }
+
+    #[test]
+    fn looks_like_blind_probe_ascii_binary() {
+        assert!(looks_like_blind_probe("ascii(substr((database()),1,1))>100"));
+    }
+
+    #[test]
+    fn looks_like_blind_probe_equality() {
+        assert!(looks_like_blind_probe("substr((database()),1,1)='a'"));
+    }
+
+    #[test]
+    fn looks_like_blind_probe_length() {
+        // length 正则要求 `length((<rt>))<cmp><thr>` 双括号形态，与
+        // extract_blind_probe 共用同一份 length_regex；单括号 `length(database())>5`
+        // 不匹配（read_target 外必须再包一层括号，见 length_regex 注释）。
+        assert!(looks_like_blind_probe("length((database()))>5"));
+    }
+
+    #[test]
+    fn looks_like_blind_probe_negative_normal_sql() {
+        assert!(!looks_like_blind_probe("SELECT * FROM users"));
     }
 
     #[test]
