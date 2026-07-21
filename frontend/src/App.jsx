@@ -6,6 +6,7 @@ import PreprocessView from "./components/PreprocessView.jsx";
 import MaskView from "./components/MaskView.jsx";
 import ValidateView from "./components/ValidateView.jsx";
 import ExportView from "./components/ExportView.jsx";
+import ExtractView from "./components/ExtractView.jsx";
 import RulesView from "./components/RulesView.jsx";
 import ToolsView from "./components/ToolsView.jsx";
 import SearchView from "./components/SearchView.jsx";
@@ -56,6 +57,7 @@ export default function App() {
           {view === "mask" && <MaskView state={state} dispatch={dispatch} />}
           {view === "validate" && <ValidateView state={state} dispatch={dispatch} />}
           {view === "export" && <ExportView state={state} dispatch={dispatch} />}
+          {view === "extract" && <ExtractView state={state} dispatch={dispatch} />}
           {view === "tools" && <ToolsView state={state} dispatch={dispatch} />}
           {view === "settings" && <SettingsView state={state} dispatch={dispatch} />}
         </Content>

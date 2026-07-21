@@ -9,8 +9,9 @@
 //!
 //! 每条规则的所有参数均由调用方通过 `MaskRule.params` / `FieldRule.params`
 //! 显式提供（keep_prefix / keep_suffix / mask_char / min_len / max_len / cjk /
-//! pattern / replacement / match_mode / algo / guard / prefix_set / prefix /
-//! message 等）。[`MaskOp::from_rule`] / [`ValidateOp::from_rule`] 仅按通用算子
+//! pattern / replacement / match_mode / algo / guard / prefix / message 等；
+//! phone 守卫的 `prefix_set` 自 v0.4.3 起被忽略，仅向后兼容）。
+//! [`MaskOp::from_rule`] / [`ValidateOp::from_rule`] 仅按通用算子
 //! 名 + params 构造，未知名返回 `None`。
 //!
 //! 对外暴露 [`apply_mask_op`] / [`apply_validate_op`] 公共函数，供前端试运行与
@@ -389,11 +390,12 @@ pub enum AlgoKind {
     BankCard,
 }
 
-/// RegexWithGuard 守卫种类：phone 号段白名单 / mac 前缀匹配。
+/// RegexWithGuard 守卫种类：phone（向后兼容，仅按 `^1\d{10}$` 校验）/ mac 前缀匹配。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GuardKind {
-    /// 手机号号段白名单。`prefix_set == "ctf"` 用 CTF 虚假号段集，
-    /// 其它值（含缺省）用真实运营商号段集。
+    /// 手机号守卫（向后兼容）。自 v0.4.3 起 PhoneValidator 已去绝对化
+    /// （仅 `^1\d{10}$`），`prefix_set` 参数仅为兼容旧 YAML 保留，
+    /// 不再影响校验结果。
     PhonePrefix { prefix_set: String },
     /// MAC 地址前缀守卫。`prefix == None` 时不做前缀校验。
     MacPrefix { prefix: Option<String> },
@@ -441,7 +443,7 @@ pub struct AlgorithmOp {
     pub algo: AlgoKind,
 }
 
-/// 守卫 + 正则校验算子：先过守卫（phone 号段 / mac 前缀），再过正则。
+/// 守卫 + 正则校验算子：先过守卫（phone 向后兼容 / mac 前缀），再过正则。
 #[derive(Debug, Clone)]
 pub struct RegexWithGuardOp {
     pub guard: GuardKind,
@@ -495,8 +497,9 @@ impl ValidateOp {
     /// - `algorithm`：`algo` 参数取 `"idcard"` / `"bankcard"`（不区分大小写），
     ///   缺省 `"idcard"`。
     /// - `regex_with_guard`：`guard` 参数取 `"phone"` / `"mac"`（不区分大小写），
-    ///   缺省 `"phone"`；其余参数 `pattern` / `prefix_set` / `prefix` /
-    ///   `message` 从 params / rule 同名字段读取。
+    ///   缺省 `"phone"`；其余参数 `pattern` / `prefix` / `message` 从 params /
+    ///   rule 同名字段读取。`prefix_set`（phone 守卫，v0.4.3 起被忽略，
+    ///   仅向后兼容）仍可出现在 params 中但不再影响校验结果。
     ///
     /// 未知名返回 `None`，由调用方决定如何报错。
     pub fn from_rule(rule: &FieldRule) -> Option<Self> {
@@ -563,7 +566,8 @@ impl ValidateOp {
                         GuardKind::MacPrefix { prefix }
                     }
                     _ => {
-                        // 缺省 / "phone" 走号段白名单分支。
+                        // 缺省 / "phone"：自 v0.4.3 起 PhoneValidator 已去绝对化，
+                        // prefix_set 仅为兼容旧 YAML 保留，运行时被忽略。
                         let prefix_set = params
                             .get("prefix_set")
                             .and_then(|v| v.as_str())
@@ -641,15 +645,11 @@ fn apply_algorithm(a: &AlgorithmOp, value: &str) -> ValidationResult {
 
 fn apply_regex_with_guard(g: &RegexWithGuardOp, value: &str) -> ValidationResult {
     match &g.guard {
-        GuardKind::PhonePrefix { prefix_set } => {
+        GuardKind::PhonePrefix { prefix_set: _ } => {
             use std::collections::HashMap;
-            // 委托旧 PhoneValidator：它内部已含正则 + 号段白名单 + 消息。
-            let mut params = HashMap::new();
-            params.insert(
-                "prefix_set".to_string(),
-                Value::String(prefix_set.clone()),
-            );
-            crate::validators::phone::PhoneValidator::new(params).validate(value)
+            // 委托 PhoneValidator：自 v0.4.3 起仅按 `^1\d{10}` 校验，
+            // prefix_set 参数被忽略（向后兼容旧 YAML）。
+            crate::validators::phone::PhoneValidator::new(HashMap::new()).validate(value)
         }
         GuardKind::MacPrefix { prefix } => {
             use std::collections::HashMap;

@@ -59,6 +59,7 @@ use ruT0_data_kit_core::rules::{
     ValidatorRegistry,
 };
 use ruT0_data_kit_core::scan::DefaultSensitiveScan;
+use ruT0_data_kit_core::extract;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 use tauri_plugin_dialog::DialogExt;
@@ -72,6 +73,7 @@ fn source_type_name(t: SourceType) -> &'static str {
         SourceType::Pcap => "pcap",
         SourceType::Sql => "sql",
         SourceType::Json => "json",
+        SourceType::Txt => "txt",
         SourceType::Unknown => "unknown",
     }
 }
@@ -84,7 +86,7 @@ pub async fn select_file(app: AppHandle) -> Result<Option<String>, String> {
     let (tx, rx) = std::sync::mpsc::channel::<Option<std::path::PathBuf>>();
     app.dialog()
         .file()
-        .add_filter("数据文件", &["csv", "xlsx", "sql", "json", "log", "pcap", "pcapng"])
+        .add_filter("数据文件", &["csv", "xlsx", "sql", "json", "log", "pcap", "pcapng", "txt"])
         .pick_file(move |path| {
             let v = path.and_then(|p| p.into_path().ok());
             let _ = tx.send(v);
@@ -1184,4 +1186,103 @@ pub fn save_tshark_path(app: AppHandle, path: Option<String>) -> Result<(), Stri
     // 注入运行时，立即生效。
     pcap::set_tshark_path(path);
     Ok(())
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// v0.4.3 T9-4 新增命令：数据提取（phone/bankcard/ip）
+// ─────────────────────────────────────────────────────────────────────
+
+/// 提取结果条目（前端友好结构）。
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ExtractItem {
+    #[serde(rename = "type")]
+    r#type: String,
+    value: String,
+}
+
+/// 从文本提取 phone/bankcard/ip 三类 PII，去重后返回 findings + counts。
+#[tauri::command]
+pub fn extract_text(content: String) -> Result<Value, String> {
+    let raw = extract::extract_text(&content);
+    Ok(package_extract_result(raw))
+}
+
+/// 从 .txt 文件提取 phone/bankcard/ip 三类 PII，去重后返回 findings + counts。
+#[tauri::command]
+pub fn extract_file(path: String) -> Result<Value, String> {
+    let raw = extract::extract_file(Path::new(&path)).map_err(|e| e.to_string())?;
+    Ok(package_extract_result(raw))
+}
+
+/// 把 findings 按指定格式（txt/csv/json）写到 out_path。
+///
+/// txt 格式：每行 `type_value`（小写 type + 下划线，匹配 PDF spec）。
+/// csv 格式：type,value 两列（复用 write_csv）。
+/// json 格式：结构化数组（复用 write_json）。
+#[tauri::command]
+pub fn export_extract(
+    findings_json: String,
+    format: String,
+    out_path: String,
+) -> Result<(), String> {
+    let items: Vec<ExtractItem> = serde_json::from_str(&findings_json)
+        .map_err(|e| format!("findings_json 解析失败: {e}"))?;
+    match format.as_str() {
+        "txt" => {
+            let mut buf = String::new();
+            for it in &items {
+                buf.push_str(&format!("{}_{}\n", it.r#type, it.value));
+            }
+            // 去掉末尾多余换行
+            if buf.ends_with('\n') { buf.pop(); }
+            std::fs::write(&out_path, buf).map_err(|e| format!("写入失败: {e}"))
+        }
+        "csv" => {
+            let headers = vec!["type".to_string(), "value".to_string()];
+            let rows: Vec<Vec<String>> = items.iter()
+                .map(|it| vec![it.r#type.clone(), it.value.clone()])
+                .collect();
+            write_csv(&headers, &rows, &out_path)
+        }
+        "json" => {
+            let headers = vec!["type".to_string(), "value".to_string()];
+            let rows: Vec<Vec<String>> = items.iter()
+                .map(|it| vec![it.r#type.clone(), it.value.clone()])
+                .collect();
+            write_json(&headers, &rows, &out_path)
+        }
+        _ => Err(format!("unsupported format: {format}")),
+    }
+}
+
+/// 把 core Finding 列表去重 + 打包成 { findings, counts } JSON。
+fn package_extract_result(raw: Vec<ruT0_data_kit_core::report::Finding>) -> Value {
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    let mut items: Vec<ExtractItem> = Vec::new();
+    let mut phone = 0i64;
+    let mut bankcard = 0i64;
+    let mut ip = 0i64;
+    for f in raw {
+        let key = (f.r#type.clone(), f.value.clone());
+        if seen.insert(key.clone()) {
+            match f.r#type.as_str() {
+                "phone" => phone += 1,
+                "bankcard" => bankcard += 1,
+                "ip" => ip += 1,
+                _ => {}
+            }
+            items.push(ExtractItem {
+                r#type: f.r#type,
+                value: f.value,
+            });
+        }
+    }
+    json!({
+        "findings": items,
+        "counts": {
+            "phone": phone,
+            "bankcard": bankcard,
+            "ip": ip,
+        }
+    })
 }

@@ -4,13 +4,12 @@
 全部处理在本地完成，不上传任何样本或规则。本仓库面向数据安全竞赛与红队场景中的
 "敏感数据快速清洗 / 解析" 需求，不依赖 Python 运行时。
 
-> **当前状态：v0.4.2 设置模块首期（T7-1 ~ T7-4 verified_complete，已 release_complete）。** v0.4.2 在 v0.4.1 5 项缺陷修复的基础上，新增 Sidebar 底部「设置」入口与 tshark 多平台自动检测 + 路径配置：
-> - **Sidebar 底部「设置」入口（T7-3）**：`Sidebar.jsx` 给 antd Menu 加 `flex:1` 占满中段，下方分隔线 + `Button block` 把「设置」顶到底部；选中态用 `type=primary`；按钮内嵌 tshark 状态 Tag（绿=已检测 / 红=未检测）一眼可见。点击 dispatch `SET_VIEW("settings")`，App.jsx 新增 `view === "settings"` 分支渲染 SettingsView。
-> - **tshark 多平台自动检测（T7-1）**：core 新增 `crates/core/src/pcap/detect.rs`：进程级全局覆盖路径（`Mutex<Option<String>>`）+ `set_tshark_path` / `get_tshark_path` / `resolve_tshark_cmd` / `detect_tshark` / `candidate_paths`。`detect_tshark` 按优先级探测覆盖路径 → PATH `tshark` → 各平台候选绝对路径（macOS homebrew / Wireshark.app / Linux /usr/bin / Windows Program Files），跑 `<path> --version` 退出 0 即视为可用，返回 `TsharkInfo { path, version }`。`PcapReader::read` 两处 `Command::new("tshark")` 改为 `Command::new(&resolve_tshark_cmd())`，覆盖为 None 时行为与 v0.4.1 完全一致（零回归）。
-> - **路径配置持久化（T7-2）**：Tauri 新增 3 命令：`detect_tshark` / `load_tshark_path` / `save_tshark_path`，配置写 `app_config_dir/settings.json`（`{ "tshark_path": "..." }`），读写同时调 `set_tshark_path` 注入运行时立即生效（无需重启 app）。零新依赖（复用 `tauri::Manager::path()` + `std::fs`，不引入 `tauri-plugin-store` / `tauri-plugin-fs` / `which` crate）。
-> - **SettingsView UI（T7-3）**：`frontend/src/components/SettingsView.jsx` Card + Descriptions 显示状态 / 当前生效路径 / 版本；操作按钮组「自动检测 / 使用检测到的路径 / 选择文件... / 清除自定义路径」；挂载时自动调 `loadTsharkPath` + `detectTshark` 灌入状态；Alert 提示各平台常见路径参考。
-> - **搜索子串匹配修正（T7 附带）**：v0.4.1 用户反馈「搜张三能搜到，搜张搜不到」——根因 `tokenize` 把中文聚成整 token，原 `search_keyword` 精确匹配 postings key 漏命中。改为子串匹配：`key.contains(term)` 即命中，搜「张」命中 `张三`/`张三丰`，ASCII 场景同样受益（搜「ali」命中 `alice`）。新增 CJK + ASCII 子串测试覆盖。
-> 安全约束保持：tshark 探测/路径配置全本地，不调用网络；settings.json 仅写本地 app_config_dir；规则与样本不上传。版本状态约定见 `docs/04-版本标准.md`。
+> **当前状态：v0.4.3 txt 兼容 + 数据提取模块 + 规则引擎去绝对化（T9-1 ~ T9-7 verified_complete，已 release_complete）。** v0.4.3 在 v0.4.2 设置模块首期 + patch 修复的基础上，新增 txt 兼容、独立「数据提取」模块与规则引擎去绝对化：
+> - **txt 兼容（T9-1）**：core 新增 `crates/core/src/readers/txt_reader.rs`（仿 SqlReader，整段文本 → `Records { headers: ["content"], rows: [[全文]] }`）；`pipeline/mod.rs::SourceType` 新增 `Txt` + `detect_type("*.txt") => Txt`；`readers/mod.rs` dispatch arm；PreprocessView 文件选择对话框 filter 已在 T9-4 追加 `.txt`，可导入预览。
+> - **规则引擎去绝对化（T9-2）**：`validators/phone.rs` 删除 CTF_PREFIXES / REAL_PREFIXES 白名单 + ctf_prefixes()/real_prefixes() + OnceLock/HashSet，仅按 PDF spec `^1\d{10}$` 校验（旧版「155...」非白名单号段会 fail，现在 valid=true）；新增 `validators/ip.rs::IpValidator`（用 `IP_REGEX`）注册为第 8 个内置校验器；`scan/mod.rs::extract_pattern` 表新增 `"ip"` 条目，敏感扫描也能从文本中提取 IP 候选并校验。
+> - **数据提取模块（T9-3 + T9-4 + T9-5）**：core 新增 `crates/core/src/extract/mod.rs`（`builtin_extract_ruleset` 三 validator + `extract_text(content)` / `extract_file(path)` 复用 `DefaultSensitiveScan`）；Tauri 新增 3 命令 `extract_text` / `extract_file` / `export_extract`（复用 `write_csv` / `write_json` + type_value 拼接）；前端 `ExtractView.jsx`（NEW）4 Card 布局：输入（Radio 切文件/文本）+ 操作（开始提取）+ 结果（Table + 计数 Tag）+ 导出（txt/csv/json 三按钮），Sidebar 在 export 后新增 `{ key: "extract", icon: <FilterOutlined />, label: "数据提取" }`。
+> - **版本号 0.4.2 → 0.4.3（T9-4）**：`src-tauri/Cargo.toml` + `tauri.conf.json` + `frontend/package.json` + README 状态行 4 处同步。
+> 安全约束保持：全本地处理，extract 命令不调用网络，规则与样本不上传；零新 Cargo / npm 依赖（复用 antd / @ant-design/icons / DefaultSensitiveScan / ValidatorRegistry / write_csv / write_json）。版本状态约定见 `docs/04-版本标准.md`。
 
 ## 功能
 
@@ -26,6 +25,7 @@
 | v0.4.0 | 7 界面架构性完整重构（统一预处理 6 类源 + 多标签规则引擎 + 统一搜索 SearchQuery 枚举 + Tools SQL 解析/正则解析） | 已发布 v0.4.0 |
 | v0.4.1 | 5 项缺陷修复：数据流打通 + 移除各界面 FileToolbar + ToolsView 下拉栏 + SQL 盲注特征自动跳转 + RegexTool 语句→构造正则 + 搜索子串匹配修正 | 已发布 v0.4.1 |
 | v0.4.2 | 设置模块首期：Sidebar 底部「设置」入口 + tshark 多平台自动检测 + 路径配置持久化 + SettingsView UI（+ 3 项 patch 修复：文件导入对话框补 json/sql 扩展名 / 侧边栏与主页面分离滚动 / 脱敏校验下拉改用用户规则，版本号不变） | 已发布 v0.4.2 |
+| v0.4.3 | txt 兼容（PreprocessView 支持 .txt 导入）+ 数据提取独立模块（ExtractView：文件/文本输入 → phone/bankcard/ip 提取 → txt/csv/json 导出，匹配 PDF spec type_value 格式）+ 规则引擎去绝对化（PhoneValidator 删 CTF/real 白名单 → `^1\d{10}$`；新增 IpValidator） | 已发布 v0.4.3 |
 
 v0.1.0 已落地：
 - core pipeline：`detect_type` → `SourceReader` → `mask_pipeline` / `mask_pipeline_selected`（行选择，向后兼容）/ `mask_pipeline_columns`（列勾选） → `validate_pipeline`（校验） → `write_masked_csv` / `export_records_csv` / `export_records_xlsx`
@@ -251,6 +251,8 @@ cargo tauri dev
 | v0.3.0 | pcap 流量包敏感数据提取（tshark 子进程 + HTTP 字段提取 + 双重 URL 解码 + 自动 base64 字段解码 + 敏感扫描 + PcapView 四段 GUI） | 已发布 v0.3.0 |
 | v0.4.0 | 7 界面架构性完整重构（统一预处理 6 类源 + 多标签规则引擎 + 统一搜索 SearchQuery 枚举 + Tools SQL 解析/正则解析） | 已发布 v0.4.0 |
 | v0.4.1 | 5 项缺陷修复：数据流打通 + 移除各界面 FileToolbar + ToolsView 下拉栏 + SQL 盲注特征自动跳转 + RegexTool 语句→构造正则 | 已发布 v0.4.1 |
+| v0.4.2 | 设置模块首期 + tshark 多平台自动检测 + 路径配置持久化 + 3 项 patch 修复 | 已发布 v0.4.2 |
+| v0.4.3 | txt 兼容 + 数据提取独立模块（ExtractView）+ 规则引擎去绝对化（PhoneValidator 删白名单 + 新增 IpValidator） | 已发布 v0.4.3 |
 
 版本判定标准见 `docs/04-版本标准.md`。
 

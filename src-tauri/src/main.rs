@@ -40,6 +40,9 @@ fn main() {
             commands::detect_tshark,
             commands::load_tshark_path,
             commands::save_tshark_path,
+            commands::extract_text,
+            commands::extract_file,
+            commands::export_extract,
         ])
         .run(tauri::generate_context!())
         .expect("error while running RuT0DataKit GUI");

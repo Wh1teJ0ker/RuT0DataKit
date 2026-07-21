@@ -31,3 +31,6 @@ Icon?
 
 # OS misc
 Thumbs.db
+
+# PII 样本（含真实手机号/银行卡/IP，安全约束：规则与样本不上传）
+tests/fixtures/samples/tips/

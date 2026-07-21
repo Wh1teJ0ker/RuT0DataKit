@@ -19,6 +19,7 @@ pub mod json_reader;
 pub mod log_reader;
 pub mod pcap_reader;
 pub mod sql_reader;
+pub mod txt_reader;
 pub mod xlsx_reader;
 
 pub use csv_reader::CsvReader;
@@ -26,6 +27,7 @@ pub use json_reader::JsonReader;
 pub use log_reader::LogRecordsReader;
 pub use pcap_reader::PcapRecordsReader;
 pub use sql_reader::SqlReader;
+pub use txt_reader::TxtReader;
 pub use xlsx_reader::XlsxReader;
 
 /// 统一表格式数据：headers + rows。
@@ -56,6 +58,7 @@ pub trait SourceReader {
 /// - pcap → [`PcapRecordsReader`]（tshark 缺失时返回
 ///   [`CoreError::DependencyMissing`]）
 /// - log → [`LogRecordsReader`]
+/// - txt → [`TxtReader`]
 /// - unknown → [`CoreError::InvalidInput`]
 pub fn read_records(path: &Path) -> Result<Records, CoreError> {
     let t = crate::pipeline::detect_type(path)?;
@@ -66,6 +69,7 @@ pub fn read_records(path: &Path) -> Result<Records, CoreError> {
         crate::pipeline::SourceType::Json => JsonReader::new().read(path),
         crate::pipeline::SourceType::Pcap => PcapRecordsReader::new().read(path),
         crate::pipeline::SourceType::Log => LogRecordsReader::new().read(path),
+        crate::pipeline::SourceType::Txt => TxtReader::new().read(path),
         crate::pipeline::SourceType::Unknown => Err(CoreError::InvalidInput(format!(
             "unsupported source type for path: {}",
             path.display()

@@ -39,13 +39,15 @@ pub enum SourceType {
     Sql,
     /// v0.4.0 新增：`.json` 文件。
     Json,
+    /// v0.4.3 新增：`.txt` 文件。
+    Txt,
     Unknown,
 }
 
 /// 根据路径后缀探测数据源类型。
 ///
 /// `.csv`→Csv、`.xlsx`→Xlsx、`.log`→Log、`.pcap`/`.pcapng`→Pcap、`.sql`→Sql、
-/// `.json`→Json，其余 `Unknown`。仅按后缀判定，不读取 magic。
+/// `.json`→Json、`.txt`→Txt，其余 `Unknown`。仅按后缀判定，不读取 magic。
 pub fn detect_type(path: &Path) -> Result<SourceType, CoreError> {
     let ext = path
         .extension()
@@ -59,6 +61,7 @@ pub fn detect_type(path: &Path) -> Result<SourceType, CoreError> {
         "pcap" | "pcapng" => SourceType::Pcap,
         "sql" => SourceType::Sql,
         "json" => SourceType::Json,
+        "txt" => SourceType::Txt,
         _ => SourceType::Unknown,
     };
     Ok(t)
@@ -109,7 +112,11 @@ mod tests {
         );
         assert_eq!(
             detect_type(Path::new("a.txt")).unwrap(),
-            SourceType::Unknown
+            SourceType::Txt
+        );
+        assert_eq!(
+            detect_type(Path::new("a.TXT")).unwrap(),
+            SourceType::Txt
         );
         assert_eq!(
             detect_type(Path::new("noext")).unwrap(),

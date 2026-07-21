@@ -308,3 +308,27 @@ export async function loadTsharkPath() {
 export async function saveTsharkPath(path) {
   return tauriInvoke("save_tshark_path", { path });
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// v0.4.3 T9-5 数据提取命令封装
+// 参数名 camelCase，由 Tauri 自动转 snake_case 传到 Rust 端。
+// ─────────────────────────────────────────────────────────────────────
+
+// 从文本提取 phone/bankcard/ip，返回 { findings, counts }。
+export async function extractText(content) {
+  return tauriInvoke("extract_text", { content });
+}
+
+// 从 .txt 文件提取 phone/bankcard/ip，返回 { findings, counts }。
+export async function extractFile(path) {
+  return tauriInvoke("extract_file", { path });
+}
+
+// 把 findings 按格式（txt/csv/json）导出到 outPath。
+export async function exportExtract(findings, format, outPath) {
+  return tauriInvoke("export_extract", {
+    findingsJson: JSON.stringify(findings),
+    format,
+    outPath,
+  });
+}

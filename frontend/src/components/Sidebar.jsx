@@ -10,10 +10,11 @@ import {
   ConsoleSqlOutlined,
   CodeOutlined,
   SlidersOutlined,
+  FilterOutlined,
 } from "@ant-design/icons";
 
-// v0.4.0 Sidebar：7 项 active，按用户主流程排序：
-//   数据预处理 → 规则管理 → 搜索 → 数据脱敏 → 数据校验 → 数据导出 → Tools。
+// v0.4.0 Sidebar：8 项 active，按用户主流程排序：
+//   数据预处理 → 规则管理 → 搜索 → 数据脱敏 → 数据校验 → 数据导出 → 数据提取 → Tools。
 // 原 log/pcap 独立项删除（其能力下沉到搜索 / Tools，LogView/PcapView 文件保留供后续复用）。
 // 无 disabled 项；点击 dispatch SET_VIEW，未实现的 view 由 App.jsx 渲染占位 Card。
 //
@@ -36,6 +37,7 @@ export default function Sidebar({ state, dispatch }) {
     { key: "mask", icon: <SafetyCertificateOutlined />, label: "数据脱敏" },
     { key: "validate", icon: <CheckCircleOutlined />, label: "数据校验" },
     { key: "export", icon: <DownloadOutlined />, label: "数据导出" },
+    { key: "extract", icon: <FilterOutlined />, label: "数据提取" },
     {
       key: "tools",
       icon: <ToolOutlined />,

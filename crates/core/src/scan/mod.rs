@@ -58,6 +58,9 @@ impl DefaultSensitiveScan {
             "phone" => r"\b\d{11}\b",
             "bankcard" => r"\b\d{13,19}\b",
             "email" => r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}",
+            "ip" => {
+                r"\b(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)){3}\b"
+            }
             "mac" => r"\b([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b",
             "username" => r"[A-Za-z0-9]{3,}",
             "name" => r"[\x{4e00}-\x{9fa5}]{2,}",
@@ -233,5 +236,26 @@ mod tests {
         };
         let scan = DefaultSensitiveScan::new();
         assert!(scan.scan("anything", &rules).is_empty());
+    }
+
+    #[test]
+    fn scan_finds_ip_in_text() {
+        let rules = RuleSet {
+            validators: vec![FieldRule {
+                field: "ip".into(),
+                validator: "ip".into(),
+                params: None,
+                regex: None,
+                message: None,
+                description: None,
+                tags: Vec::new(),
+            }],
+            maskers: vec![],
+        };
+        let scan = DefaultSensitiveScan::new();
+        let findings = scan.scan("contact 163.211.48.156 for info", &rules);
+        assert!(findings
+            .iter()
+            .any(|f| f.r#type == "ip" && f.value == "163.211.48.156"));
     }
 }

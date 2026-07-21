@@ -92,6 +92,15 @@ export const initialState = {
   tsharkPath: null,
   tsharkDetected: null,
   tsharkLoading: false,
+  // v0.4.3 T9-5 数据提取模块状态。
+  // extractMode："file"（文件导入）| "text"（文本粘贴）。
+  // extractInput：文件模式下是路径字符串，文本模式下是粘贴内容。
+  // extractResult：{ findings: [{type, value}], counts: {phone, bankcard, ip} } 或 null。
+  // extractLoading：提取进行中标志，禁用按钮防重入。
+  extractMode: "file",
+  extractInput: "",
+  extractResult: null,
+  extractLoading: false,
 };
 
 function withRules(state, mutator) {
@@ -419,6 +428,23 @@ export function appReducer(state, action) {
     case "SET_TSHARK_LOADING": {
       const { tsharkLoading } = action;
       return { ...state, tsharkLoading };
+    }
+    // v0.4.3 T9-5 数据提取模块状态。
+    case "SET_EXTRACT_MODE": {
+      const { extractMode } = action;
+      return { ...state, extractMode };
+    }
+    case "SET_EXTRACT_INPUT": {
+      const { extractInput } = action;
+      return { ...state, extractInput };
+    }
+    case "SET_EXTRACT_RESULT": {
+      const { extractResult } = action;
+      return { ...state, extractResult };
+    }
+    case "SET_EXTRACT_LOADING": {
+      const { extractLoading } = action;
+      return { ...state, extractLoading };
     }
     // v0.4.0 PreprocessView 导入产物：整体覆盖 records（headers/rows/rowCount/sourceType）。
     // 切 view 不重置；只在导入新文件时覆盖。mask/validate/export 后续从此读取。

@@ -11,6 +11,7 @@
 //! 不再只产 Report，也能转成表格参与预处理。
 
 pub mod error;
+pub mod extract;
 pub mod log;
 pub mod logsign;
 pub mod maskers;
