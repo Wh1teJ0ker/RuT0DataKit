@@ -58,6 +58,8 @@ export const initialState = {
   // T5-10/T5-12 Tools Tab 状态。toolsActiveTab：ToolsView 顶部下拉栏选中项
   // （"sql" | "regex"），切 view 不重置；切 Tab 也不清各自子状态。
   toolsActiveTab: "sql",
+  // v0.4.1 T6-3：Sidebar Tools SubMenu 展开/折叠受控状态，默认 false（折叠）。
+  sidebarToolsOpen: false,
   // T5-10 SQL 解析子界面状态
   sqlParseInput: "",
   sqlParseResult: null,
@@ -330,6 +332,10 @@ export function appReducer(state, action) {
     case "SET_TOOLS_ACTIVE_TAB": {
       const { toolsActiveTab } = action;
       return { ...state, toolsActiveTab };
+    }
+    case "SET_SIDEBAR_TOOLS_OPEN": {
+      const { sidebarToolsOpen } = action;
+      return { ...state, sidebarToolsOpen };
     }
     case "SET_SQL_PARSE_INPUT": {
       const { sqlParseInput } = action;
