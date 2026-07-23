@@ -1,10 +1,13 @@
 //! 用户名校验器：仅字母数字，`^[A-Za-z0-9]+$`。
+//!
+//! v0.5.0：正则源改引用 `rules::patterns::USERNAME.validate`，消除散布。
 
 use std::collections::HashMap;
 
 use regex::Regex;
 use serde_yml::Value;
 
+use crate::rules::patterns::USERNAME;
 use crate::validators::{ValidationResult, Validator};
 
 /// 用户名校验器。
@@ -14,7 +17,7 @@ pub struct UsernameValidator {
 
 impl UsernameValidator {
     pub fn new(_params: HashMap<String, Value>) -> Self {
-        let re = Regex::new(r"^[A-Za-z0-9]+$").expect("valid regex");
+        let re = Regex::new(USERNAME.validate).expect("valid regex");
         Self { re }
     }
 }

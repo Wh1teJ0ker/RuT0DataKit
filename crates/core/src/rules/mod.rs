@@ -1,77 +1,66 @@
 //! 规则引擎核心：YAML 反序列化的 `RuleSet` / `FieldRule` / `MaskRule` +
-//! 校验器 / 脱敏器注册表 + 加载入口 + 抽象算子模型（T0-21）。
+//! 校验器 / 脱敏器注册表 + 加载入口 + 抽象算子模型。
 //!
-//! 详见 `types.rs` / `registry.rs` / `loader.rs` / `operator.rs` / `presets.rs`。
-//! 具体业务 validator / masker 由 T0-3 / T0-4 填充；T0-21 把 11 个 masker
-//! 收敛为 4 个通用算子（`MaskOp`）、8 个 validator 收敛为 3 个（`ValidateOp`），
-//! `build_masker` / `build_validator` 内部走 `Op::from_rule`，签名与行为保持
-//! 向后兼容。
+//! v0.4.4 重构：删除预置规则集（`default_mask.yaml` / `custom_example.yaml`）
+//! 与预置模板元信息（`PRESET_SPECS` / `list_tagged_presets` / `list_*_op_types`）。
+//! `FieldRule` / `MaskRule` 字段从 `validator` / `masker` / `regex` / `tags`
+//! 重构为 `scope`（数据类型）+ `tag`（单选用途）。规则池初始为空，后续版本
+//! 按数据类型（idcard/phone/bankcard/...）逐步接入内置规则与添加入口。
 //!
-//! v0.1.0 重构：删除所有预置别名（用户要求「只做规则模版」），`presets`
-//! 只保留通用算子元信息（`list_*_op_types`）与常用正则常量。
+//! 算子实现（`MaskOp` / `ValidateOp` + 9 个正则常量 + `ValidatorRegistry` +
+//! `MaskerRegistry`）完整保留，作为后续接入的核心资产。
 
+pub mod builtin;
 pub mod loader;
-pub mod operator;
+pub mod mask_op;
+pub mod patterns;
 pub mod presets;
 pub mod registry;
 pub mod types;
+pub mod validate_op;
 
-pub use loader::{load_default_mask_ruleset, load_ruleset, load_ruleset_str};
-pub use operator::{
-    apply_mask_op, apply_validate_op, AlgorithmOp, AlgoKind, ConstReplaceOp, GuardKind, MaskOp,
-    MatchMode, RegexOp, RegexReplaceOp, RegexWithGuardOp, SplitTemplateOp, TemplateOp, ValidateOp,
-};
-pub use presets::{
-    list_mask_op_types, list_tagged_presets, list_validate_op_types, PresetEntry,
+pub use builtin::{bankcard_extract_rule, builtin_ruleset, ip_extract_rule, phone_extract_rule};
+pub use loader::{load_ruleset, load_ruleset_str};
+pub use mask_op::{
+    apply_mask_op, ConstReplaceOp, MaskOp, MatchMode, RegexReplaceOp, SplitTemplateOp, TemplateOp,
 };
 pub use registry::{MaskerRegistry, ValidatorRegistry};
 pub use types::{FieldRule, MaskRule, RuleSet};
-
-/// 内置 `default_mask.yaml` 内容（嵌入二进制，避免运行时找文件）。
-pub const DEFAULT_MASK_YAML: &str = include_str!("../../../../rules/default_mask.yaml");
-/// 内置 `custom_example.yaml` 内容。
-pub const CUSTOM_EXAMPLE_YAML: &str = include_str!("../../../../rules/custom_example.yaml");
+pub use validate_op::{
+    apply_validate_op, AlgorithmOp, AlgoKind, GuardKind, RegexOp, RegexWithGuardOp, ValidateOp,
+};
 
 /// 根据 [`FieldRule`] 在指定注册表中构造校验器实例。
 ///
-/// 自定义兜底：当 `rule.regex` 存在时构造 [`RegexValidator`]，忽略
-/// `rule.validator` 名；否则按 `rule.validator` 名查注册表。未注册时返回
-/// `None`，由调用方决定如何报错。
+/// v0.4.4：按 `rule.scope`（数据类型）查 `ValidatorRegistry`。`scope` 取代
+/// 旧 `rule.validator` 名语义，如 scope="phone" -> 查注册名 "phone" 的
+/// `PhoneValidator`。未注册的 scope 返回 `None`，由调用方决定如何报错。
 ///
-/// T0-21 起：内部优先尝试 `ValidateOp::from_rule`（覆盖 regex 兜底 + 7 个预置
-/// 别名），失败时回退到 `ValidatorRegistry::get`（保持自定义注册项可用）。
+/// 注：旧 `rule.regex` 兜底分支已删除（regex 字段已移除）。后续若需自定义
+/// 正则校验，可通过 `scope="custom"` + params.pattern 在算子层处理
+/// （`ValidateOp::from_rule` 后续接入时实现）。
 pub fn build_validator(
     rule: &FieldRule,
     reg: &ValidatorRegistry,
 ) -> Option<Box<dyn crate::validators::Validator>> {
-    // T0-21：优先走通用算子模型（覆盖 7 个预置别名）。
-    if rule.regex.is_none() {
-        if let Some(op) = ValidateOp::from_rule(rule) {
-            return Some(Box::new(op));
-        }
-    } else {
-        // regex 兜底：保留旧行为——pattern 非法时返回 None（与旧
-        // `Regex::new(pattern).ok()?` 一致），合法时构造 RegexValidator。
-        use crate::validators::RegexValidator;
-        if let Some(pattern) = rule.regex.as_ref() {
-            let re = regex::Regex::new(pattern).ok()?;
-            return Some(Box::new(RegexValidator::new(re, rule.message.clone())));
-        }
+    // v0.4.4：优先尝试 ValidateOp::from_rule（按 scope 查通用算子，后续接入）；
+    // 失败回退到 ValidatorRegistry::get（按 scope 查内置 validator）。
+    if let Some(op) = ValidateOp::from_rule(rule) {
+        return Some(Box::new(op));
     }
-    // 回退：自定义注册项（非预置别名且无 regex）。
-    reg.get(&rule.validator)
+    reg.get(&rule.scope)
 }
 
 /// 根据 [`MaskRule`] 构造一个具体脱敏器实例。
 ///
-/// 与 [`build_validator`] 不同，脱敏器构造**不查 `MaskerRegistry`**：注册表里
-/// 存的是默认 params 的工厂闭包，而 `MaskRule.params`（如 `custom` 的
-/// `keep_prefix` / `keep_suffix`）必须透传到具体 masker 的 `new(params)`。
+/// v0.4.4：按 `rule.scope`（数据类型）查 `MaskOp::from_rule` 构造通用算子。
+/// `scope` 取代旧 `rule.masker` 名语义。未知名返回 `None`。
 ///
-/// T0-21 起：内部走 `MaskOp::from_rule` 构造通用算子，`MaskOp` 自身 impl
-/// [`crate::maskers::Masker`]，直接装箱返回。未知名返回 `None`。
+/// 与 [`build_validator`] 不同，脱敏器构造**不查 `MaskerRegistry`**：注册表里
+/// 存的是默认 params 的工厂闭包，而 `MaskRule.params`（如 `keep_prefix` /
+/// `keep_suffix`）必须透传到具体 masker 的 `new(params)`。
 pub fn build_masker(rule: &MaskRule) -> Option<Box<dyn crate::maskers::Masker>> {
-    MaskOp::from_rule(&rule.masker, rule.params.as_ref())
+    MaskOp::from_rule(&rule.scope, rule.params.as_ref())
         .map(|op| Box::new(op) as Box<dyn crate::maskers::Masker>)
 }
 
@@ -82,25 +71,9 @@ mod tests {
     use std::collections::HashMap;
 
     #[test]
-    fn build_validator_regex_fallback_overrides_name() {
-        // 注册表里没有 phone；但因 regex 存在，应返回 RegexValidator。
-        let reg = ValidatorRegistry::new();
-        let rule = FieldRule {
-            field: "phone".into(),
-            validator: "phone".into(),
-            params: None,
-            regex: Some(r"^1\d{10}$".into()),
-            message: Some("bad phone".into()),
-            description: None,
-            tags: Vec::new(),
-        };
-        let v = build_validator(&rule, &reg).expect("regex fallback should produce validator");
-        assert!(v.validate("13800138000").valid);
-        assert!(!v.validate("abc").valid);
-    }
-
-    #[test]
     fn build_validator_falls_back_to_registry() {
+        // v0.4.4：scope="always_ok" 在 ValidateOp::from_rule 中无映射，
+        // 回退到 ValidatorRegistry::get("always_ok") 命中自定义注册项。
         struct AlwaysOk;
         impl crate::validators::Validator for AlwaysOk {
             fn validate(&self, _value: &str) -> crate::validators::ValidationResult {
@@ -111,52 +84,55 @@ mod tests {
         reg.register("always_ok", || Box::new(AlwaysOk));
         let rule = FieldRule {
             field: "x".into(),
-            validator: "always_ok".into(),
+            scope: "always_ok".into(),
+            tag: "validate".into(),
             params: None,
-            regex: None,
             message: None,
             description: None,
-            tags: Vec::new(),
         };
         let v = build_validator(&rule, &reg).expect("registry lookup should produce validator");
         assert!(v.validate("anything").valid);
     }
 
     #[test]
-    fn build_validator_missing_name_no_regex_returns_none() {
+    fn build_validator_missing_scope_returns_none() {
+        // 未注册的 scope，ValidateOp 无映射 + registry 无注册 -> None。
         let reg = ValidatorRegistry::new();
         let rule = FieldRule {
             field: "x".into(),
-            validator: "ghost".into(),
+            scope: "ghost".into(),
+            tag: "validate".into(),
             params: None,
-            regex: None,
             message: None,
             description: None,
-            tags: Vec::new(),
         };
         assert!(build_validator(&rule, &reg).is_none());
     }
 
     #[test]
-    fn build_validator_invalid_regex_returns_none() {
-        let reg = ValidatorRegistry::new();
+    fn build_validator_phone_scope_uses_registry() {
+        // v0.4.4：scope="phone" 在 ValidateOp::from_rule 中暂无映射（后续接入），
+        // 回退到 ValidatorRegistry::get("phone") 命中内置 PhoneValidator。
+        let reg = crate::validators::default_validator_registry();
         let rule = FieldRule {
-            field: "x".into(),
-            validator: "x".into(),
+            field: "phone".into(),
+            scope: "phone".into(),
+            tag: "validate".into(),
             params: None,
-            regex: Some("(".into()),
             message: None,
             description: None,
-            tags: Vec::new(),
         };
-        assert!(build_validator(&rule, &reg).is_none());
+        let v = build_validator(&rule, &reg).expect("phone scope should hit registry");
+        assert!(v.validate("13812345678").valid);
+        assert!(!v.validate("abc").valid);
     }
 
     #[test]
     fn build_masker_template_with_params() {
-        // 带 params 的 template MaskRule（keep_prefix:6/keep_suffix:4/
-        // mask_char:*/mask_min_len:8/min_len:18/max_len:18/cjk:false）
-        // → 对 "110101199001011234" 得 "110101********1234"（等价旧 idcard_mask）。
+        // scope="template" 在 MaskOp::from_rule 中映射到 Template 算子。
+        // 带 params（keep_prefix:6/keep_suffix:4/mask_char:*/mask_min_len:8/
+        // min_len:18/max_len:18/cjk:false）-> 对 "110101199001011234" 得
+        // "110101********1234"。
         let mut params = HashMap::new();
         params.insert("keep_prefix".to_string(), Value::Number(6.into()));
         params.insert("keep_suffix".to_string(), Value::Number(4.into()));
@@ -167,10 +143,11 @@ mod tests {
         params.insert("cjk".to_string(), Value::Bool(false));
         let rule = MaskRule {
             field: "x".into(),
-            masker: "template".into(),
+            scope: "template".into(),
+            tag: "mask".into(),
             params: Some(params),
+            message: None,
             description: None,
-            tags: Vec::new(),
         };
         let m = build_masker(&rule).expect("template masker should be built");
         assert_eq!(m.mask("110101199001011234"), "110101********1234");
@@ -179,15 +156,16 @@ mod tests {
     }
 
     #[test]
-    fn build_masker_unknown_returns_none() {
-        // v0.1.0 重构后：未知名（含旧预置别名）一律返回 None。
+    fn build_masker_unknown_scope_returns_none() {
+        // v0.4.4：未知名（含旧预置别名 idcard_mask/phone_mask/custom 等）一律 None。
         for name in ["ghost", "idcard_mask", "phone_mask", "custom", "delete", "replace", "regex_extract"] {
             let rule = MaskRule {
                 field: "x".into(),
-                masker: name.into(),
+                scope: name.into(),
+                tag: "mask".into(),
                 params: None,
+                message: None,
                 description: None,
-                tags: Vec::new(),
             };
             assert!(
                 build_masker(&rule).is_none(),
@@ -202,10 +180,11 @@ mod tests {
         for name in ["template", "split_template", "regex_replace", "const_replace"] {
             let rule = MaskRule {
                 field: "x".into(),
-                masker: name.into(),
+                scope: name.into(),
+                tag: "mask".into(),
                 params: None,
+                message: None,
                 description: None,
-                tags: Vec::new(),
             };
             assert!(
                 build_masker(&rule).is_some(),

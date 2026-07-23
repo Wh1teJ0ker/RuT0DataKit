@@ -1,68 +1,45 @@
 import React from "react";
-import {
-  Card,
-  Space,
-  Button,
-  List,
-  Tag,
-  Empty,
-  Tooltip,
-  Typography,
-  Spin,
-  Alert,
-  Input,
-  Select,
-  App as AntApp,
-} from "antd";
-import {
-  PlusOutlined,
-  EditOutlined,
-  DeleteOutlined,
-  PlayCircleOutlined,
-  ArrowRightOutlined,
-  CheckCircleOutlined,
-  CloseCircleOutlined,
-} from "@ant-design/icons";
-import RuleDrawer from "./RuleDrawer.jsx";
-import { previewMaskRuleValue, previewValidateRuleValue, listRuleTags } from "../tauri.js";
+import { Card, Empty, Select, Typography, Tag, Space } from "antd";
+import { listRuleTags } from "../tauri.js";
 
-const { Text, Paragraph } = Typography;
+const { Text } = Typography;
 
-// antd Tag 预置色板（与 antd 文档一致）：tag 颜色按字符串哈希取模映射，
-// 同一 tag 始终同色。
-const TAG_PRESET_COLORS = [
-  "magenta",
-  "red",
-  "volcano",
-  "orange",
-  "gold",
-  "lime",
-  "green",
-  "cyan",
-  "blue",
-  "geekblue",
-  "purple",
-];
+// tag -> 颜色映射：数据提取/数据脱敏/数据校验三选一，固定配色。
+const TAG_COLORS = {
+  extract: "cyan",
+  mask: "blue",
+  validate: "gold",
+};
 
 function tagColor(tag) {
-  let h = 0;
-  for (let i = 0; i < tag.length; i++) {
-    h = (h * 31 + tag.charCodeAt(i)) >>> 0;
-  }
-  return TAG_PRESET_COLORS[h % TAG_PRESET_COLORS.length];
+  return TAG_COLORS[tag] ?? "default";
 }
 
-// 规则管理视图（独立系统）：不依赖任何数据文件导入。
-// - 右上角仅保留「添加规则」按钮（不再有保存为 YAML / 从 YAML 加载）。
-// - 单一列表合并脱敏 + 校验规则，每条卡片带「试运行」按钮。
-// - 试运行改为用户在卡片内手动输入一个样例值，直接对算子跑一次，
-//   完全不读取已导入数据文件，规则管理与数据文件彻底解耦。
+const TAG_LABELS = {
+  extract: "数据提取",
+  mask: "数据脱敏",
+  validate: "数据校验",
+};
+
+function tagLabel(tag) {
+  return TAG_LABELS[tag] ?? tag;
+}
+
+// 规则管理视图（v0.4.4 规则引擎重构后）：
+// - 规则池初始为空，无添加规则入口（后续版本接入）。
+// - 保留 tag 过滤 Select（静态三选一：数据提取 / 数据脱敏 / 数据校验）。
+// - 列表展示每条规则的 field / scope / tag / description。
+// - 空态文案「暂无规则，后续版本将提供规则添加入口」。
 export default function RulesView({ state, dispatch }) {
   const { rules, rulesTagFilter } = state;
 
-  // 可选标签列表：来自 list_rule_tags 命令（预置标签 ∪ 当前 ruleset 出现的 tag）。
-  // Drawer 加载/编辑时也会拉，但这里只用于顶部过滤 Select；失败退化为空数组。
-  const [tagOptions, setTagOptions] = React.useState([]);
+  // 可选标签列表：来自 list_rule_tags 命令（静态三选一）。
+  // 失败退化为静态三选一，保证过滤 Select 始终可用。
+  const [tagOptions, setTagOptions] = React.useState([
+    "extract",
+    "mask",
+    "validate",
+  ]);
   const rulesJson = React.useMemo(() => {
     return JSON.stringify({
       maskers: rules.maskers,
@@ -75,9 +52,9 @@ export default function RulesView({ state, dispatch }) {
       try {
         const tags = await listRuleTags(rulesJson);
         if (cancelled) return;
-        setTagOptions(Array.isArray(tags) ? tags : []);
+        setTagOptions(Array.isArray(tags) && tags.length ? tags : ["extract", "mask", "validate"]);
       } catch {
-        if (!cancelled) setTagOptions([]);
+        if (!cancelled) setTagOptions(["extract", "mask", "validate"]);
       }
     })();
     return () => {
@@ -90,40 +67,21 @@ export default function RulesView({ state, dispatch }) {
     ...rules.maskers.map((r, i) => ({ ...r, __kind: "mask", __index: i })),
     ...rules.validators.map((r, i) => ({ ...r, __kind: "validate", __index: i })),
   ];
-  // 按标签过滤：rulesTagFilter 为 null 时显示全部，否则只显示 tags 含该 tag 的规则。
+  // 按标签过滤：rulesTagFilter 为 null 时显示全部，否则只显示 tag == rulesTagFilter 的规则。
+  // v0.4.4：tag 为单值字段（非多标签数组），改为严格相等匹配。
   const filtered = rulesTagFilter
-    ? merged.filter((r) => Array.isArray(r.tags) && r.tags.includes(rulesTagFilter))
+    ? merged.filter((r) => r.tag === rulesTagFilter)
     : merged;
-
-  const handleAdd = () => {
-    dispatch({ type: "SET_EDITING_RULE", rule: { kind: "mask" } });
-  };
-
-  const handleEdit = (item) => {
-    dispatch({
-      type: "SET_EDITING_RULE",
-      rule: { ...item, kind: item.__kind, __index: item.__index },
-    });
-  };
-
-  const handleRemove = (item) => {
-    dispatch({ type: "REMOVE_RULE", kind: item.__kind, index: item.__index });
-  };
 
   return (
     <Card
       title="规则管理"
       styles={{ body: { padding: 12 } }}
-      extra={
-        <Button type="primary" icon={<PlusOutlined />} onClick={handleAdd}>
-          添加规则
-        </Button>
-      }
     >
       {merged.length === 0 ? (
         <Empty
           image={Empty.PRESENTED_IMAGE_SIMPLE}
-          description="暂无规则，点击右上角「添加规则」创建"
+          description="暂无规则，后续版本将提供规则添加入口"
         />
       ) : (
         <>
@@ -145,7 +103,7 @@ export default function RulesView({ state, dispatch }) {
               }}
               options={[
                 { label: "全部", value: "__all__" },
-                ...tagOptions.map((t) => ({ label: t, value: t })),
+                ...tagOptions.map((t) => ({ label: `${tagLabel(t)} (${t})`, value: t })),
               ]}
               allowClear
               onClear={() =>
@@ -154,226 +112,42 @@ export default function RulesView({ state, dispatch }) {
             />
             {rulesTagFilter ? (
               <Text type="secondary" style={{ fontSize: 12 }}>
-                当前过滤：{rulesTagFilter}（命中 {filtered.length} 条）
+                当前过滤：{tagLabel(rulesTagFilter)}（命中 {filtered.length} 条）
               </Text>
             ) : null}
           </div>
           {filtered.length === 0 ? (
             <Empty
               image={Empty.PRESENTED_IMAGE_SIMPLE}
-              description={`无带「${rulesTagFilter}」标签的规则`}
+              description={`无「${tagLabel(rulesTagFilter)}」标签的规则`}
             />
           ) : (
-            <List
-              dataSource={filtered}
-              renderItem={(item) => (
-                <RuleCard
+            <Space direction="vertical" size="small" style={{ width: "100%" }}>
+              {filtered.map((item) => (
+                <Card
                   key={`${item.__kind}-${item.__index}`}
-                  item={item}
-                  onEdit={handleEdit}
-                  onRemove={handleRemove}
-                />
-              )}
-            />
+                  size="small"
+                  styles={{ body: { padding: "8px 12px" } }}
+                >
+                  <Space size="small" wrap align="center">
+                    <Tag color={tagColor(item.tag)} style={{ margin: 0 }}>
+                      {tagLabel(item.tag)}
+                    </Tag>
+                    <Text strong>{item.field || "（未指定字段）"}</Text>
+                    <Text type="secondary">→</Text>
+                    <Tag style={{ margin: 0 }}>{item.scope}</Tag>
+                    {item.description ? (
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        {item.description}
+                      </Text>
+                    ) : null}
+                  </Space>
+                </Card>
+              ))}
+            </Space>
           )}
         </>
       )}
-      <RuleDrawer state={state} dispatch={dispatch} />
     </Card>
-  );
-}
-
-function RuleCard({ item, onEdit, onRemove }) {
-  const [sampleInput, setSampleInput] = React.useState("");
-  const [run, setRun] = React.useState({
-    loading: false,
-    result: null,
-    error: null,
-  });
-
-  const isMask = item.__kind === "mask";
-  const opName = isMask ? item.masker : item.validator;
-  const paramsStr = item.params
-    ? Object.entries(item.params)
-        .map(([k, v]) => `${k}=${v == null ? "" : String(v)}`)
-        .join(", ")
-    : "";
-
-  const handleRun = async () => {
-    const input = sampleInput || "";
-    setRun({ loading: true, result: null, error: null });
-    try {
-      let res;
-      if (isMask) {
-        res = await previewMaskRuleValue(input, item.masker, item.params || null);
-      } else {
-        res = await previewValidateRuleValue(
-          input,
-          item.validator,
-          item.params || null,
-          item.regex || null,
-          item.message || null
-        );
-      }
-      setRun({ loading: false, result: res, error: null });
-    } catch (e) {
-      setRun({ loading: false, result: null, error: String(e) });
-    }
-  };
-
-  return (
-    <List.Item>
-      <Space direction="vertical" size="small" style={{ flex: 1, width: "100%" }}>
-        <Space size="small" wrap align="center">
-          <Tag color={isMask ? "blue" : "gold"} style={{ margin: 0 }}>
-            {isMask ? "脱敏" : "校验"}
-          </Tag>
-          <Text strong>{item.field || "（未指定字段）"}</Text>
-          <Text type="secondary">→</Text>
-          <Tag style={{ margin: 0 }}>{opName}</Tag>
-          {paramsStr ? (
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              ({paramsStr})
-            </Text>
-          ) : null}
-          {item.tags && item.tags.length ? (
-            <Space size={4} wrap>
-              {item.tags.map((t) => (
-                <Tag key={t} color={tagColor(t)} style={{ margin: 0 }}>
-                  {t}
-                </Tag>
-              ))}
-            </Space>
-          ) : null}
-        </Space>
-        {item.description ? (
-          <Paragraph
-            type="secondary"
-            ellipsis={{ rows: 2, expandable: true }}
-            style={{ margin: 0, fontSize: 12 }}
-          >
-            {item.description}
-          </Paragraph>
-        ) : null}
-
-        {/* 试运行：独立输入样例值，不依赖任何文件 */}
-        <div
-          style={{
-            marginTop: 4,
-            padding: "8px 12px",
-            background: "#fafafa",
-            borderRadius: 4,
-          }}
-        >
-          <Space size="small" wrap align="center" style={{ width: "100%" }}>
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              样例值
-            </Text>
-            <Input
-              size="small"
-              style={{ width: 240 }}
-              placeholder="输入一个样例值进行试运行"
-              value={sampleInput}
-              onChange={(e) => setSampleInput(e.target.value)}
-              onPressEnter={handleRun}
-            />
-            <Button
-              size="small"
-              type="primary"
-              icon={<PlayCircleOutlined />}
-              loading={run.loading}
-              onClick={handleRun}
-            >
-              试运行
-            </Button>
-          </Space>
-
-          {run.loading ? (
-            <div style={{ marginTop: 8 }}>
-              <Space size="small">
-                <Spin size="small" />
-                <Text type="secondary" style={{ fontSize: 12 }}>
-                  正在运行…
-                </Text>
-              </Space>
-            </div>
-          ) : run.error ? (
-            <Alert
-              type="error"
-              message="试运行失败"
-              description={run.error}
-              style={{ marginTop: 8 }}
-            />
-          ) : run.result ? (
-            <div style={{ marginTop: 8 }}>
-              {isMask ? (
-                <Space direction="vertical" size={4} style={{ width: "100%" }}>
-                  <Space size="small" wrap>
-                    <Text type="secondary" style={{ fontSize: 12 }}>
-                      输入
-                    </Text>
-                    <Text code>{run.result.input}</Text>
-                    <ArrowRightOutlined style={{ fontSize: 12, color: "#999" }} />
-                    <Text type="secondary" style={{ fontSize: 12 }}>
-                      输出
-                    </Text>
-                    <Text code>{run.result.output}</Text>
-                  </Space>
-                </Space>
-              ) : (
-                <Space direction="vertical" size={4} style={{ width: "100%" }}>
-                  <Space size="small" wrap align="center">
-                    <Tag
-                      color={run.result.valid ? "green" : "red"}
-                      icon={
-                        run.result.valid ? (
-                          <CheckCircleOutlined />
-                        ) : (
-                          <CloseCircleOutlined />
-                        )
-                      }
-                      style={{ margin: 0 }}
-                    >
-                      {run.result.valid ? "校验通过" : "校验失败"}
-                    </Tag>
-                    <Text type="secondary" style={{ fontSize: 12 }}>
-                      输入
-                    </Text>
-                    <Text code>{run.result.input}</Text>
-                  </Space>
-                  {run.result.message ? (
-                    <Text type="secondary" style={{ fontSize: 12 }}>
-                      {run.result.message}
-                    </Text>
-                  ) : null}
-                </Space>
-              )}
-            </div>
-          ) : null}
-        </div>
-      </Space>
-
-      <Space size="small">
-        <Tooltip title="编辑规则">
-          <span>
-            <Button
-              type="text"
-              icon={<EditOutlined />}
-              onClick={() => onEdit(item)}
-            />
-          </span>
-        </Tooltip>
-        <Tooltip title="删除规则">
-          <span>
-            <Button
-              type="text"
-              danger
-              icon={<DeleteOutlined />}
-              onClick={() => onRemove(item)}
-            />
-          </span>
-        </Tooltip>
-      </Space>
-    </List.Item>
   );
 }

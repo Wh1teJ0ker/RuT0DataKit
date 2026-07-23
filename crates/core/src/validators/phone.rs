@@ -1,13 +1,15 @@
 //! 手机号校验器（11 位数字、首位 1）。
 //!
 //! v0.4.3 重构：删除原 CTF_PREFIXES / REAL_PREFIXES 硬编码号段白名单
-//! （用户要求"删除绝对化内容"），仅按 PDF spec 校验 `^1\d{10}$`。
+//! （用户要求"删除绝对化内容"），仅按 PDF spec 校验。
+//! v0.5.0：正则源改引用 `rules::patterns::PHONE.validate`，消除散布。
 
 use std::collections::HashMap;
 
 use regex::Regex;
 use serde_yml::Value;
 
+use crate::rules::patterns::PHONE;
 use crate::validators::{ValidationResult, Validator};
 
 pub struct PhoneValidator {
@@ -17,7 +19,7 @@ pub struct PhoneValidator {
 impl PhoneValidator {
     pub fn new(_params: HashMap<String, Value>) -> Self {
         Self {
-            re: Regex::new(r"^1\d{10}$").expect("valid regex"),
+            re: Regex::new(PHONE.validate).expect("valid regex"),
         }
     }
 }
@@ -44,7 +46,7 @@ mod tests {
     #[test]
     fn starts_with_1_positive() {
         assert!(v().validate("13812345678").valid);
-        assert!(v().validate("15560728076").valid); // 非旧白名单号段，现在通过
+        assert!(v().validate("15500001111").valid); // 合成测试号，非真实号段
     }
 
     #[test]

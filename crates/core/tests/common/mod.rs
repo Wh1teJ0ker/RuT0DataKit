@@ -24,8 +24,3 @@ pub fn xlsx_path() -> PathBuf {
 pub fn rules_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../rules")
 }
-
-/// `rules/custom_example.yaml`。
-pub fn custom_example_path() -> PathBuf {
-    rules_dir().join("custom_example.yaml")
-}

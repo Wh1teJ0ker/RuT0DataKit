@@ -1,10 +1,13 @@
 //! 中文姓名校验器：全中文，`^[\u4e00-\u9fa5]+$`（Rust 正则写作 `[\x{4e00}-\x{9fa5}]`）。
+//!
+//! v0.5.0：正则源改引用 `rules::patterns::NAME.validate`，消除散布。
 
 use std::collections::HashMap;
 
 use regex::Regex;
 use serde_yml::Value;
 
+use crate::rules::patterns::NAME;
 use crate::validators::{ValidationResult, Validator};
 
 /// 中文姓名校验器。
@@ -14,7 +17,7 @@ pub struct NameValidator {
 
 impl NameValidator {
     pub fn new(_params: HashMap<String, Value>) -> Self {
-        let re = Regex::new(r"^[\x{4e00}-\x{9fa5}]+$").expect("valid regex");
+        let re = Regex::new(NAME.validate).expect("valid regex");
         Self { re }
     }
 }

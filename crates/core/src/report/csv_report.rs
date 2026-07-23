@@ -79,9 +79,12 @@ mod tests {
             validators: vec![],
             maskers: vec![MaskRule {
                 field: "phone".into(),
-                masker: "template".into(),
+                scope: "template".into(),
+                tag: "mask".into(),
                 params: Some(phone_template_params()),
-            description: None,            tags: Vec::new(),            }],
+                message: None,
+                description: None,
+            }],
         };
         let result = mask_pipeline(&records, &rules).expect("mask");
 

@@ -1,10 +1,13 @@
 //! 邮箱校验器（标准邮箱正则）。
+//!
+//! v0.5.0：正则源改引用 `rules::patterns::EMAIL.validate`，消除散布。
 
 use std::collections::HashMap;
 
 use regex::Regex;
 use serde_yml::Value;
 
+use crate::rules::patterns::EMAIL;
 use crate::validators::{ValidationResult, Validator};
 
 /// 邮箱校验器。
@@ -14,8 +17,7 @@ pub struct EmailValidator {
 
 impl EmailValidator {
     pub fn new(_params: HashMap<String, Value>) -> Self {
-        let re = Regex::new(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
-            .expect("valid regex");
+        let re = Regex::new(EMAIL.validate).expect("valid regex");
         Self { re }
     }
 }

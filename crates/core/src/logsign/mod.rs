@@ -14,14 +14,14 @@
 //! - 408 超时行（method/path 为空）直接 early return，不产 finding，避免
 //!   对 `-` 形态的 request line 误判（见 HANDOFF 提醒）。
 
-pub mod blind_aggregator;
+pub mod blind;
 pub mod loader;
 pub mod payload_parser;
 
-pub use blind_aggregator::{
-    extract_blind_probe, extract_blind_probe_with_line, AggregatedResult, BlindAggregator,
-    BlindProbe, PositionDetail, ProbeKind, ReconstructedDatabase, ReconstructedRow,
-    ReconstructedTable,
+pub use blind::{
+    extract_blind_probe, extract_blind_probe_with_line, looks_like_blind_probe, AggregatedResult,
+    BlindAggregator, BlindProbe, PositionDetail, ProbeKind, ReconstructedDatabase,
+    ReconstructedRow, ReconstructedTable,
 };
 pub use loader::{load_builtin_signatures, load_signatures_from_str, BUILTIN_YAML};
 pub use payload_parser::{parse_payload, ParsedPayload};

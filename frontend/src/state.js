@@ -1,7 +1,89 @@
 // 全局 state + appReducer。
 // 顶层 useReducer 持有，子组件通过 props 拿 state/dispatch；切 view 不丢 state。
+//
+// v0.5.0 T12-5：原单 switch 全平铺 54 action 按业务领域切片为 13 个领域子函数
+// （fileDomain / maskDomain / validateDomain / logDomain / pcapDomain / rulesDomain
+// / searchDomain / toolsDomain / extractDomain / settingsDomain / exportDomain
+// / navDomain / uiDomain），主 appReducer 顺序分派，每个领域函数对不相关
+// action 返回 state 原样。action.type 抽 ACTION 常量对象，字符串值与原字面量
+// 逐字符一致，组件 dispatch({ type: "SET_FILE", ... }) 调用零改动。SET_FILE 的
+// 级联清空逻辑（maskedRows/validateResult/maskOverrides/... 等）保留在
+// fileDomain 内集中处理，不外移，避免改组件语义。
 
 export const PREVIEW_ROW_LIMIT = 200;
+
+// ACTION 常量对象：value 与现有组件 dispatch 字符串字面量逐字符一致。
+// 组件继续用字符串字面量 dispatch（不强制改用 ACTION.*），此处常量供后续
+// 渐进迁移与 lint 校验使用。新增 action 时务必同时在此登记。
+export const ACTION = {
+  // file
+  FILE_SET: "SET_FILE",
+  RECORDS_SET: "SET_RECORDS",
+  // mask
+  MASKED_SET: "SET_MASKED",
+  MASK_OVERRIDE_SET: "SET_MASK_OVERRIDE",
+  MASK_OVERRIDE_CLEAR: "CLEAR_MASK_OVERRIDE",
+  MASK_OVERRIDE_CLEAR_ALL: "CLEAR_ALL_MASK_OVERRIDES",
+  // validate
+  VALIDATE_SET: "SET_VALIDATE",
+  VALIDATE_OVERRIDE_SET: "SET_VALIDATE_OVERRIDE",
+  VALIDATE_OVERRIDE_CLEAR: "CLEAR_VALIDATE_OVERRIDE",
+  VALIDATE_OVERRIDE_CLEAR_ALL: "CLEAR_ALL_VALIDATE_OVERRIDES",
+  // log
+  LOG_ENTRIES_SET: "SET_LOG_ENTRIES",
+  LOG_REPORT_SET: "SET_LOG_REPORT",
+  LOG_LOADING_SET: "SET_LOG_LOADING",
+  // pcap
+  PCAP_ENTRIES_SET: "SET_PCAP_ENTRIES",
+  PCAP_REPORT_SET: "SET_PCAP_REPORT",
+  PCAP_LOADING_SET: "SET_PCAP_LOADING",
+  // rules
+  RULES_SET: "SET_RULES",
+  RULES_TAG_FILTER_SET: "SET_RULES_TAG_FILTER",
+  // export / 列勾选
+  SELECTED_COLUMNS_SET: "SET_SELECTED_COLUMNS",
+  COLUMN_ORDER_SET: "SET_COLUMN_ORDER",
+  EXPORT_COLUMNS_SET: "SET_EXPORT_COLUMNS",
+  EXPORT_FORMAT_SET: "SET_EXPORT_FORMAT",
+  EXPORT_SOURCE_SET: "SET_EXPORT_SOURCE",
+  VALIDATE_FILTER_SET: "SET_VALIDATE_FILTER",
+  // nav
+  VIEW_SET: "SET_VIEW",
+  // tools
+  TOOLS_ACTIVE_TAB_SET: "SET_TOOLS_ACTIVE_TAB",
+  SIDEBAR_TOOLS_OPEN_SET: "SET_SIDEBAR_TOOLS_OPEN",
+  SQL_PARSE_INPUT_SET: "SET_SQL_PARSE_INPUT",
+  SQL_PARSE_RESULT_SET: "SET_SQL_PARSE_RESULT",
+  REGEX_SUB_TAB_SET: "SET_REGEX_SUB_TAB",
+  REGEX_EXPLAIN_INPUT_SET: "SET_REGEX_EXPLAIN_INPUT",
+  REGEX_EXPLAIN_RESULT_SET: "SET_REGEX_EXPLAIN_RESULT",
+  REGEX_CONSTRUCT_INPUT_SET: "SET_REGEX_CONSTRUCT_INPUT",
+  REGEX_CONSTRUCT_RESULT_SET: "SET_REGEX_CONSTRUCT_RESULT",
+  // search
+  SEARCH_MODE_SET: "SET_SEARCH_MODE",
+  SEARCH_KEYWORD_INPUT_SET: "SET_SEARCH_KEYWORD_INPUT",
+  SEARCH_REGEX_INPUT_SET: "SET_SEARCH_REGEX_INPUT",
+  SEARCH_EXACT_FIELD_SET: "SET_SEARCH_EXACT_FIELD",
+  SEARCH_EXACT_VALUE_SET: "SET_SEARCH_EXACT_VALUE",
+  SEARCH_KEYWORD_MODE_SET: "SET_SEARCH_KEYWORD_MODE",
+  SEARCH_RESULTS_SET: "SET_SEARCH_RESULTS",
+  FILTERED_ROW_INDICES_SET: "SET_FILTERED_ROW_INDICES",
+  // settings
+  TSHARK_PATH_SET: "SET_TSHARK_PATH",
+  TSHARK_DETECTED_SET: "SET_TSHARK_DETECTED",
+  TSHARK_LOADING_SET: "SET_TSHARK_LOADING",
+  // extract
+  EXTRACT_MODE_SET: "SET_EXTRACT_MODE",
+  EXTRACT_INPUT_SET: "SET_EXTRACT_INPUT",
+  EXTRACT_RESULT_SET: "SET_EXTRACT_RESULT",
+  EXTRACT_LOADING_SET: "SET_EXTRACT_LOADING",
+  EXTRACT_SELECTED_INDICES_SET: "SET_EXTRACT_SELECTED_INDICES",
+  EXTRACT_RULE_TAG_FILTER_SET: "SET_EXTRACT_RULE_TAG_FILTER",
+  // ui
+  HINT_SET: "SET_HINT",
+  LOADING_SET: "SET_LOADING",
+  RESET: "RESET",
+};
 
 export const initialState = {
   // 文件
@@ -41,8 +123,6 @@ export const initialState = {
   // key=表头，value={masker/validator, params, description?}
   maskOverrides: {}, // { [header]: MaskRule }
   validateOverrides: {}, // { [header]: FieldRule }
-  editingRule: null, // null=关闭；{ kind: "mask" | "validate", ...rule, __index? }=开启
-                    // 新增态仅带 kind；编辑态带 __index + 完整 rule 字段。
   // 列勾选
   selectedColumns: [], // MaskView 用：要脱敏的列名
   columnOrder: [], // ExportView 用：列顺序
@@ -95,27 +175,30 @@ export const initialState = {
   // v0.4.3 T9-5 数据提取模块状态。
   // extractMode："file"（文件导入）| "text"（文本粘贴）。
   // extractInput：文件模式下是路径字符串，文本模式下是粘贴内容。
-  // extractResult：{ findings: [{type, value}], counts: {phone, bankcard, ip} } 或 null。
+  // extractResult：{ findings: [{type, value}], counts: {type: count, ...} } 或 null。
+  //   v0.4.4：counts 改为动态聚合（后端 BTreeMap），不再硬编码 phone/bankcard/ip。
   // extractLoading：提取进行中标志，禁用按钮防重入。
+  // extractSelectedIndices：勾选要应用的规则在 state.rules.validators 中的下标数组（v0.4.4）。
+  // extractRuleTagFilter：extract 本地 tag 过滤，null=全部（v0.4.4）。
   extractMode: "file",
   extractInput: "",
   extractResult: null,
   extractLoading: false,
+  extractSelectedIndices: [],
+  extractRuleTagFilter: null,
 };
 
-function withRules(state, mutator) {
-  // immutable 更新 rules.{maskers,validators} 的辅助。
-  const next = {
-    maskers: [...state.rules.maskers],
-    validators: [...state.rules.validators],
-  };
-  mutator(next);
-  return { ...state, rules: next };
-}
+// ─────────────────────────────────────────────────────────────────────
+// 领域子 reducer：每个函数只处理本领域 action，其他 action 返回 state 原样。
+// 顺序分派，后一个领域拿到前一个领域返回的 state。
+// ─────────────────────────────────────────────────────────────────────
 
-export function appReducer(state, action) {
+// 文件导入：SET_FILE（含级联清空）+ SET_RECORDS。
+// SET_FILE 的级联清空（maskedRows/validateResult/maskOverrides/列配置/...
+// 等）集中在此处理，不外移到各领域函数，避免改组件语义。
+const fileDomain = (state, action) => {
   switch (action.type) {
-    case "SET_FILE": {
+    case ACTION.FILE_SET: {
       const { filePath, sourceType, headers, rows, rowCount } = action;
       return {
         ...state,
@@ -145,39 +228,127 @@ export function appReducer(state, action) {
         // records 字段交由 SET_RECORDS 单独管理。
       };
     }
-    case "SET_MASKED": {
+    // v0.4.0 PreprocessView 导入产物：整体覆盖 records（headers/rows/rowCount/sourceType）。
+    // 切 view 不重置；只在导入新文件时覆盖。mask/validate/export 后续从此读取。
+    case ACTION.RECORDS_SET: {
+      const { records } = action;
+      return { ...state, records };
+    }
+    default:
+      return state;
+  }
+};
+
+// 脱敏结果 + 会话级表头-脱敏算子映射。
+const maskDomain = (state, action) => {
+  switch (action.type) {
+    case ACTION.MASKED_SET: {
       const { maskedRows, maskedSummary } = action;
       return { ...state, maskedRows, maskedSummary };
     }
-    case "SET_VALIDATE": {
+    // ─────────────────────────────────────────────────────────────────────
+    // 会话级「表头-算子」映射（maskOverrides）：
+    // 仅 MaskView 使用，不污染全局 rules。导入新文件时清空。
+    // key=header，value=rule（masker + params）。
+    // ─────────────────────────────────────────────────────────────────────
+    case ACTION.MASK_OVERRIDE_SET: {
+      const { header, rule } = action;
+      const next = { ...state.maskOverrides };
+      if (rule == null) delete next[header];
+      else next[header] = rule;
+      return { ...state, maskOverrides: next };
+    }
+    case ACTION.MASK_OVERRIDE_CLEAR: {
+      const { header } = action;
+      const next = { ...state.maskOverrides };
+      delete next[header];
+      return { ...state, maskOverrides: next };
+    }
+    case ACTION.MASK_OVERRIDE_CLEAR_ALL: {
+      return { ...state, maskOverrides: {} };
+    }
+    default:
+      return state;
+  }
+};
+
+// 校验结果 + 会话级表头-校验算子映射。
+const validateDomain = (state, action) => {
+  switch (action.type) {
+    case ACTION.VALIDATE_SET: {
       const { validateResult } = action;
       return { ...state, validateResult };
     }
-    case "SET_LOG_ENTRIES": {
+    // ─────────────────────────────────────────────────────────────────────
+    // 会话级「表头-算子」映射（validateOverrides）：
+    // 仅 ValidateView 使用，不污染全局 rules。导入新文件时清空。
+    // key=header，value=rule（validator + params）。
+    // ─────────────────────────────────────────────────────────────────────
+    case ACTION.VALIDATE_OVERRIDE_SET: {
+      const { header, rule } = action;
+      const next = { ...state.validateOverrides };
+      if (rule == null) delete next[header];
+      else next[header] = rule;
+      return { ...state, validateOverrides: next };
+    }
+    case ACTION.VALIDATE_OVERRIDE_CLEAR: {
+      const { header } = action;
+      const next = { ...state.validateOverrides };
+      delete next[header];
+      return { ...state, validateOverrides: next };
+    }
+    case ACTION.VALIDATE_OVERRIDE_CLEAR_ALL: {
+      return { ...state, validateOverrides: {} };
+    }
+    default:
+      return state;
+  }
+};
+
+// 日志扫描（v0.2.0）：logEntries 原始条目 + logReport 报告 + loading。
+const logDomain = (state, action) => {
+  switch (action.type) {
+    case ACTION.LOG_ENTRIES_SET: {
       const { logEntries } = action;
       return { ...state, logEntries: logEntries || [] };
     }
-    case "SET_LOG_REPORT": {
+    case ACTION.LOG_REPORT_SET: {
       const { logReport } = action;
       return { ...state, logReport };
     }
-    case "SET_LOG_LOADING": {
+    case ACTION.LOG_LOADING_SET: {
       const { logLoading } = action;
       return { ...state, logLoading };
     }
-    case "SET_PCAP_ENTRIES": {
+    default:
+      return state;
+  }
+};
+
+// 流量分析（v0.3.0）：pcapEntries 原始请求 + pcapReport 报告 + loading。
+const pcapDomain = (state, action) => {
+  switch (action.type) {
+    case ACTION.PCAP_ENTRIES_SET: {
       const { pcapEntries } = action;
       return { ...state, pcapEntries: pcapEntries || [] };
     }
-    case "SET_PCAP_REPORT": {
+    case ACTION.PCAP_REPORT_SET: {
       const { pcapReport } = action;
       return { ...state, pcapReport };
     }
-    case "SET_PCAP_LOADING": {
+    case ACTION.PCAP_LOADING_SET: {
       const { pcapLoading } = action;
       return { ...state, pcapLoading };
     }
-    case "SET_RULES": {
+    default:
+      return state;
+  }
+};
+
+// 全局规则库（RulesView 管理）：rules 全集 + tag 过滤。
+const rulesDomain = (state, action) => {
+  switch (action.type) {
+    case ACTION.RULES_SET: {
       const { rules } = action;
       return {
         ...state,
@@ -187,282 +358,231 @@ export function appReducer(state, action) {
         },
       };
     }
-    case "SET_RULES_TAG_FILTER": {
+    case ACTION.RULES_TAG_FILTER_SET: {
       const { tag } = action;
       return { ...state, rulesTagFilter: tag ?? null };
     }
-    case "ADD_MASK_RULE": {
-      const { rule } = action;
-      return withRules(state, (r) => r.maskers.push(rule));
-    }
-    case "UPDATE_MASK_RULE": {
-      const { index, rule } = action;
-      return withRules(state, (r) => {
-        if (index < 0 || index >= r.maskers.length) return;
-        r.maskers[index] = rule;
-      });
-    }
-    case "REMOVE_MASK_RULE": {
-      const { index } = action;
-      return withRules(state, (r) => {
-        if (index < 0 || index >= r.maskers.length) return;
-        r.maskers.splice(index, 1);
-      });
-    }
-    case "ADD_VALIDATOR_RULE": {
-      const { rule } = action;
-      return withRules(state, (r) => r.validators.push(rule));
-    }
-    case "UPDATE_VALIDATOR_RULE": {
-      const { index, rule } = action;
-      return withRules(state, (r) => {
-        if (index < 0 || index >= r.validators.length) return;
-        r.validators[index] = rule;
-      });
-    }
-    case "REMOVE_VALIDATOR_RULE": {
-      const { index } = action;
-      return withRules(state, (r) => {
-        if (index < 0 || index >= r.validators.length) return;
-        r.validators.splice(index, 1);
-      });
-    }
-    case "SET_EDITING_MASK_RULE": {
-      const { rule } = action;
-      return { ...state, editingMaskRule: rule };
-    }
-    case "SET_EDITING_VALIDATOR_RULE": {
-      const { rule } = action;
-      return { ...state, editingValidatorRule: rule };
-    }
-    // ─────────────────────────────────────────────────────────────────────
-    // T0-23 新增：单一 editingRule（合并 mask/validate）+ 通用 ADD/UPDATE/REMOVE
-    // 按 action.kind 路由到 maskers / validators。旧 8 个 mask/validator action
-    // 实现保留向后兼容（T0-24 视情况清理），不动。
-    // ─────────────────────────────────────────────────────────────────────
-    case "SET_EDITING_RULE": {
-      const { rule } = action;
-      return { ...state, editingRule: rule };
-    }
-    case "CLEAR_EDITING_RULE": {
-      return { ...state, editingRule: null };
-    }
-    case "ADD_RULE": {
-      const { kind, rule } = action;
-      return withRules(state, (r) => {
-        if (kind === "mask") r.maskers.push(rule);
-        else if (kind === "validate") r.validators.push(rule);
-      });
-    }
-    case "UPDATE_RULE": {
-      const { kind, index, rule } = action;
-      return withRules(state, (r) => {
-        if (kind === "mask") {
-          if (index >= 0 && index < r.maskers.length) r.maskers[index] = rule;
-        } else if (kind === "validate") {
-          if (index >= 0 && index < r.validators.length)
-            r.validators[index] = rule;
-        }
-      });
-    }
-    case "REMOVE_RULE": {
-      const { kind, index } = action;
-      return withRules(state, (r) => {
-        if (kind === "mask") {
-          if (index >= 0 && index < r.maskers.length) r.maskers.splice(index, 1);
-        } else if (kind === "validate") {
-          if (index >= 0 && index < r.validators.length)
-            r.validators.splice(index, 1);
-        }
-      });
-    }
-    case "SET_SELECTED_COLUMNS": {
+    default:
+      return state;
+  }
+};
+
+// 列勾选 / 导出配置（MaskView 选列 + ExportView 列序/导出列/格式/源/校验过滤）。
+const exportDomain = (state, action) => {
+  switch (action.type) {
+    case ACTION.SELECTED_COLUMNS_SET: {
       const { selectedColumns } = action;
       return { ...state, selectedColumns: [...selectedColumns] };
     }
-    // ─────────────────────────────────────────────────────────────────────
-    // 会话级「表头-算子」映射（maskOverrides / validateOverrides）：
-    // 仅 MaskView/ValidateView 使用，不污染全局 rules。导入新文件时清空。
-    // key=header，value=rule（masker/validator + params）。
-    // ─────────────────────────────────────────────────────────────────────
-    case "SET_MASK_OVERRIDE": {
-      const { header, rule } = action;
-      const next = { ...state.maskOverrides };
-      if (rule == null) delete next[header];
-      else next[header] = rule;
-      return { ...state, maskOverrides: next };
-    }
-    case "CLEAR_MASK_OVERRIDE": {
-      const { header } = action;
-      const next = { ...state.maskOverrides };
-      delete next[header];
-      return { ...state, maskOverrides: next };
-    }
-    case "CLEAR_ALL_MASK_OVERRIDES": {
-      return { ...state, maskOverrides: {} };
-    }
-    case "SET_VALIDATE_OVERRIDE": {
-      const { header, rule } = action;
-      const next = { ...state.validateOverrides };
-      if (rule == null) delete next[header];
-      else next[header] = rule;
-      return { ...state, validateOverrides: next };
-    }
-    case "CLEAR_VALIDATE_OVERRIDE": {
-      const { header } = action;
-      const next = { ...state.validateOverrides };
-      delete next[header];
-      return { ...state, validateOverrides: next };
-    }
-    case "CLEAR_ALL_VALIDATE_OVERRIDES": {
-      return { ...state, validateOverrides: {} };
-    }
-    case "SET_COLUMN_ORDER": {
+    case ACTION.COLUMN_ORDER_SET: {
       const { columnOrder } = action;
       return { ...state, columnOrder: [...columnOrder] };
     }
-    case "SET_EXPORT_COLUMNS": {
+    case ACTION.EXPORT_COLUMNS_SET: {
       const { exportColumns } = action;
       return { ...state, exportColumns: [...exportColumns] };
     }
-    case "SET_EXPORT_FORMAT": {
+    case ACTION.EXPORT_FORMAT_SET: {
       const { exportFormat } = action;
       return { ...state, exportFormat };
     }
-    case "SET_EXPORT_SOURCE": {
+    case ACTION.EXPORT_SOURCE_SET: {
       const { exportSource } = action;
       return { ...state, exportSource };
     }
-    case "SET_VALIDATE_FILTER": {
+    case ACTION.VALIDATE_FILTER_SET: {
       const { validateFilter } = action;
       return { ...state, validateFilter };
     }
-    case "SET_VIEW": {
+    default:
+      return state;
+  }
+};
+
+// 导航：activeView 切换（切 view 不丢 state，所有领域状态保留）。
+const navDomain = (state, action) => {
+  switch (action.type) {
+    case ACTION.VIEW_SET: {
       const { activeView } = action;
       return { ...state, activeView };
     }
-    // ─────────────────────────────────────────────────────────────────────
-    // T5-10/T5-12 Tools Tab 状态：顶部 Tab 切换 + SQL/正则子界面各自输入与结果。
-    // 切 view 不重置；切 Tab 也不清各自子状态（保留用户已输入内容）。
-    // ─────────────────────────────────────────────────────────────────────
-    case "SET_TOOLS_ACTIVE_TAB": {
+    default:
+      return state;
+  }
+};
+
+// T5-10/T5-12 Tools Tab 状态：顶部 Tab 切换 + SQL/正则子界面各自输入与结果。
+// 切 view 不重置；切 Tab 也不清各自子状态（保留用户已输入内容）。
+const toolsDomain = (state, action) => {
+  switch (action.type) {
+    case ACTION.TOOLS_ACTIVE_TAB_SET: {
       const { toolsActiveTab } = action;
       return { ...state, toolsActiveTab };
     }
-    case "SET_SIDEBAR_TOOLS_OPEN": {
+    case ACTION.SIDEBAR_TOOLS_OPEN_SET: {
       const { sidebarToolsOpen } = action;
       return { ...state, sidebarToolsOpen };
     }
-    case "SET_SQL_PARSE_INPUT": {
+    case ACTION.SQL_PARSE_INPUT_SET: {
       const { sqlParseInput } = action;
       return { ...state, sqlParseInput };
     }
-    case "SET_SQL_PARSE_RESULT": {
+    case ACTION.SQL_PARSE_RESULT_SET: {
       const { sqlParseResult } = action;
       return { ...state, sqlParseResult };
     }
-    case "SET_REGEX_SUB_TAB": {
+    case ACTION.REGEX_SUB_TAB_SET: {
       const { regexSubTab } = action;
       return { ...state, regexSubTab };
     }
-    case "SET_REGEX_EXPLAIN_INPUT": {
+    case ACTION.REGEX_EXPLAIN_INPUT_SET: {
       const { regexExplainInput } = action;
       return { ...state, regexExplainInput };
     }
-    case "SET_REGEX_EXPLAIN_RESULT": {
+    case ACTION.REGEX_EXPLAIN_RESULT_SET: {
       const { regexExplainResult } = action;
       return { ...state, regexExplainResult };
     }
-    case "SET_REGEX_CONSTRUCT_INPUT": {
+    case ACTION.REGEX_CONSTRUCT_INPUT_SET: {
       const { regexConstructInput } = action;
       return { ...state, regexConstructInput };
     }
-    case "SET_REGEX_CONSTRUCT_RESULT": {
+    case ACTION.REGEX_CONSTRUCT_RESULT_SET: {
       const { regexConstructResult } = action;
       return { ...state, regexConstructResult };
     }
-    // ─────────────────────────────────────────────────────────────────────
-    // T5-6 搜索界面状态：查询输入 + 结果 + 耗时 + 跳转携带的行号集合。
-    // ─────────────────────────────────────────────────────────────────────
-    case "SET_SEARCH_MODE": {
+    default:
+      return state;
+  }
+};
+
+// T5-6 搜索界面状态：查询输入 + 结果 + 耗时 + 跳转携带的行号集合。
+const searchDomain = (state, action) => {
+  switch (action.type) {
+    case ACTION.SEARCH_MODE_SET: {
       const { searchMode } = action;
       return { ...state, searchMode };
     }
-    case "SET_SEARCH_KEYWORD_INPUT": {
+    case ACTION.SEARCH_KEYWORD_INPUT_SET: {
       const { searchKeywordInput } = action;
       return { ...state, searchKeywordInput };
     }
-    case "SET_SEARCH_REGEX_INPUT": {
+    case ACTION.SEARCH_REGEX_INPUT_SET: {
       const { searchRegexInput } = action;
       return { ...state, searchRegexInput };
     }
-    case "SET_SEARCH_EXACT_FIELD": {
+    case ACTION.SEARCH_EXACT_FIELD_SET: {
       const { searchExactField } = action;
       return { ...state, searchExactField };
     }
-    case "SET_SEARCH_EXACT_VALUE": {
+    case ACTION.SEARCH_EXACT_VALUE_SET: {
       const { searchExactValue } = action;
       return { ...state, searchExactValue };
     }
-    case "SET_SEARCH_KEYWORD_MODE": {
+    case ACTION.SEARCH_KEYWORD_MODE_SET: {
       const { searchKeywordMode } = action;
       return { ...state, searchKeywordMode };
     }
-    case "SET_SEARCH_RESULTS": {
+    case ACTION.SEARCH_RESULTS_SET: {
       const { searchResults, searchElapsedMs } = action;
       return { ...state, searchResults, searchElapsedMs };
     }
-    case "SET_FILTERED_ROW_INDICES": {
+    case ACTION.FILTERED_ROW_INDICES_SET: {
       const { filteredRowIndices } = action;
       return { ...state, filteredRowIndices };
     }
-    // v0.4.2 T7-3：tshark 设置相关状态。
-    case "SET_TSHARK_PATH": {
+    default:
+      return state;
+  }
+};
+
+// v0.4.2 T7-3 设置模块状态：tshark 路径配置 + 探测结果 + loading。
+const settingsDomain = (state, action) => {
+  switch (action.type) {
+    case ACTION.TSHARK_PATH_SET: {
       const { tsharkPath } = action;
       return { ...state, tsharkPath };
     }
-    case "SET_TSHARK_DETECTED": {
+    case ACTION.TSHARK_DETECTED_SET: {
       const { tsharkDetected } = action;
       return { ...state, tsharkDetected };
     }
-    case "SET_TSHARK_LOADING": {
+    case ACTION.TSHARK_LOADING_SET: {
       const { tsharkLoading } = action;
       return { ...state, tsharkLoading };
     }
-    // v0.4.3 T9-5 数据提取模块状态。
-    case "SET_EXTRACT_MODE": {
+    default:
+      return state;
+  }
+};
+
+// v0.4.3 T9-5 数据提取模块状态（v0.4.4 增规则选择 + tag 过滤）。
+const extractDomain = (state, action) => {
+  switch (action.type) {
+    case ACTION.EXTRACT_MODE_SET: {
       const { extractMode } = action;
       return { ...state, extractMode };
     }
-    case "SET_EXTRACT_INPUT": {
+    case ACTION.EXTRACT_INPUT_SET: {
       const { extractInput } = action;
       return { ...state, extractInput };
     }
-    case "SET_EXTRACT_RESULT": {
+    case ACTION.EXTRACT_RESULT_SET: {
       const { extractResult } = action;
       return { ...state, extractResult };
     }
-    case "SET_EXTRACT_LOADING": {
+    case ACTION.EXTRACT_LOADING_SET: {
       const { extractLoading } = action;
       return { ...state, extractLoading };
     }
-    // v0.4.0 PreprocessView 导入产物：整体覆盖 records（headers/rows/rowCount/sourceType）。
-    // 切 view 不重置；只在导入新文件时覆盖。mask/validate/export 后续从此读取。
-    case "SET_RECORDS": {
-      const { records } = action;
-      return { ...state, records };
+    // v0.4.4 T10-3：extract 规则选择状态。
+    case ACTION.EXTRACT_SELECTED_INDICES_SET: {
+      const { extractSelectedIndices } = action;
+      return { ...state, extractSelectedIndices };
     }
-    case "SET_HINT": {
+    case ACTION.EXTRACT_RULE_TAG_FILTER_SET: {
+      const { extractRuleTagFilter } = action;
+      return { ...state, extractRuleTagFilter };
+    }
+    default:
+      return state;
+  }
+};
+
+// 顶层 UI：actionHint 操作提示 + loading 全局加载标志 + RESET 全量重置。
+const uiDomain = (state, action) => {
+  switch (action.type) {
+    case ACTION.HINT_SET: {
       const { actionHint } = action;
       return { ...state, actionHint };
     }
-    case "SET_LOADING": {
+    case ACTION.LOADING_SET: {
       const { loading } = action;
       return { ...state, loading };
     }
-    case "RESET":
+    case ACTION.RESET:
       return { ...initialState };
     default:
       return state;
   }
+};
+
+// 主 reducer：顺序分派到各领域函数。每个领域函数对不相关 action 返回 state
+// 原样，故未匹配的 action 最终原样返回 state。SET_FILE 的级联清空由 fileDomain
+// 集中处理（其他领域函数对 SET_FILE 返回原样，不清空各自字段）。
+export function appReducer(state, action) {
+  state = fileDomain(state, action);
+  state = maskDomain(state, action);
+  state = validateDomain(state, action);
+  state = logDomain(state, action);
+  state = pcapDomain(state, action);
+  state = rulesDomain(state, action);
+  state = exportDomain(state, action);
+  state = navDomain(state, action);
+  state = toolsDomain(state, action);
+  state = searchDomain(state, action);
+  state = settingsDomain(state, action);
+  state = extractDomain(state, action);
+  state = uiDomain(state, action);
+  return state;
 }

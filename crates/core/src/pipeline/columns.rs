@@ -145,14 +145,14 @@ mod tests {
             maskers: vec![
                 MaskRule {
                     field: "phone".into(),
-                    masker: "template".into(),
+                    scope: "template".into(), tag: "mask".into(),
                     params: Some(phone_params()),
-                    description: None,                    tags: Vec::new(),                },
+                    message: None, description: None,                },
                 MaskRule {
                     field: "name".into(),
-                    masker: "template".into(),
+                    scope: "template".into(), tag: "mask".into(),
                     params: Some(name_params()),
-                    description: None,                    tags: Vec::new(),                },
+                    message: None, description: None,                },
             ],
         }
     }

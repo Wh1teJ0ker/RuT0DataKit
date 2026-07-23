@@ -1,11 +1,13 @@
 //! IPv4 校验器（四段 0-255，拒绝前导 0）。
+//!
+//! v0.5.0：正则源改引用 `rules::patterns::IP.validate`，消除散布。
 
 use std::collections::HashMap;
 
 use regex::Regex;
 use serde_yml::Value;
 
-use crate::rules::presets::IP_REGEX;
+use crate::rules::patterns::IP;
 use crate::validators::{ValidationResult, Validator};
 
 pub struct IpValidator {
@@ -15,7 +17,7 @@ pub struct IpValidator {
 impl IpValidator {
     pub fn new(_params: HashMap<String, Value>) -> Self {
         Self {
-            re: Regex::new(IP_REGEX).expect("valid regex"),
+            re: Regex::new(IP.validate).expect("valid regex"),
         }
     }
 }
@@ -46,7 +48,8 @@ mod tests {
 
     #[test]
     fn fixture_positive() {
-        assert!(v().validate("163.211.48.156").valid);
+        // 用合成测试 IP（非 tips/ fixture 真实 PII），符合「样本不上传」约束
+        assert!(v().validate("192.168.100.200").valid);
     }
 
     #[test]

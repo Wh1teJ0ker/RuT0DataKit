@@ -2,12 +2,14 @@
 //!
 //! Luhn 算法：从右起第 1 位为校验位，第 2 位起偶数位（0-indexed from right）乘 2
 //! 超 9 减 9，全部求和 mod 10 == 0。
+//! v0.5.0：正则源改引用 `rules::patterns::BANKCARD.validate`，消除散布。
 
 use std::collections::HashMap;
 
 use regex::Regex;
 use serde_yml::Value;
 
+use crate::rules::patterns::BANKCARD;
 use crate::validators::{ValidationResult, Validator};
 
 /// 银行卡号校验器。
@@ -17,7 +19,7 @@ pub struct BankCardValidator {
 
 impl BankCardValidator {
     pub fn new(_params: HashMap<String, Value>) -> Self {
-        let re = Regex::new(r"^\d{13,19}$").expect("valid regex");
+        let re = Regex::new(BANKCARD.validate).expect("valid regex");
         Self { re }
     }
 }

@@ -124,11 +124,10 @@ mod tests {
         let rules = RuleSet {
             validators: vec![FieldRule {
                 field: "phone".into(),
-                validator: "phone".into(),
+                scope: "phone".into(), tag: "validate".into(),
                 params: None,
-                regex: None,
                 message: None,
-                description: None,                tags: Vec::new(),            }],
+                description: None,            }],
             maskers: vec![],
         };
 
@@ -169,11 +168,10 @@ mod tests {
         let rules = RuleSet {
             validators: vec![FieldRule {
                 field: "a".into(),
-                validator: "ghost".into(),
+                scope: "ghost".into(), tag: "validate".into(),
                 params: None,
-                regex: None,
                 message: None,
-                description: None,                tags: Vec::new(),            }],
+                description: None,            }],
             maskers: vec![],
         };
         let r = validate_pipeline(&records, &rules).expect("validate");

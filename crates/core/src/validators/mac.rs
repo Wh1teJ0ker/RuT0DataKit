@@ -2,12 +2,14 @@
 //!
 //! 可选 `params.prefix`（如 `"DE:AD:BE:"`）：存在时要求 value 以该前缀开头（大小写
 //! 不敏感比较）。
+//! v0.5.0：正则源改引用 `rules::patterns::MAC.validate`，消除散布。
 
 use std::collections::HashMap;
 
 use regex::Regex;
 use serde_yml::Value;
 
+use crate::rules::patterns::MAC;
 use crate::validators::{ValidationResult, Validator};
 
 /// MAC 地址校验器。
@@ -18,7 +20,7 @@ pub struct MacValidator {
 
 impl MacValidator {
     pub fn new(params: HashMap<String, Value>) -> Self {
-        let re = Regex::new(r"^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$").expect("valid regex");
+        let re = Regex::new(MAC.validate).expect("valid regex");
         let prefix = params
             .get("prefix")
             .and_then(|v| v.as_str())

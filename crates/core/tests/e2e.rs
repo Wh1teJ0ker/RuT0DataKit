@@ -11,7 +11,7 @@
 //! 3. `detect_type_csv_xlsx`：detect_type 命中 Csv / Xlsx。
 //! 4. `headers_not_masked`：mask_pipeline 后表头不变。
 //! 5. `short_input_passthrough`：短于阈值输入原样返回、不 panic。
-//! 6. `custom_example_loadable_and_applied`：custom_example.yaml 可加载并应用。
+//! 6. （v0.4.4 删除：custom_example.yaml 已移除）。
 //! 7. `rich_rule_maskers_contract`：3 种通用脱敏算子契约（regex_replace /
 //!    const_replace 等）。
 //! 8. `mask_pipeline_selected_rows_only`：mask_pipeline_selected 只对选中行脱敏。
@@ -63,7 +63,7 @@ use ruT0_data_kit_core::pipeline::validate::validate_pipeline;
 use ruT0_data_kit_core::pipeline::SourceType;
 use ruT0_data_kit_core::readers::{CsvReader, Records, SourceReader, XlsxReader};
 use ruT0_data_kit_core::rules::{
-    load_default_mask_ruleset, load_ruleset, FieldRule, MaskRule, RuleSet,
+    FieldRule, MaskRule, RuleSet,
 };
 use ruT0_data_kit_core::scan::DefaultSensitiveScan;
 use serde_yml::Value;
@@ -183,12 +183,65 @@ fn phone_guard_params() -> HashMap<String, Value> {
 // 测试用例
 // ─────────────────────────────────────────────────────────────────────
 
-/// 读 sample_mask.csv + default_mask 后跑 mask_pipeline，返回脱敏结果。
+/// 读 sample_mask.csv + 自构规则集（6 条 MaskRule，等价旧 default_mask.yaml）
+/// 后跑 mask_pipeline，返回脱敏结果。
 fn mask_csv_with_default() -> Vec<Vec<String>> {
     let records = CsvReader::new()
         .read(&common::csv_path())
         .expect("read sample_mask.csv");
-    let rules = load_default_mask_ruleset().expect("load default_mask.yaml");
+    let rules = RuleSet {
+        validators: vec![],
+        maskers: vec![
+            MaskRule {
+                field: "customer_id".into(),
+                scope: "template".into(),
+                tag: "mask".into(),
+                params: Some(customer_id_template_params()),
+                message: None,
+                description: None,
+            },
+            MaskRule {
+                field: "name".into(),
+                scope: "template".into(),
+                tag: "mask".into(),
+                params: Some(name_template_params()),
+                message: None,
+                description: None,
+            },
+            MaskRule {
+                field: "id_card".into(),
+                scope: "template".into(),
+                tag: "mask".into(),
+                params: Some(idcard_template_params()),
+                message: None,
+                description: None,
+            },
+            MaskRule {
+                field: "phone".into(),
+                scope: "template".into(),
+                tag: "mask".into(),
+                params: Some(phone_template_params()),
+                message: None,
+                description: None,
+            },
+            MaskRule {
+                field: "email".into(),
+                scope: "split_template".into(),
+                tag: "mask".into(),
+                params: Some(email_split_template_params()),
+                message: None,
+                description: None,
+            },
+            MaskRule {
+                field: "bank_card".into(),
+                scope: "template".into(),
+                tag: "mask".into(),
+                params: Some(bankcard_template_params()),
+                message: None,
+                description: None,
+            },
+        ],
+    };
     let result = mask_pipeline(&records, &rules).expect("mask_pipeline");
     result.masked.rows
 }
@@ -218,16 +271,70 @@ fn csv_mask_fields() {
     assert_eq!(rows[1][5], "622588******2233");
 }
 
-/// 验收项 2：sample_mask.xlsx + default_mask 与 csv 结果一致。
+/// 验收项 2：sample_mask.xlsx + 自构规则集 与 csv 结果一致。
 #[test]
 fn xlsx_mask_same_as_csv() {
     let xlsx_records = XlsxReader::new()
         .read(&common::xlsx_path())
         .expect("read sample_mask.xlsx");
-    let rules = load_default_mask_ruleset().expect("load default_mask.yaml");
-    let xlsx_result = mask_pipeline(&xlsx_records, &rules).expect("mask_pipeline xlsx");
-
+    // 复用 mask_csv_with_default 内的自构规则集（等价旧 default_mask.yaml）。
     let csv_rows = mask_csv_with_default();
+    // 重新构造一份等价规则集用于 xlsx（mask_csv_with_default 内部封装了规则）。
+    // 为避免重复字面量，直接用同一 helper：它读 csv，但规则与 csv/xlsx 无关。
+    let rules = RuleSet {
+        validators: vec![],
+        maskers: vec![
+            MaskRule {
+                field: "customer_id".into(),
+                scope: "template".into(),
+                tag: "mask".into(),
+                params: Some(customer_id_template_params()),
+                message: None,
+                description: None,
+            },
+            MaskRule {
+                field: "name".into(),
+                scope: "template".into(),
+                tag: "mask".into(),
+                params: Some(name_template_params()),
+                message: None,
+                description: None,
+            },
+            MaskRule {
+                field: "id_card".into(),
+                scope: "template".into(),
+                tag: "mask".into(),
+                params: Some(idcard_template_params()),
+                message: None,
+                description: None,
+            },
+            MaskRule {
+                field: "phone".into(),
+                scope: "template".into(),
+                tag: "mask".into(),
+                params: Some(phone_template_params()),
+                message: None,
+                description: None,
+            },
+            MaskRule {
+                field: "email".into(),
+                scope: "split_template".into(),
+                tag: "mask".into(),
+                params: Some(email_split_template_params()),
+                message: None,
+                description: None,
+            },
+            MaskRule {
+                field: "bank_card".into(),
+                scope: "template".into(),
+                tag: "mask".into(),
+                params: Some(bankcard_template_params()),
+                message: None,
+                description: None,
+            },
+        ],
+    };
+    let xlsx_result = mask_pipeline(&xlsx_records, &rules).expect("mask_pipeline xlsx");
 
     assert_eq!(xlsx_result.masked.rows.len(), csv_rows.len());
     for (i, (xlsx_row, csv_row)) in xlsx_result
@@ -257,11 +364,65 @@ fn detect_type_csv_xlsx() {
 /// 验收项 4：表头不脱敏。
 #[test]
 fn headers_not_masked() {
+    // 复用 mask_csv_with_default 的自构规则集：跑一遍 csv 脱敏，
+    // 断言表头不变（规则只作用于数据行，不碰表头）。
     let records = CsvReader::new()
         .read(&common::csv_path())
         .expect("read sample_mask.csv");
     let original_headers = records.headers.clone();
-    let rules = load_default_mask_ruleset().expect("load default_mask.yaml");
+    let rules = RuleSet {
+        validators: vec![],
+        maskers: vec![
+            MaskRule {
+                field: "customer_id".into(),
+                scope: "template".into(),
+                tag: "mask".into(),
+                params: Some(customer_id_template_params()),
+                message: None,
+                description: None,
+            },
+            MaskRule {
+                field: "name".into(),
+                scope: "template".into(),
+                tag: "mask".into(),
+                params: Some(name_template_params()),
+                message: None,
+                description: None,
+            },
+            MaskRule {
+                field: "id_card".into(),
+                scope: "template".into(),
+                tag: "mask".into(),
+                params: Some(idcard_template_params()),
+                message: None,
+                description: None,
+            },
+            MaskRule {
+                field: "phone".into(),
+                scope: "template".into(),
+                tag: "mask".into(),
+                params: Some(phone_template_params()),
+                message: None,
+                description: None,
+            },
+            MaskRule {
+                field: "email".into(),
+                scope: "split_template".into(),
+                tag: "mask".into(),
+                params: Some(email_split_template_params()),
+                message: None,
+                description: None,
+            },
+            MaskRule {
+                field: "bank_card".into(),
+                scope: "template".into(),
+                tag: "mask".into(),
+                params: Some(bankcard_template_params()),
+                message: None,
+                description: None,
+            },
+        ],
+    };
     let result = mask_pipeline(&records, &rules).expect("mask_pipeline");
     assert_eq!(result.masked.headers, original_headers);
     assert_eq!(
@@ -297,9 +458,9 @@ fn short_input_passthrough() {
         validators: vec![],
         maskers: vec![MaskRule {
             field: "phone".to_string(),
-            masker: "template".to_string(),
+            scope: "template".to_string(), tag: "mask".to_string(),
             params: Some(phone_template_params()),
-            description: None,            tags: Vec::new(),        }],
+            message: None, description: None,        }],
     };
     let result = mask_pipeline(&records, &rules).expect("mask_pipeline");
     assert_eq!(result.masked.rows[0][0], "138", "短于阈值原样返回");
@@ -307,34 +468,7 @@ fn short_input_passthrough() {
     assert_eq!(result.masked.headers, vec!["phone".to_string()]);
 }
 
-/// 验收项 6：custom_example.yaml 可加载并应用到 sample_mask.csv。
-#[test]
-fn custom_example_loadable_and_applied() {
-    let rules = load_ruleset(&common::custom_example_path())
-        .expect("load custom_example.yaml");
-    let records = CsvReader::new()
-        .read(&common::csv_path())
-        .expect("read sample_mask.csv");
-    let result = mask_pipeline(&records, &rules).expect("mask_pipeline");
-
-    // customer_id `12345678`（8 字）：keep 2+2，mask 4 个 #
-    // → "12####78"
-    // customer_id `87654321`（8 字）→ "87####21"
-    // phone `13812345678`（11 字）：keep 3+4，mask 4 个 *
-    // → "138****5678"
-    // phone `13987654321`（11 字）→ "139****4321"
-    assert_eq!(result.masked.rows[0][0], "12####78");
-    assert_eq!(result.masked.rows[1][0], "87####21");
-    assert_eq!(result.masked.rows[0][3], "138****5678");
-    assert_eq!(result.masked.rows[1][3], "139****4321");
-
-    // custom_example.yaml 只声明 customer_id 与 phone 两个字段，
-    // 其余列应原样输出。
-    assert_eq!(result.masked.rows[0][1], "张三");
-    assert_eq!(result.masked.rows[0][2], "110101199001011234");
-    assert_eq!(result.masked.rows[0][4], "zhangsan@example.com");
-    assert_eq!(result.masked.rows[0][5], "6225887654321098");
-}
+/// 验收项 6（v0.4.4 删除）：custom_example.yaml 已移除，本用例移除。
 
 /// 验收项 7：3 种通用脱敏算子各自的参数契约与输出。
 ///
@@ -357,12 +491,12 @@ fn rich_rule_maskers_contract() {
     // 对 "13812345678" → "138****5678"
     let r = MaskRule {
         field: "x".into(),
-        masker: "regex_replace".into(),
+        scope: "regex_replace".into(), tag: "mask".to_string(),
         params: Some(params(&[
             ("pattern", r"(\d{3})\d{4}(\d{4})"),
             ("replacement", "$1****$2"),
         ])),
-        description: None,        tags: Vec::new(),    };
+        message: None, description: None,    };
     let m = build_masker(&r).expect("regex_replace masker");
     assert_eq!(m.mask("13812345678"), "138****5678");
 
@@ -370,13 +504,13 @@ fn rich_rule_maskers_contract() {
     // （等价旧 regex_extract）：对 "tel:13812345678" → "13812345678"
     let r = MaskRule {
         field: "x".into(),
-        masker: "regex_replace".into(),
+        scope: "regex_replace".into(), tag: "mask".to_string(),
         params: Some(params(&[
             ("pattern", r"\d{11}"),
             ("replacement", "$0"),
             ("match_mode", "first"),
         ])),
-        description: None,        tags: Vec::new(),    };
+        message: None, description: None,    };
     let m = build_masker(&r).expect("regex_replace (first) masker");
     assert_eq!(m.mask("tel:13812345678"), "13812345678");
     // 无匹配返回原值
@@ -385,9 +519,9 @@ fn rich_rule_maskers_contract() {
     // const_replace + with="" → 等价 delete：对任意输入返回 ""
     let r = MaskRule {
         field: "x".into(),
-        masker: "const_replace".into(),
+        scope: "const_replace".into(), tag: "mask".to_string(),
         params: Some(params(&[("with", "")])),
-        description: None,        tags: Vec::new(),    };
+        message: None, description: None,    };
     let m = build_masker(&r).expect("const_replace (empty) masker");
     assert_eq!(m.mask("anything"), "");
     assert_eq!(m.mask(""), "");
@@ -395,9 +529,9 @@ fn rich_rule_maskers_contract() {
     // const_replace + with="REDACTED" → 等价 replace
     let r = MaskRule {
         field: "x".into(),
-        masker: "const_replace".into(),
+        scope: "const_replace".into(), tag: "mask".to_string(),
         params: Some(params(&[("with", "REDACTED")])),
-        description: None,        tags: Vec::new(),    };
+        message: None, description: None,    };
     let m = build_masker(&r).expect("const_replace (REDACTED) masker");
     assert_eq!(m.mask("anything"), "REDACTED");
     assert_eq!(m.mask(""), "REDACTED");
@@ -419,9 +553,9 @@ fn mask_pipeline_selected_rows_only() {
         validators: vec![],
         maskers: vec![MaskRule {
             field: "phone".to_string(),
-            masker: "template".to_string(),
+            scope: "template".to_string(), tag: "mask".to_string(),
             params: Some(phone_template_params()),
-            description: None,            tags: Vec::new(),        }],
+            message: None, description: None,        }],
     };
     let mut selected: HashSet<usize> = HashSet::new();
     selected.insert(0);
@@ -453,9 +587,9 @@ fn mask_pipeline_selected_ignores_out_of_range() {
         validators: vec![],
         maskers: vec![MaskRule {
             field: "phone".to_string(),
-            masker: "template".to_string(),
+            scope: "template".to_string(), tag: "mask".to_string(),
             params: Some(phone_template_params()),
-            description: None,            tags: Vec::new(),        }],
+            message: None, description: None,        }],
     };
     let mut selected: HashSet<usize> = HashSet::new();
     selected.insert(99);
@@ -493,22 +627,22 @@ fn rich_rules_on_sample_csv() {
         maskers: vec![
             MaskRule {
                 field: "phone".into(),
-                masker: "regex_replace".into(),
+                scope: "regex_replace".into(), tag: "mask".to_string(),
                 params: Some(params(&[
                     ("pattern", r"(\d{3})\d{4}(\d{4})"),
                     ("replacement", "$1****$2"),
                 ])),
-                description: None,                tags: Vec::new(),            },
+                message: None, description: None,            },
             MaskRule {
                 field: "email".into(),
-                masker: "const_replace".into(),
+                scope: "const_replace".into(), tag: "mask".to_string(),
                 params: Some(params(&[("with", "")])),
-                description: None,                tags: Vec::new(),            },
+                message: None, description: None,            },
             MaskRule {
                 field: "name".into(),
-                masker: "const_replace".into(),
+                scope: "const_replace".into(), tag: "mask".to_string(),
                 params: Some(params(&[("with", "***")])),
-                description: None,                tags: Vec::new(),            },
+                message: None, description: None,            },
         ],
     };
     let r = mask_pipeline(&records, &rules).expect("mask_pipeline");
@@ -538,7 +672,7 @@ fn rich_rules_on_sample_csv() {
 
     // 顺手验证 build_masker 对这三条规则都能构造成功（与 mask_pipeline 一致）。
     for rule in &rules.maskers {
-        assert!(build_masker(rule).is_some(), "build_masker ok for {}", rule.masker);
+        assert!(build_masker(rule).is_some(), "build_masker ok for {}", rule.scope);
     }
 }
 
@@ -555,9 +689,9 @@ fn selected_rows_on_sample_csv() {
         validators: vec![],
         maskers: vec![MaskRule {
             field: "phone".to_string(),
-            masker: "template".to_string(),
+            scope: "template".to_string(), tag: "mask".to_string(),
             params: Some(phone_template_params()),
-            description: None,            tags: Vec::new(),        }],
+            message: None, description: None,        }],
     };
     let selected: HashSet<usize> = [1].iter().copied().collect();
 
@@ -603,14 +737,14 @@ fn mask_pipeline_columns_only_selected() {
         maskers: vec![
             MaskRule {
                 field: "phone".into(),
-                masker: "template".into(),
+                scope: "template".into(), tag: "mask".to_string(),
                 params: Some(phone_template_params()),
-                description: None,                tags: Vec::new(),            },
+                message: None, description: None,            },
             MaskRule {
                 field: "name".into(),
-                masker: "template".into(),
+                scope: "template".into(), tag: "mask".to_string(),
                 params: Some(name_template_params()),
-                description: None,                tags: Vec::new(),            },
+                message: None, description: None,            },
         ],
     };
     let mut selected: HashSet<String> = HashSet::new();
@@ -642,9 +776,9 @@ fn mask_pipeline_columns_ignores_unknown() {
         validators: vec![],
         maskers: vec![MaskRule {
             field: "phone".into(),
-            masker: "template".into(),
+            scope: "template".into(), tag: "mask".to_string(),
             params: Some(phone_template_params()),
-            description: None,            tags: Vec::new(),        }],
+            message: None, description: None,        }],
     };
     let mut selected: HashSet<String> = HashSet::new();
     selected.insert("ghost_column".to_string());
@@ -674,9 +808,9 @@ fn mask_pipeline_columns_empty_set() {
         validators: vec![],
         maskers: vec![MaskRule {
             field: "phone".into(),
-            masker: "template".into(),
+            scope: "template".into(), tag: "mask".to_string(),
             params: Some(phone_template_params()),
-            description: None,            tags: Vec::new(),        }],
+            message: None, description: None,        }],
     };
     let selected: HashSet<String> = HashSet::new();
 
@@ -709,11 +843,9 @@ fn validate_pipeline_basic() {
     let rules = RuleSet {
         validators: vec![FieldRule {
             field: "phone".into(),
-            validator: "regex_with_guard".into(),
+            scope: "regex_with_guard".into(), tag: "validate".to_string(),
             params: Some(phone_guard_params()),
-            regex: None,
-            message: None,
-            description: None,            tags: Vec::new(),        }],
+            message: None, description: None,        }],
         maskers: vec![],
     };
     let r = validate_pipeline(&records, &rules).expect("validate_pipeline");
@@ -771,9 +903,9 @@ fn mask_pipeline_columns_and_selected_coexist() {
         validators: vec![],
         maskers: vec![MaskRule {
             field: "phone".into(),
-            masker: "template".into(),
+            scope: "template".into(), tag: "mask".to_string(),
             params: Some(phone_template_params()),
-            description: None,            tags: Vec::new(),        }],
+            message: None, description: None,        }],
     };
 
     // 列勾选：选 phone 列 → 两行均脱敏
@@ -820,11 +952,9 @@ fn validate_pipeline_edge_cases() {
     let rules = RuleSet {
         validators: vec![FieldRule {
             field: "ghost_field".into(),
-            validator: "regex_with_guard".into(),
+            scope: "regex_with_guard".into(), tag: "validate".to_string(),
             params: Some(phone_guard_params()),
-            regex: None,
-            message: None,
-            description: None,            tags: Vec::new(),        }],
+            message: None, description: None,        }],
         maskers: vec![],
     };
     let r = validate_pipeline(&records, &rules).expect("validate_pipeline");
@@ -958,19 +1088,17 @@ fn mask_op_template_preset_equivalence() {
     }
 }
 
-/// 验收项 20（v0.1.0 重构）：`MaskOp::RegexReplace` 通用算子基本契约 +
-/// 算子清单只含 4 个通用算子。
+/// 验收项 20（v0.1.0 重构）：`MaskOp::RegexReplace` 通用算子基本契约。
 ///
 /// 直接构造 `RegexReplace` 算子：
 /// - `match_mode=All` + `replacement="$1****$2"` 对 11 位手机号 → `138****5678`。
 /// - 非法 pattern 退化为原值返回（不 panic）。
 /// - `apply_mask_op` 与 `MaskOp` impl `Masker` 行为一致。
-/// - `list_mask_op_types` 只返回 4 个通用算子（无预置别名）。
+///
+/// v0.4.4：`list_mask_op_types` 已删除（presets.rs 移除），不再断言算子清单。
 #[test]
 fn mask_op_regex_replace_dispatch() {
-    use ruT0_data_kit_core::rules::{
-        apply_mask_op, list_mask_op_types, MaskOp, MatchMode, RegexReplaceOp,
-    };
+    use ruT0_data_kit_core::rules::{apply_mask_op, MaskOp, MatchMode, RegexReplaceOp};
 
     let op = MaskOp::RegexReplace(RegexReplaceOp::new(
         Some(r"(\d{3})\d{4}(\d{4})".into()),
@@ -992,45 +1120,18 @@ fn mask_op_regex_replace_dispatch() {
     // MaskOp impl Masker
     use ruT0_data_kit_core::maskers::Masker;
     assert_eq!(op.mask("13812345678"), "138****5678");
-
-    // list_mask_op_types 只含 4 个通用算子（v0.1.0 重构后无预置别名）
-    let types = list_mask_op_types();
-    let names: Vec<&str> = types.iter().map(|(n, _)| *n).collect();
-    assert_eq!(
-        names,
-        ["template", "split_template", "regex_replace", "const_replace"],
-        "list_mask_op_types should only contain 4 generic operators",
-    );
-    // 反向校验：预置别名不在清单中
-    for removed in [
-        "idcard_mask",
-        "phone_mask",
-        "bankcard_mask",
-        "email_mask",
-        "name_mask",
-        "customer_id_mask",
-        "custom",
-        "delete",
-        "replace",
-        "regex_extract",
-    ] {
-        assert!(
-            !names.contains(&removed),
-            "{removed} should NOT be in list_mask_op_types after refactor",
-        );
-    }
 }
 
-/// 验收项 21（v0.1.0 重构）：`ValidateOp::Regex` 通用算子基本契约 +
-/// 算子清单只含 3 个通用算子。
+/// 验收项 21（v0.1.0 重构）：`ValidateOp::Regex` 通用算子基本契约。
 ///
 /// 直接构造 `RegexOp`：
 /// - 合法邮箱 valid==true。
 /// - 非法值 valid==false。
-/// - `list_validate_op_types` 只返回 3 个通用算子（无预置别名）。
+///
+/// v0.4.4：`list_validate_op_types` 已删除（presets.rs 移除），不再断言算子清单。
 #[test]
 fn validate_op_regex_preset_equivalence() {
-    use ruT0_data_kit_core::rules::{apply_validate_op, list_validate_op_types, RegexOp, ValidateOp};
+    use ruT0_data_kit_core::rules::{apply_validate_op, RegexOp, ValidateOp};
 
     let op = ValidateOp::Regex(RegexOp::new(
         r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$",
@@ -1054,30 +1155,6 @@ fn validate_op_regex_preset_equivalence() {
         !apply_validate_op(&op, "@x.com").valid,
         "empty local should fail",
     );
-
-    // list_validate_op_types 只含 3 个通用算子（v0.1.0 重构后无预置别名）
-    let types = list_validate_op_types();
-    let names: Vec<&str> = types.iter().map(|(n, _)| *n).collect();
-    assert_eq!(
-        names,
-        ["regex", "algorithm", "regex_with_guard"],
-        "list_validate_op_types should only contain 3 generic operators",
-    );
-    // 反向校验：预置别名不在清单中
-    for removed in [
-        "email",
-        "username",
-        "name",
-        "idcard",
-        "bankcard",
-        "phone",
-        "mac",
-    ] {
-        assert!(
-            !names.contains(&removed),
-            "{removed} should NOT be in list_validate_op_types after refactor",
-        );
-    }
 }
 
 /// 验收项 22（v0.1.0 重构）：`MaskOp::SplitTemplate` 与 `MaskOp::ConstReplace`
@@ -1154,7 +1231,7 @@ fn mask_op_split_template_and_const_replace() {
 /// - `RegexWithGuardOp { guard: MacPrefix, pattern=MAC_REGEX }`：
 ///   `"AA:BB:CC:DD:EE:FF"` valid==true，`"notamac"` valid==false。
 /// - 抽样断言 `apply_validate_op(&op, x).valid` 与
-///   `build_validator(&FieldRule{ validator: "algorithm", params: Some(idcard_algorithm_params()) }).unwrap().validate(x).valid`
+///   `build_validator(&FieldRule{ scope: "algorithm", tag: "validate".to_string(), params: Some(idcard_algorithm_params()) }).unwrap().validate(x).valid`
 ///   一致（idcard 一条）。
 #[test]
 fn validate_op_algorithm_and_guard_equivalence() {
@@ -1219,11 +1296,9 @@ fn validate_op_algorithm_and_guard_equivalence() {
     let reg = ValidatorRegistry::new();
     let rule = FieldRule {
         field: "x".into(),
-        validator: "algorithm".into(),
+        scope: "algorithm".into(), tag: "validate".to_string(),
         params: Some(idcard_algorithm_params()),
-        regex: None,
-        message: None,
-        description: None,        tags: Vec::new(),    };
+        message: None, description: None,    };
     let v = build_validator(&rule, &reg).expect("build_validator algorithm/idcard");
     let direct = ValidateOp::Algorithm(AlgorithmOp { algo: AlgoKind::IdCard });
     for input in ["286071197501111126", "110101199001011230", "12345"] {
@@ -1943,25 +2018,19 @@ fn pcap_scan_full() {
         validators: vec![
             FieldRule {
                 field: "id_card".into(),
-                validator: "idcard".into(),
+                scope: "idcard".into(), tag: "validate".to_string(),
                 params: None,
-                regex: None,
-                message: None,
-                description: None,                tags: Vec::new(),            },
+                message: None, description: None,            },
             FieldRule {
                 field: "phone".into(),
-                validator: "phone".into(),
+                scope: "phone".into(), tag: "validate".to_string(),
                 params: None,
-                regex: None,
-                message: None,
-                description: None,                tags: Vec::new(),            },
+                message: None, description: None,            },
             FieldRule {
                 field: "name".into(),
-                validator: "name".into(),
+                scope: "name".into(), tag: "validate".to_string(),
                 params: None,
-                regex: None,
-                message: None,
-                description: None,                tags: Vec::new(),            },
+                message: None, description: None,            },
         ],
         maskers: vec![],
     };
@@ -2025,8 +2094,8 @@ fn pcap_scan_full() {
 //   29. preprocess_6_sources：6 源 read_records 全部返回非空 Records。
 //   30. search_big_file：10w 行 build < 5s，keyword 查询 < 200ms，命中 > 0。
 //   31. sql_parse_tool_full：探针序列还原 person 数据库（schema / 1 表 / 7 列 / ≥2 行）。
-//   32. rules_multi_tag：一条规则 tags=[mask,sensitive]，by_tag_mask 与 by_tag
-//       双向都能筛到它（验证 T5-1 多标签规则引擎）。
+//   32. rules_multi_tag（v0.4.4 单值 tag 重构）：MaskRule{tag:"mask"} /
+//       FieldRule{tag:"validate"} 单值筛选语义验证（by_tag/by_tag_mask）。
 //
 // 说明：
 // - pcap/log 因 tshark 缺失会被 read_records 返回 DependencyMissing，不阻塞 CI；
@@ -2408,21 +2477,22 @@ fn sql_parse_tool_full() {
     );
 }
 
-/// 32. rules_multi_tag（v0.4.0 T5-13）：
+/// 32. rules_multi_tag（v0.4.0 T5-13，v0.4.4 单值 tag 重构）：
 ///
-/// 一条规则同时挂 tags=[mask, sensitive]：RuleSet::by_tag_mask("mask") 和
-/// by_tag_mask("sensitive") 都返回它；FieldRule 侧同理挂 [validate, sensitive]，
-/// by_tag("validate") 和 by_tag("sensitive") 都返回它。这证明 T5-1 多标签规则
-/// 引擎可让一条规则在多个功能视图（MaskView / ValidateView / SearchView ...）
-/// 同时生效。
+/// v0.4.4：`tag` 改为单值字段（"extract" | "mask" | "validate"），不再支持
+/// 多标签。本用例验证单值 tag 的 by_tag / by_tag_mask 筛选语义：
+/// - MaskRule{tag:"mask"} → by_tag_mask("mask") 命中、by_tag_mask("validate") 不命中。
+/// - FieldRule{tag:"validate"} → by_tag("validate") 命中、by_tag("mask") 不命中。
+/// - 不存在的 tag 返回空。
 #[test]
 fn rules_multi_tag() {
     let mask_rule = MaskRule {
         field: "phone".into(),
-        masker: "template".into(),
+        scope: "template".into(),
+        tag: "mask".into(),
         params: Some(phone_template_params()),
+        message: None,
         description: None,
-        tags: vec!["mask".into(), "sensitive".into()],
     };
     let rs = RuleSet {
         validators: vec![],
@@ -2439,31 +2509,22 @@ fn rules_multi_tag() {
     );
     assert_eq!(mask_hits[0].field, "phone");
 
-    // by_tag_mask("sensitive") 也命中它（同一规则多标签）。
-    let sens_hits = rs.by_tag_mask("sensitive");
-    assert_eq!(
-        sens_hits.len(),
-        1,
-        "by_tag_mask(\"sensitive\") must return the same rule, got {}",
-        sens_hits.len(),
-    );
-    assert_eq!(sens_hits[0].field, "phone");
-
-    // 同一对象引用：by_tag_mask("mask")[0] 与 by_tag_mask("sensitive")[0] 是同一条。
-    assert_eq!(
-        mask_hits[0].field, sens_hits[0].field,
-        "mask and sensitive filter must point to the same rule",
+    // by_tag_mask("validate") 不命中（单值 tag，mask 规则不会被 validate 筛到）。
+    let val_mask_hits = rs.by_tag_mask("validate");
+    assert!(
+        val_mask_hits.is_empty(),
+        "by_tag_mask(\"validate\") on a mask-tagged rule must be empty, got {}",
+        val_mask_hits.len(),
     );
 
-    // FieldRule 侧同理：tags=[validate, sensitive]。
+    // FieldRule 侧：tag="validate"。
     let field_rule = FieldRule {
         field: "id_card".into(),
-        validator: "regex".into(),
+        scope: "regex".into(),
+        tag: "validate".to_string(),
         params: Some(email_regex_params()), // 借一个现成 params，内容不关键
-        regex: None,
         message: None,
         description: None,
-        tags: vec!["validate".into(), "sensitive".into()],
     };
     let rs2 = RuleSet {
         validators: vec![field_rule],
@@ -2479,14 +2540,13 @@ fn rules_multi_tag() {
     );
     assert_eq!(val_hits[0].field, "id_card");
 
-    let sens_val_hits = rs2.by_tag("sensitive");
-    assert_eq!(
-        sens_val_hits.len(),
-        1,
-        "by_tag(\"sensitive\") must return the same rule, got {}",
-        sens_val_hits.len(),
+    // by_tag("mask") 不命中（单值 tag）。
+    let mask_val_hits = rs2.by_tag("mask");
+    assert!(
+        mask_val_hits.is_empty(),
+        "by_tag(\"mask\") on a validate-tagged rule must be empty, got {}",
+        mask_val_hits.len(),
     );
-    assert_eq!(sens_val_hits[0].field, "id_card");
 
     // 负例：不存在的标签返回空。
     assert!(rs.by_tag_mask("nonexistent").is_empty());

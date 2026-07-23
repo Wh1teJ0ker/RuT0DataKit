@@ -1,6 +1,7 @@
-import { useReducer } from "react";
+import { useReducer, useEffect } from "react";
 import { Layout, Card } from "antd";
 import { initialState, appReducer } from "./state.js";
+import { listBuiltinRules } from "./tauri.js";
 import Sidebar from "./components/Sidebar.jsx";
 import PreprocessView from "./components/PreprocessView.jsx";
 import MaskView from "./components/MaskView.jsx";
@@ -30,6 +31,27 @@ function PlaceholderView({ title, task }) {
 export default function App() {
   const [state, dispatch] = useReducer(appReducer, initialState);
   const view = state.activeView;
+
+  // v0.4.4 T11-3：启动时拉取后端内置规则集（builtin_ruleset）写入 state.rules。
+  // 内置规则为出厂自带（phone/bankcard/ip 提取等），用户可见可用但不可编辑。
+  // 失败时 state.rules 保持初始空集，不阻塞 UI。
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const rs = await listBuiltinRules();
+        if (cancelled) return;
+        if (rs && Array.isArray(rs.validators)) {
+          dispatch({ type: "SET_RULES", rules: rs });
+        }
+      } catch {
+        // 静默：内置规则加载失败不阻塞 UI，state.rules 保持空集。
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   return (
     <Layout style={{ height: "100vh", overflow: "hidden" }}>

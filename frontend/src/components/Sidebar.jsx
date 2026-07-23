@@ -30,14 +30,16 @@ import {
 // 右上角小 Tag 显示 tshark 检测状态（绿=已检测 / 红=未检测），便于用户一眼看到。
 export default function Sidebar({ state, dispatch }) {
   const toolsOpen = state.sidebarToolsOpen ?? false;
+  // v0.4.4 T10-3：数据提取上移到「数据预处理」正下方（原在 export 之后）。
+  // 主流程顺序：预处理 -> 提取 -> 规则 -> 搜索 -> 脱敏 -> 校验 -> 导出 -> Tools。
   const items = [
     { key: "preprocess", icon: <AppstoreOutlined />, label: "数据预处理" },
+    { key: "extract", icon: <FilterOutlined />, label: "数据提取" },
     { key: "rules", icon: <SettingOutlined />, label: "规则管理" },
     { key: "search", icon: <SearchOutlined />, label: "搜索" },
     { key: "mask", icon: <SafetyCertificateOutlined />, label: "数据脱敏" },
     { key: "validate", icon: <CheckCircleOutlined />, label: "数据校验" },
     { key: "export", icon: <DownloadOutlined />, label: "数据导出" },
-    { key: "extract", icon: <FilterOutlined />, label: "数据提取" },
     {
       key: "tools",
       icon: <ToolOutlined />,

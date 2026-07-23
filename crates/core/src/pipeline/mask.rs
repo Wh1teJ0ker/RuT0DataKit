@@ -275,34 +275,34 @@ mod tests {
             maskers: vec![
                 MaskRule {
                     field: "customer_id".into(),
-                    masker: "template".into(),
+                    scope: "template".into(), tag: "mask".into(),
                     params: Some(customer_id_params()),
-                    description: None,                    tags: Vec::new(),                },
+                    message: None, description: None,                },
                 MaskRule {
                     field: "name".into(),
-                    masker: "template".into(),
+                    scope: "template".into(), tag: "mask".into(),
                     params: Some(name_params()),
-                    description: None,                    tags: Vec::new(),                },
+                    message: None, description: None,                },
                 MaskRule {
                     field: "id_card".into(),
-                    masker: "template".into(),
+                    scope: "template".into(), tag: "mask".into(),
                     params: Some(idcard_params()),
-                    description: None,                    tags: Vec::new(),                },
+                    message: None, description: None,                },
                 MaskRule {
                     field: "phone".into(),
-                    masker: "template".into(),
+                    scope: "template".into(), tag: "mask".into(),
                     params: Some(phone_params()),
-                    description: None,                    tags: Vec::new(),                },
+                    message: None, description: None,                },
                 MaskRule {
                     field: "email".into(),
-                    masker: "split_template".into(),
+                    scope: "split_template".into(), tag: "mask".into(),
                     params: Some(email_params()),
-                    description: None,                    tags: Vec::new(),                },
+                    message: None, description: None,                },
                 MaskRule {
                     field: "bank_card".into(),
-                    masker: "template".into(),
+                    scope: "template".into(), tag: "mask".into(),
                     params: Some(bankcard_params()),
-                    description: None,                    tags: Vec::new(),                },
+                    message: None, description: None,                },
             ],
         }
     }
@@ -362,9 +362,9 @@ mod tests {
             validators: vec![],
             maskers: vec![MaskRule {
                 field: "phone".into(),
-                masker: "template".into(),
+                scope: "template".into(), tag: "mask".into(),
                 params: Some(phone_params()),
-                description: None,                tags: Vec::new(),            }],
+                message: None, description: None,            }],
         };
         let r = mask_pipeline(&records, &rules).unwrap();
         assert_eq!(r.masked.headers, vec!["phone".to_string()]);
@@ -381,9 +381,9 @@ mod tests {
             validators: vec![],
             maskers: vec![MaskRule {
                 field: "ghost".into(),
-                masker: "template".into(),
+                scope: "template".into(), tag: "mask".into(),
                 params: Some(phone_params()),
-                description: None,                tags: Vec::new(),            }],
+                message: None, description: None,            }],
         };
         let r = mask_pipeline(&records, &rules).unwrap();
         assert_eq!(r.skipped_fields, vec!["ghost".to_string()]);
@@ -403,9 +403,9 @@ mod tests {
             validators: vec![],
             maskers: vec![MaskRule {
                 field: "a".into(),
-                masker: "no_such_mask".into(),
+                scope: "no_such_mask".into(), tag: "mask".into(),
                 params: None,
-            description: None,            tags: Vec::new(),            }],
+            message: None, description: None,            }],
         };
         let r = mask_pipeline(&records, &rules).unwrap();
         assert!(r.skipped_fields.is_empty()); // 未知名 masker 不算 skipped_fields
@@ -425,14 +425,14 @@ mod tests {
             maskers: vec![
                 MaskRule {
                     field: "name".into(),
-                    masker: "template".into(),
+                    scope: "template".into(), tag: "mask".into(),
                     params: Some(name_params()),
-                    description: None,                    tags: Vec::new(),                },
+                    message: None, description: None,                },
                 MaskRule {
                     field: "email".into(),
-                    masker: "split_template".into(),
+                    scope: "split_template".into(), tag: "mask".into(),
                     params: Some(email_params()),
-                    description: None,                    tags: Vec::new(),                },
+                    message: None, description: None,                },
             ],
         };
         let r = mask_pipeline(&records, &rules).unwrap();
@@ -459,9 +459,9 @@ mod tests {
             validators: vec![],
             maskers: vec![MaskRule {
                 field: "phone".into(),
-                masker: "template".into(),
+                scope: "template".into(), tag: "mask".into(),
                 params: Some(phone_params()),
-                description: None,                tags: Vec::new(),            }],
+                message: None, description: None,            }],
         };
         let mut selected: HashSet<usize> = HashSet::new();
         selected.insert(0);
@@ -495,9 +495,9 @@ mod tests {
             validators: vec![],
             maskers: vec![MaskRule {
                 field: "phone".into(),
-                masker: "template".into(),
+                scope: "template".into(), tag: "mask".into(),
                 params: Some(phone_params()),
-                description: None,                tags: Vec::new(),            }],
+                message: None, description: None,            }],
         };
         let mut selected: HashSet<usize> = HashSet::new();
         selected.insert(99);
@@ -520,9 +520,9 @@ mod tests {
             validators: vec![],
             maskers: vec![MaskRule {
                 field: "phone".into(),
-                masker: "template".into(),
+                scope: "template".into(), tag: "mask".into(),
                 params: Some(phone_params()),
-                description: None,                tags: Vec::new(),            }],
+                message: None, description: None,            }],
         };
         let selected: HashSet<usize> = HashSet::new();
 

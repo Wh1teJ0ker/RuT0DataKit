@@ -134,51 +134,19 @@ export async function readRuleset(path) {
   return tauriInvoke("read_ruleset", { path });
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// T0-23 新增命令封装：规则试运行 + 算子类型清单（接 T0-22 后端命令）。
-// 参数名 camelCase，由 Tauri 自动转 snake_case 传到 Rust 端。
-// ─────────────────────────────────────────────────────────────────────
-
-// 试运行脱敏规则（直接对用户输入值跑算子，不依赖任何文件）：
-// apply_mask_op → { input, output }。
-// 规则管理是独立系统，试运行不再读取已导入数据文件的首行。
-export async function previewMaskRuleValue(input, masker, params) {
-  return tauriInvoke("preview_mask_rule_value", { input, masker, params });
-}
-
-// 试运行校验规则（直接对用户输入值跑算子，不依赖任何文件）：
-// apply_validate_op → { input, valid, message }。
-export async function previewValidateRuleValue(
-  input,
-  validator,
-  params,
-  regex,
-  message
-) {
-  return tauriInvoke("preview_validate_rule_value", {
-    input,
-    validator,
-    params,
-    regex,
-    message,
-  });
-}
-
-// 脱敏算子类型清单（通用算子 + 预置别名）：[{ name, label }, ...]。
-export async function listMaskOpTypes() {
-  return tauriInvoke("list_mask_op_types");
-}
-
-// 校验算子类型清单（通用算子 + 预置别名）：[{ name, label }, ...]。
-export async function listValidateOpTypes() {
-  return tauriInvoke("list_validate_op_types");
-}
-
-// 规则可选标签并集（预置标签 ∪ 当前 ruleset 出现过的 tag）：
-// 供 RuleDrawer 的 tags Select 下拉源与 RulesView「按标签过滤」共用。
-// rulesJson 为当前编辑态的 RuleSet JSON 序列化（可为 null/空串，退化为仅预置标签）。
+// 规则标签清单（静态三选一）：["extract","mask","validate"]。
+// v0.4.4 规则引擎重构后，规则池初始为空，tag 为单值字段，三选一对应
+// 「数据提取 / 数据脱敏 / 数据校验」三种用途。供 RulesView「按标签过滤」
+// Select 使用。rulesJson 参数保留（向后兼容前端调用签名），当前实现不读取。
 export async function listRuleTags(rulesJson) {
   return tauriInvoke("list_rule_tags", { rulesJson: rulesJson ?? null });
+}
+
+// v0.4.4 T11-3：拉取后端内置规则集（builtin_ruleset），启动时加载到
+// state.rules（dispatch SET_RULES）。返回 { maskers: [], validators: [...] }，
+// 与 extract_text 的 rules_json 路径同构。
+export async function listBuiltinRules() {
+  return tauriInvoke("list_builtin_rules");
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -314,14 +282,16 @@ export async function saveTsharkPath(path) {
 // 参数名 camelCase，由 Tauri 自动转 snake_case 传到 Rust 端。
 // ─────────────────────────────────────────────────────────────────────
 
-// 从文本提取 phone/bankcard/ip，返回 { findings, counts }。
-export async function extractText(content) {
-  return tauriInvoke("extract_text", { content });
+// 从文本提取 PII，返回 { findings, counts }。
+// rulesJson 为可选 RuleSet JSON 字符串，null/undefined 时后端走 builtin（phone/bankcard/ip）。
+// v0.4.4 T10-3：新增 rulesJson 参数，前端从规则管理池勾选规则后构造。
+export async function extractText(content, rulesJson) {
+  return tauriInvoke("extract_text", { content, rulesJson });
 }
 
-// 从 .txt 文件提取 phone/bankcard/ip，返回 { findings, counts }。
-export async function extractFile(path) {
-  return tauriInvoke("extract_file", { path });
+// 从 .txt 文件提取 PII，返回 { findings, counts }。rulesJson 语义同 extractText。
+export async function extractFile(path, rulesJson) {
+  return tauriInvoke("extract_file", { path, rulesJson });
 }
 
 // 把 findings 按格式（txt/csv/json）导出到 outPath。
