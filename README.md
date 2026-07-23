@@ -4,12 +4,12 @@
 全部处理在本地完成，不上传任何样本或规则。本仓库面向数据安全竞赛与红队场景中的
 "敏感数据快速清洗 / 解析" 需求，不依赖 Python 运行时。
 
-> **当前状态：v0.4.3 txt 兼容 + 数据提取模块 + 规则引擎去绝对化（T9-1 ~ T9-7 verified_complete，已 release_complete）。** v0.4.3 在 v0.4.2 设置模块首期 + patch 修复的基础上，新增 txt 兼容、独立「数据提取」模块与规则引擎去绝对化：
-> - **txt 兼容（T9-1）**：core 新增 `crates/core/src/readers/txt_reader.rs`（仿 SqlReader，整段文本 → `Records { headers: ["content"], rows: [[全文]] }`）；`pipeline/mod.rs::SourceType` 新增 `Txt` + `detect_type("*.txt") => Txt`；`readers/mod.rs` dispatch arm；PreprocessView 文件选择对话框 filter 已在 T9-4 追加 `.txt`，可导入预览。
-> - **规则引擎去绝对化（T9-2）**：`validators/phone.rs` 删除 CTF_PREFIXES / REAL_PREFIXES 白名单 + ctf_prefixes()/real_prefixes() + OnceLock/HashSet，仅按 PDF spec `^1\d{10}$` 校验（旧版「155...」非白名单号段会 fail，现在 valid=true）；新增 `validators/ip.rs::IpValidator`（用 `IP_REGEX`）注册为第 8 个内置校验器；`scan/mod.rs::extract_pattern` 表新增 `"ip"` 条目，敏感扫描也能从文本中提取 IP 候选并校验。
-> - **数据提取模块（T9-3 + T9-4 + T9-5）**：core 新增 `crates/core/src/extract/mod.rs`（`builtin_extract_ruleset` 三 validator + `extract_text(content)` / `extract_file(path)` 复用 `DefaultSensitiveScan`）；Tauri 新增 3 命令 `extract_text` / `extract_file` / `export_extract`（复用 `write_csv` / `write_json` + type_value 拼接）；前端 `ExtractView.jsx`（NEW）4 Card 布局：输入（Radio 切文件/文本）+ 操作（开始提取）+ 结果（Table + 计数 Tag）+ 导出（txt/csv/json 三按钮），Sidebar 在 export 后新增 `{ key: "extract", icon: <FilterOutlined />, label: "数据提取" }`。
-> - **版本号 0.4.2 → 0.4.3（T9-4）**：`src-tauri/Cargo.toml` + `tauri.conf.json` + `frontend/package.json` + README 状态行 4 处同步。
-> 安全约束保持：全本地处理，extract 命令不调用网络，规则与样本不上传；零新 Cargo / npm 依赖（复用 antd / @ant-design/icons / DefaultSensitiveScan / ValidatorRegistry / write_csv / write_json）。版本状态约定见 `docs/04-版本标准.md`。
+> **当前状态：v0.5.0 架构性质升级（T12-1 ~ T12-6 verified_complete，已 release_complete）。** v0.5.0 是专门的架构升级版本，基于 `docs/qa/代码质量审计报告.md` P0+P1+P2 路线图，零行为回归的内部重构：
+> - **God 文件拆分（T12-1/2/3）**：`blind_aggregator.rs` 1790 LOC → `logsign/blind/{mod,probe,aggregate,reconstruct}.rs`；`commands.rs` 1173 LOC → `commands/{mod + 10 领域}.rs`；`operator.rs` 976 LOC → `rules/{mask_op,validate_op}.rs`。三大 God 文件全删除（3939 LOC → 14 个职责单一子文件）。
+> - **正则集中化（T12-4）**：新建 `rules/patterns.rs` 集中 8 scope 成对 extract/validate 正则，`scan` 与 `validators` 统一引用，phone `1\d{10}` 跨文件散布 0 命中。
+> - **前端状态切片（T12-5）**：`state.js` 按领域切片为 13 个子函数 + 54 ACTION 常量，组件 dispatch 调用零改动。
+> - **公共组件抽取（T12-6）**：新建 `ColumnRuleMapper.jsx`，MaskView 500→323 LOC（-35%），ValidateView 478→294 LOC（-39%）。
+> - **版本号 0.4.4 → 0.5.0**：5 处 manifest 同步（Cargo.toml workspace / crates/core `version.workspace` / src-tauri Cargo.toml / tauri.conf.json / frontend package.json）。破坏性变更：无（纯内部重构，公开 API / 行为 / 前端调用链零变化）。版本状态约定见 `docs/04-版本标准.md`。
 
 ## 功能
 
@@ -26,6 +26,7 @@
 | v0.4.1 | 5 项缺陷修复：数据流打通 + 移除各界面 FileToolbar + ToolsView 下拉栏 + SQL 盲注特征自动跳转 + RegexTool 语句→构造正则 + 搜索子串匹配修正 | 已发布 v0.4.1 |
 | v0.4.2 | 设置模块首期：Sidebar 底部「设置」入口 + tshark 多平台自动检测 + 路径配置持久化 + SettingsView UI（+ 3 项 patch 修复：文件导入对话框补 json/sql 扩展名 / 侧边栏与主页面分离滚动 / 脱敏校验下拉改用用户规则，版本号不变） | 已发布 v0.4.2 |
 | v0.4.3 | txt 兼容（PreprocessView 支持 .txt 导入）+ 数据提取独立模块（ExtractView：文件/文本输入 → phone/bankcard/ip 提取 → txt/csv/json 导出，匹配 PDF spec type_value 格式）+ 规则引擎去绝对化（PhoneValidator 删 CTF/real 白名单 → `^1\d{10}$`；新增 IpValidator） | 已发布 v0.4.3 |
+| v0.5.0 | 架构性质升级：blind_aggregator/commands/operator 三大 God 文件拆分 + rules/patterns.rs 正则集中化 + 前端 state 领域切片 + ColumnRuleMapper 公共组件（依据代码质量审计报告 P0+P1+P2，零行为回归） | 已发布 v0.5.0 |
 
 v0.1.0 已落地：
 - core pipeline：`detect_type` → `SourceReader` → `mask_pipeline` / `mask_pipeline_selected`（行选择，向后兼容）/ `mask_pipeline_columns`（列勾选） → `validate_pipeline`（校验） → `write_masked_csv` / `export_records_csv` / `export_records_xlsx`
@@ -108,7 +109,10 @@ v0.4.1 5 项缺陷修复已落地：
 ### 构建依赖
 
 - **Rust toolchain**（stable，推荐 1.75+）：通过 rustup 安装。
-- **Tauri v2 CLI**：`cargo install tauri-cli --version "^2"` 或 `cargo tauri` 子命令（用于跑 `cargo tauri dev` / `cargo tauri build`）。
+- **Tauri v2 CLI**：两种方式任选其一
+  - `cargo install tauri-cli --version "^2"`（全局安装，命令 `cargo tauri`）
+  - 直接用 npx 免安装：`npx --yes @tauri-apps/cli@latest <subcommand>`（本仓库采用这种方式，无需全局安装）
+- **Node.js + npm**：前端构建需要（首次需联网拉 react/antd/@ant-design/icons/vite）
 - **tshark**：仅 **v0.3.0**（pcap 解析）需要。v0.1.0 与 v0.2.0 **不需要** tshark。
   macOS：`brew install wireshark`；Debian/Ubuntu：`apt install tshark`。
 
@@ -130,21 +134,49 @@ cargo build --workspace
 cargo test --workspace
 ```
 
-### 启动 GUI
+### 启动 GUI（开发模式）
 
 > 前端基于 React + Vite + Ant Design，首次运行需先安装 npm 依赖（仅一次，联网拉取 react/antd/@ant-design/icons/vite）。
 
 ```sh
+# 方式 A：cargo tauri（需先 cargo install tauri-cli --version "^2"）
 cd frontend && npm install && cd ..
 cargo tauri dev
+
+# 方式 B：npx 免安装 tauri-cli（推荐，本仓库 CI/打包采用此方式）
+cd frontend && npm install && cd ..
+npx --yes @tauri-apps/cli@latest dev
 ```
 
-打包发布版（产出 `src-tauri/target/release/ruT0-data-kit`，dist 已内嵌）：
+### 打包发布版（产出 .app / .dmg / 裸二进制）
+
+**一键打包（推荐，自动构建前端 + 编译后端 + 产出 bundle）：**
 
 ```sh
-cd frontend && npm install && npm run build && cd ..
-cargo build --manifest-path src-tauri/Cargo.toml --release
+# 在仓库根目录执行（cwd 必须是仓库根，tauri-cli 会读 src-tauri/tauri.conf.json）
+npx --yes @tauri-apps/cli@latest build
 ```
+
+产物位置（macOS）：
+- `.app` 包：`src-tauri/target/release/bundle/macos/RuT0DataKit.app`
+- `.dmg` 安装包：`src-tauri/target/release/bundle/dmg/RuT0DataKit_<version>_aarch64.dmg`
+- 裸二进制：`src-tauri/target/release/ruT0-data-kit`
+
+**分步打包（手动控制前端构建，适合 CI 或排查问题）：**
+
+```sh
+# 1. 构建前端生产资源到 frontend/dist/
+cd frontend && npm install && npm run build && cd ..
+
+# 2. 编译 release 二进制（前端 dist 已内嵌）
+cargo build --manifest-path src-tauri/Cargo.toml --release
+
+# 3.（可选）单独产出 .app/.dmg bundle（跳过 beforeBuildCommand，因为前端已构建）
+npx --yes @tauri-apps/cli@latest build --no-bundle   # 仅二进制
+npx --yes @tauri-apps/cli@latest build                # 含 .app + .dmg
+```
+
+> **打包排错 tip**：如果 `npx @tauri-apps/cli build` 报 `npm --prefix frontend run build` 路径错误（`frontend/frontend/package.json not found`），是因为 tauri-cli 的 cwd 解析问题。解决办法：**始终在仓库根目录调用 npx**，不要 `cd src-tauri` 后再跑。若仍报错，可临时把 `src-tauri/tauri.conf.json` 的 `beforeBuildCommand` 置空 `""`，手动 `cd frontend && npm run build` 后再跑 `npx @tauri-apps/cli build`。
 
 默认规则文件位于 `rules/default_mask.yaml`，可直接引用或拷贝改写；GUI 内可在"自定义规则"下加载本地 YAML。
 
