@@ -9,11 +9,13 @@
 //!
 //! 三者相互独立。
 
+pub mod encrypt;
 pub mod regex_construct;
 pub mod regex_explain;
 pub mod regex_template;
 pub mod sql_parse;
 
+pub use encrypt::{decrypt_text, encrypt_text, EncryptAlgo};
 pub use regex_construct::{construct_regex, ConstructedRegex};
 pub use regex_explain::{explain_regex, RegexTokenDesc};
 pub use sql_parse::{parse_sqls, SqlParseInput, SqlParseResult};

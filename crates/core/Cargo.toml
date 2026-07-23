@@ -13,3 +13,12 @@ serde_yml = "0.0.12"
 regex = "1"
 csv = "1"
 calamine = "0.24"
+
+# T13-1 加密工具依赖
+aes = "0.8"
+cbc = { version = "0.1", features = ["block-padding"] }
+cipher = "0.4"
+base64 = "0.22"
+rand = "0.8"
+sha2 = "0.10"
+hex = "0.4"
