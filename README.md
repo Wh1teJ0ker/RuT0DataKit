@@ -176,7 +176,7 @@ npx --yes @tauri-apps/cli@latest build --no-bundle   # 仅二进制
 npx --yes @tauri-apps/cli@latest build                # 含 .app + .dmg
 ```
 
-> **打包排错 tip**：如果 `npx @tauri-apps/cli build` 报 `npm --prefix frontend run build` 路径错误（`frontend/frontend/package.json not found`），是因为 tauri-cli 的 cwd 解析问题。解决办法：**始终在仓库根目录调用 npx**，不要 `cd src-tauri` 后再跑。若仍报错，可临时把 `src-tauri/tauri.conf.json` 的 `beforeBuildCommand` 置空 `""`，手动 `cd frontend && npm run build` 后再跑 `npx @tauri-apps/cli build`。
+> **打包排错 tip**：如果 `npx @tauri-apps/cli build` 报 `npm --prefix frontend run build` 找不到 `frontend/frontend/package.json`，是因为 **tauri-cli 执行 `beforeBuildCommand` 时 cwd 是 `frontend/`，不是仓库根**，`--prefix frontend` 会被叠加成 `frontend/frontend`。正确做法：把 `src-tauri/tauri.conf.json` 的 `beforeBuildCommand` 从 `npm --prefix frontend run build` 改为 `npm run build`（`beforeDevCommand` 同理改为 `npm run dev`），本仓库 v0.5.0 已按此修正。
 
 默认规则文件位于 `rules/default_mask.yaml`，可直接引用或拷贝改写；GUI 内可在"自定义规则"下加载本地 YAML。
 
