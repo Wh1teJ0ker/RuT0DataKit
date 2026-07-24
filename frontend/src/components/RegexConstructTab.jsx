@@ -315,8 +315,7 @@ function ConstructTab() {
     <Card title="正则构造（可视化积木）" styles={{ body: { padding: 12 } }}>
       <Space direction="vertical" size="middle" style={{ width: "100%" }}>
         <Text type="secondary" style={{ fontSize: 12 }}>
-          点选下方积木按顺序拼装正则，实时预览 + 测试。量词（+/ /* /?/{n}）追加到前一个 token 之后。
-          纯本地拼装，不上传任何数据。
+          {"点选下方积木按顺序拼装正则，实时预览 + 测试。量词（+ / * / ? / {n}）追加到前一个 token 之后。纯本地拼装，不上传任何数据。"}
         </Text>
 
         {/* 预设模板 */}
