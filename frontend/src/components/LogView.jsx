@@ -1,4 +1,4 @@
-import React, { useMemo } from "react";
+import React, { useMemo, useState } from "react";
 import {
   Card,
   Table,
@@ -29,6 +29,11 @@ const { Text } = Typography;
 // useReducer state，切 view 不丢数据。
 export default function LogView({ state, dispatch }) {
   const { message } = AntApp.useApp();
+  // v0.6.4 T19-3：分页受控。两表各一组 state。
+  const [pageCurrent1, setPageCurrent1] = useState(1);
+  const [pageSize1, setPageSize1] = useState(50);
+  const [pageCurrent2, setPageCurrent2] = useState(1);
+  const [pageSize2, setPageSize2] = useState(50);
 
   // 导入 .log：select_file 拿路径 → 直接调 scanLogFile 拿 {entries, report}。
   // 不复用 csv/xlsx 专用的 load_preview。
@@ -400,7 +405,22 @@ export default function LogView({ state, dispatch }) {
         >
           <Table
             size="small"
-            pagination={{ pageSize: 50, size: "small" }}
+            pagination={{
+              current: pageCurrent1,
+              pageSize: pageSize1,
+              size: "small",
+              showSizeChanger: true,
+              pageSizeOptions: [10, 20, 50, 100],
+              onChange: (page, ps) => {
+                setPageCurrent1(page);
+                setPageSize1(ps);
+              },
+              onShowSizeChange: (page, ps) => {
+                setPageCurrent1(1);
+                setPageSize1(ps);
+              },
+              showTotal: (t) => `共 ${t} 条`,
+            }}
             scroll={{ y: 280, x: "max-content" }}
             sticky
             locale={{ emptyText: "导入 .log 后此处显示原始日志" }}
@@ -756,7 +776,22 @@ export default function LogView({ state, dispatch }) {
         >
           <Table
             size="small"
-            pagination={{ pageSize: 50, size: "small" }}
+            pagination={{
+              current: pageCurrent2,
+              pageSize: pageSize2,
+              size: "small",
+              showSizeChanger: true,
+              pageSizeOptions: [10, 20, 50, 100],
+              onChange: (page, ps) => {
+                setPageCurrent2(page);
+                setPageSize2(ps);
+              },
+              onShowSizeChange: (page, ps) => {
+                setPageCurrent2(1);
+                setPageSize2(ps);
+              },
+              showTotal: (t) => `共 ${t} 条`,
+            }}
             scroll={{ y: 360, x: "max-content" }}
             sticky
             locale={{ emptyText: "无 findings" }}

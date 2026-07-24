@@ -31,6 +31,11 @@ const { TextArea } = Input;
 export default function SqlParseTool({ state, dispatch }) {
   const { message } = AntApp.useApp();
   const [loading, setLoading] = useState(false);
+  // v0.6.4 T19-3：分页受控，切 pageSize 立即生效。两张表各一组。
+  const [pageCurrent1, setPageCurrent1] = useState(1);
+  const [pageSize1, setPageSize1] = useState(50);
+  const [pageCurrent2, setPageCurrent2] = useState(1);
+  const [pageSize2, setPageSize2] = useState(50);
 
   const result = state.sqlParseResult;
   const reconstructed = result?.reconstructed || null;
@@ -264,7 +269,21 @@ export default function SqlParseTool({ state, dispatch }) {
                     size="small"
                     columns={probeColumns}
                     dataSource={probeDataSource}
-                    pagination={{ pageSize: 50, showSizeChanger: true }}
+                    pagination={{
+                      current: pageCurrent1,
+                      pageSize: pageSize1,
+                      showSizeChanger: true,
+                      pageSizeOptions: [10, 20, 50, 100],
+                      onChange: (page, ps) => {
+                        setPageCurrent1(page);
+                        setPageSize1(ps);
+                      },
+                      onShowSizeChange: (page, ps) => {
+                        setPageCurrent1(1);
+                        setPageSize1(ps);
+                      },
+                      showTotal: (t) => `共 ${t} 条`,
+                    }}
                     scroll={{ y: 400, x: "max-content" }}
                     locale={{ emptyText: "无探针" }}
                   />
@@ -286,7 +305,21 @@ export default function SqlParseTool({ state, dispatch }) {
                         sleep_seconds: p.sleep_seconds ?? "-",
                         summary: p.summary,
                       }))}
-                      pagination={{ pageSize: 50, showSizeChanger: true }}
+                      pagination={{
+                        current: pageCurrent2,
+                        pageSize: pageSize2,
+                        showSizeChanger: true,
+                        pageSizeOptions: [10, 20, 50, 100],
+                        onChange: (page, ps) => {
+                          setPageCurrent2(page);
+                          setPageSize2(ps);
+                        },
+                        onShowSizeChange: (page, ps) => {
+                          setPageCurrent2(1);
+                          setPageSize2(ps);
+                        },
+                        showTotal: (t) => `共 ${t} 条`,
+                      }}
                       scroll={{ y: 320, x: "max-content" }}
                       columns={[
                         { title: "attack_type", dataIndex: "attack_type", key: "attack_type", width: 120, render: (t) => <Tag color="volcano">{t}</Tag> },

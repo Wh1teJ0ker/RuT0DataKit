@@ -36,6 +36,9 @@ const { TextArea, Search: AntSearch } = Input;
 export default function SearchView({ state, dispatch }) {
   const { message } = AntApp.useApp();
   const [loading, setLoading] = useState(false);
+  // v0.6.4 T19-3：分页受控，切 pageSize 立即生效。
+  const [pageCurrent, setPageCurrent] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
 
   const records = state.records;
   const hasRecords = records != null && Array.isArray(records.headers) && records.headers.length > 0;
@@ -324,7 +327,21 @@ export default function SearchView({ state, dispatch }) {
                 size="small"
                 columns={columns}
                 dataSource={dataSource}
-                pagination={{ pageSize: 50, showSizeChanger: true }}
+                pagination={{
+                  current: pageCurrent,
+                  pageSize,
+                  showSizeChanger: true,
+                  pageSizeOptions: [10, 20, 50, 100],
+                  onChange: (page, ps) => {
+                    setPageCurrent(page);
+                    setPageSize(ps);
+                  },
+                  onShowSizeChange: (page, ps) => {
+                    setPageCurrent(1);
+                    setPageSize(ps);
+                  },
+                  showTotal: (t) => `共 ${t} 条`,
+                }}
                 scroll={{ y: 400, x: "max-content" }}
                 locale={{ emptyText: "无命中或尚未查询" }}
               />
