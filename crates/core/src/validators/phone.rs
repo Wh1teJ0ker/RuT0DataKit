@@ -1,7 +1,7 @@
 //! 手机号校验器（11 位数字、首位 1）。
 //!
 //! v0.4.3 重构：删除原 CTF_PREFIXES / REAL_PREFIXES 硬编码号段白名单
-//! （用户要求"删除绝对化内容"），仅按 PDF spec 校验。
+//! （用户要求"删除绝对化内容"），仅按 spec 校验。
 //! v0.5.0：正则源改引用 `rules::patterns::PHONE.validate`，消除散布。
 
 use std::collections::HashMap;

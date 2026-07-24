@@ -2144,23 +2144,28 @@ fn preprocess_6_sources() {
         "sql records empty: {:?}",
         sql_recs,
     );
-    // SqlReader 的 headers 固定 [sql_text, statement_type]。
+    // v0.4.4：SqlReader 对含 CREATE TABLE + INSERT VALUES 的 dump 做结构化
+    // 还原——headers 来自 CREATE TABLE 列名，rows 来自 INSERT VALUES 元组。
+    // sample.sql 的 CREATE TABLE users (id, username, email) + 2 条 INSERT。
     assert_eq!(
-        sql_recs.headers, vec!["sql_text", "statement_type"],
-        "sql reader headers mismatch: {:?}",
+        sql_recs.headers, vec!["id", "username", "email"],
+        "sql reader headers mismatch (structured dump expected): {:?}",
         sql_recs.headers,
     );
-    // 多语句类型至少命中 select/insert（fixture 含这两类）。
-    let stmt_types: HashSet<&str> = sql_recs
-        .rows
-        .iter()
-        .map(|r| r.get(1).map(|s| s.as_str()).unwrap_or(""))
-        .collect();
-    assert!(
-        stmt_types.contains("select") && stmt_types.contains("insert"),
-        "sql reader must classify select/insert, got {:?}",
-        stmt_types,
+    assert_eq!(
+        sql_recs.rows.len(),
+        2,
+        "sql reader must restore 2 INSERT rows, got {:?}",
+        sql_recs.rows,
     );
+    // 第一行：(1, 'alice', 'alice@example.com')。
+    assert_eq!(sql_recs.rows[0][0], "1");
+    assert_eq!(sql_recs.rows[0][1], "alice");
+    assert_eq!(sql_recs.rows[0][2], "alice@example.com");
+    // 第二行含分号在字符串内的反例：(2, 'bob; jr', 'bob@example.com')。
+    assert_eq!(sql_recs.rows[1][0], "2");
+    assert_eq!(sql_recs.rows[1][1], "bob; jr");
+    assert_eq!(sql_recs.rows[1][2], "bob@example.com");
 
     let json_recs = read_records(&common::fixtures_dir().join("json/sample.json"))
         .expect("json read_records must succeed");

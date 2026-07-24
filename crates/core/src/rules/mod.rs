@@ -19,7 +19,10 @@ pub mod registry;
 pub mod types;
 pub mod validate_op;
 
-pub use builtin::{bankcard_extract_rule, builtin_ruleset, ip_extract_rule, phone_extract_rule};
+pub use builtin::{
+    bankcard_extract_rule, builtin_ruleset, const_replace_mask_rule, ip_extract_rule,
+    phone_extract_rule, regex_replace_mask_rule, split_template_mask_rule, template_mask_rule,
+};
 pub use loader::{load_ruleset, load_ruleset_str};
 pub use mask_op::{
     apply_mask_op, ConstReplaceOp, MaskOp, MatchMode, RegexReplaceOp, SplitTemplateOp, TemplateOp,
@@ -47,6 +50,16 @@ pub fn build_validator(
     // 失败回退到 ValidatorRegistry::get（按 scope 查内置 validator）。
     if let Some(op) = ValidateOp::from_rule(rule) {
         return Some(Box::new(op));
+    }
+    // v0.4.4：pinfo_phone 需透传 params.prefixes（自定义号段集合）到 validator
+    // 构造，而 ValidatorRegistry 工厂闭包是零参数的，无法接收运行时 params。
+    // 这里直接构造 PInfoPhoneValidator::new(rule.params)，缺省 params 走默认
+    // 52 前缀，与注册表默认工厂行为一致。语义参考 build_masker 透传 params 的做法。
+    if rule.scope == "pinfo_phone" {
+        let params = rule.params.clone().unwrap_or_default();
+        return Some(Box::new(
+            crate::validators::pinfo_phone::PInfoPhoneValidator::new(params),
+        ) as Box<dyn crate::validators::Validator>);
     }
     reg.get(&rule.scope)
 }
@@ -107,6 +120,54 @@ mod tests {
             description: None,
         };
         assert!(build_validator(&rule, &reg).is_none());
+    }
+
+    #[test]
+    fn build_validator_pinfo_phone_scope_uses_default_prefixes() {
+        // v0.4.4：scope="pinfo_phone" 无 params 时走默认 52 前缀。
+        let reg = crate::validators::default_validator_registry();
+        let rule = FieldRule {
+            field: "手机号".into(),
+            scope: "pinfo_phone".into(),
+            tag: "validate".into(),
+            params: None,
+            message: None,
+            description: None,
+        };
+        let v = build_validator(&rule, &reg).expect("pinfo_phone scope should build");
+        // 788 ∈ 默认集合
+        assert!(v.validate("78813630178").valid);
+        // 138 ∉ 默认集合
+        assert!(!v.validate("13812345678").valid);
+    }
+
+    #[test]
+    fn build_validator_pinfo_phone_scope_with_custom_prefixes_param() {
+        // v0.4.4：scope="pinfo_phone" + params.prefixes 自定义号段集合，
+        // 透传到 PInfoPhoneValidator::new，覆盖默认集合。
+        let reg = crate::validators::default_validator_registry();
+        let prefixes = Value::Sequence(vec![
+            Value::String("138".into()),
+            Value::String("159".into()),
+            Value::String("818".into()),
+        ]);
+        let mut params = HashMap::new();
+        params.insert("prefixes".to_string(), prefixes);
+        let rule = FieldRule {
+            field: "手机号".into(),
+            scope: "pinfo_phone".into(),
+            tag: "validate".into(),
+            params: Some(params),
+            message: None,
+            description: None,
+        };
+        let v = build_validator(&rule, &reg).expect("pinfo_phone with params should build");
+        // 138 / 159 / 818 ∈ 自定义集合
+        assert!(v.validate("13812345678").valid);
+        assert!(v.validate("15987654321").valid);
+        assert!(v.validate("81825660184").valid);
+        // 788 ∈ 默认集合但 ∉ 自定义集合 → 失败
+        assert!(!v.validate("78813630178").valid);
     }
 
     #[test]

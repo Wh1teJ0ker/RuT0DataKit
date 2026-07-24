@@ -1,8 +1,8 @@
 //! Validator trait 与内置校验器注册。
 //!
 //! 提供 `Validator` trait / `ValidationResult` / `RegexValidator`（YAML `regex`
-//! 兜底），以及 8 个内置业务校验器：idcard / phone / bankcard / email / ip /
-//! mac / username / name。`register_builtin_validators` 把它们注册进
+//! 兜底），以及 9 个内置业务校验器：idcard / phone / bankcard / email / ip /
+//! mac / username / name / pinfo_phone。`register_builtin_validators` 把它们注册进
 //! `ValidatorRegistry`，`default_validator_registry` 返回一个已注册全部内置校验器
 //! 的注册表。
 
@@ -13,6 +13,7 @@ pub mod ip;
 pub mod mac;
 pub mod name;
 pub mod phone;
+pub mod pinfo_phone;
 pub mod username;
 
 use std::collections::HashMap;
@@ -82,9 +83,9 @@ impl Validator for RegexValidator {
 
 /// 注册内置校验器到给定注册表。
 ///
-/// 注册：idcard / phone / bankcard / email / ip / mac / username / name，均以
-/// 默认参数构造。具体参数注入（如 mac 的 `prefix`）由调用方直接构造对应
-/// validator 实现（T0-5 pipeline）。
+/// 注册：idcard / phone / bankcard / email / ip / mac / username / name /
+/// pinfo_phone，均以默认参数构造。具体参数注入（如 mac 的 `prefix`）由调用方
+/// 直接构造对应 validator 实现（T0-5 pipeline）。
 pub fn register_builtin_validators(reg: &mut ValidatorRegistry) {
     reg.register("idcard", || {
         Box::new(idcard::IdCardValidator::new(HashMap::new()))
@@ -107,6 +108,9 @@ pub fn register_builtin_validators(reg: &mut ValidatorRegistry) {
     });
     reg.register("name", || {
         Box::new(name::NameValidator::new(HashMap::new()))
+    });
+    reg.register("pinfo_phone", || {
+        Box::new(pinfo_phone::PInfoPhoneValidator::new(HashMap::new()))
     });
 }
 
@@ -133,6 +137,7 @@ mod tests {
             "mac",
             "username",
             "name",
+            "pinfo_phone",
         ] {
             assert!(reg.contains(name), "missing builtin validator: {name}");
         }
