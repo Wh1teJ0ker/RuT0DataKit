@@ -4,6 +4,7 @@
 //! 业务领域拆分为 `commands/` 目录下 10 个子文件 + 本 `mod.rs` 入口。
 //! `main.rs` 的 `mod commands;` 由文件模块变为目录模块，`commands::<name>`
 //! 路径不变（经本文件 `pub use` 重导出）。
+//! v0.5.1 T13-2：新增 `encrypt` 子文件（加密 / 编码 4 命令），子文件数 11。
 //!
 //! 状态策略：每个 command 独立重算（v0.1.0 最简），不在 command 间缓存
 //! `MaskResult`。若需缓存可后续引入 `tauri::State<Mutex<...>>`。
@@ -19,7 +20,9 @@
 //! - [`extract`]：文本/文件 PII 提取（2 命令）
 //! - [`search`]：records 搜索（1 命令）
 //! - [`tools`]：正则工具 + SQL 解析工具（3 命令）
+//! - [`encrypt`]：加密 / 编码 单值 + 批量列（4 命令）
 
+mod encrypt;
 mod extract;
 mod export;
 mod file;
@@ -171,6 +174,7 @@ pub(super) fn write_json(
 // glob 重导出会把子模块所有 pub 项（含 `#[doc(hidden)]`）一并暴露到
 // `commands::`，使 main.rs 的 `commands::select_file` 路径及其伴随项都可达。
 
+pub use encrypt::*;
 pub use extract::*;
 pub use export::*;
 pub use file::*;
