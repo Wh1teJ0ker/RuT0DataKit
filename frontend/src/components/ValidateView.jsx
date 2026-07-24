@@ -125,9 +125,10 @@ export default function ValidateView({ state, dispatch }) {
   const summaryText = useMemo(() => {
     const s = state.validateResult && state.validateResult.summary;
     if (!s) return null;
-    const total = s.total != null ? s.total : null;
-    const validCount = s.valid_count != null ? s.valid_count : null;
-    const invalidCount = s.invalid_count != null ? s.invalid_count : null;
+    const total = s.total_rows != null ? s.total_rows : null;
+    const invalidCount = s.invalid_rows != null ? s.invalid_rows : null;
+    const validCount =
+      total != null && invalidCount != null ? total - invalidCount : null;
     const parts = [];
     if (validCount != null) parts.push(`合法 ${validCount} 行`);
     if (invalidCount != null) parts.push(`非法 ${invalidCount} 行`);
@@ -241,18 +242,26 @@ export default function ValidateView({ state, dispatch }) {
             <Space size="middle">
               <Tag color="blue" style={{ margin: 0, fontWeight: 600 }}>
                 {state.validateResult
-                  ? `校验后 ${state.validateResult.summary && state.validateResult.summary.total != null ? state.validateResult.summary.total : "-"} 行`
+                  ? `校验后 ${state.validateResult.summary && state.validateResult.summary.total_rows != null ? state.validateResult.summary.total_rows : "-"} 行`
                   : "校验后 - 行"}
               </Tag>
               {state.validateResult && state.validateResult.summary ? (
-                <>
-                  <Tag color="green" style={{ margin: 0 }}>
-                    合法 {state.validateResult.summary.valid_count != null ? state.validateResult.summary.valid_count : "-"}
-                  </Tag>
-                  <Tag color="red" style={{ margin: 0 }}>
-                    非法 {state.validateResult.summary.invalid_count != null ? state.validateResult.summary.invalid_count : "-"}
-                  </Tag>
-                </>
+                (() => {
+                  const sm = state.validateResult.summary;
+                  const t = sm.total_rows;
+                  const inv = sm.invalid_rows;
+                  const valid = t != null && inv != null ? t - inv : null;
+                  return (
+                    <>
+                      <Tag color="green" style={{ margin: 0 }}>
+                        合法 {valid != null ? valid : "-"}
+                      </Tag>
+                      <Tag color="red" style={{ margin: 0 }}>
+                        非法 {inv != null ? inv : "-"}
+                      </Tag>
+                    </>
+                  );
+                })()
               ) : null}
               <Text type="secondary" style={{ fontSize: 12 }}>
                 {state.validateResult ? "已运行校验" : "点击下方应用生成预览"}

@@ -132,8 +132,8 @@ export default function MaskView({ state, dispatch }) {
       dispatch({
         type: "SET_HINT",
         actionHint:
-          r.summary && r.summary.total != null
-            ? `已应用规则，共 ${r.summary.total} 行`
+          r.summary && r.summary.total_rows != null
+            ? `已应用规则，共 ${r.summary.total_rows} 行`
             : "已应用规则",
       });
     } catch (e) {
@@ -223,15 +223,15 @@ export default function MaskView({ state, dispatch }) {
             <Space size="middle">
               <Tag color="blue" style={{ margin: 0, fontWeight: 600 }}>
                 脱敏后{" "}
-                {state.maskedRows && state.maskedSummary && state.maskedSummary.total != null
-                  ? state.maskedSummary.total
+                {state.maskedRows && state.maskedSummary && state.maskedSummary.total_rows != null
+                  ? state.maskedSummary.total_rows
                   : "-"}{" "}
                 行
               </Tag>
               <Text type="secondary" style={{ fontSize: 12 }}>
                 {state.maskedRows
-                  ? state.maskedSummary && state.maskedSummary.total != null
-                    ? `已脱敏 ${state.maskedSummary.total} 行`
+                  ? state.maskedSummary && state.maskedSummary.total_rows != null
+                    ? `已脱敏 ${state.maskedSummary.total_rows} 行`
                     : "已脱敏"
                   : "点击下方应用生成预览"}
               </Text>
@@ -240,10 +240,10 @@ export default function MaskView({ state, dispatch }) {
         >
           {state.maskedRows ? (
             <>
-              {state.maskedSummary && state.maskedSummary.total != null ? (
+              {state.maskedSummary && state.maskedSummary.total_rows != null ? (
                 <div style={{ marginBottom: 8 }}>
                   <Text type="secondary" style={{ fontSize: 12 }}>
-                    共 {state.maskedSummary.total} 行
+                    共 {state.maskedSummary.total_rows} 行
                   </Text>
                 </div>
               ) : null}
