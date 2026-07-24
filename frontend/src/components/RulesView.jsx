@@ -240,8 +240,8 @@ function RowExpanded({ record, rowState, setRowState, state, dispatch, onRun, on
 // 规则管理视图（v0.5.x Table 化）：
 // - 启动时 state.rules 来自 builtin_ruleset()：3 条数据提取规则 + 4 条
 //   通用脱敏模版 + 4 条数据校验规则。
-// - 用 antd Table 替代竖向 Card 列表；脱敏规则参数表单默认展开（expandedRowKeys
-//   受控，初始化为所有 mask 行的 key），满足「表格内默认展开参数」。
+// - 用 antd Table 替代竖向 Card 列表；规则行默认全部收起（expandedRowKeys
+//   受控，初始化为空数组），点击行展开按钮才展开参数表单。
 // - 保留 tag 过滤 Select + 「展开/收起参数」切换按钮。
 // - mask 规则行内含参数表单 + 样例值 + 运行 + 应用并跳转；其它规则展开行显示描述全文。
 export default function RulesView({ state, dispatch }) {
@@ -283,17 +283,18 @@ export default function RulesView({ state, dispatch }) {
     return [...maskers, ...validators];
   }, [rules]);
 
-  // 默认展开所有 mask 行的参数表单。
+  // mask 行 key（保留，用于「全部展开/收起」按钮）。
   const maskKeys = React.useMemo(
     () => merged.filter((r) => r.__kind === "mask" && r.tag === "mask").map((r) => r.key),
     [merged]
   );
 
-  const [expandedKeys, setExpandedKeys] = React.useState(maskKeys);
+  // 默认全部收起，点击展开按钮才展开。
+  const [expandedKeys, setExpandedKeys] = React.useState([]);
   const maskKeysSig = maskKeys.join(",");
   React.useEffect(() => {
-    // maskers 变化时重置为默认全展开 mask 行。
-    setExpandedKeys(maskKeys);
+    // maskers 变化时重置为全部收起。
+    setExpandedKeys([]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [maskKeysSig]);
 
