@@ -7,6 +7,7 @@ import {
   Space,
   Descriptions,
   Empty,
+  Tag,
   App as AntApp,
 } from "antd";
 import {
@@ -149,11 +150,16 @@ export default function PreprocessView({ state, dispatch }) {
           title="预览"
           styles={{ body: { padding: 12 } }}
           extra={
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              {records
-                ? `共 ${records.rowCount} 行 / 显示前 ${PREVIEW_ROW_LIMIT} 行`
-                : "导入文件后此处显示预览"}
-            </Text>
+            <Space size="middle">
+              <Tag color="blue" style={{ margin: 0, fontWeight: 600 }}>
+                总行数 {records && records.rowCount != null ? records.rowCount : "-"} 行
+              </Tag>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                {records
+                  ? `共 ${records.rowCount} 行 / 显示前 ${PREVIEW_ROW_LIMIT} 行`
+                  : "导入文件后此处显示预览"}
+              </Text>
+            </Space>
           }
         >
           {records ? (

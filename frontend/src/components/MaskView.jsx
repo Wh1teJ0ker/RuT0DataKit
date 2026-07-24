@@ -8,6 +8,7 @@ import {
   Empty,
   Switch,
   Alert,
+  Tag,
   App as AntApp,
 } from "antd";
 import {
@@ -152,6 +153,9 @@ export default function MaskView({ state, dispatch }) {
           styles={{ body: { padding: 12 } }}
           extra={
             <Space size="middle">
+              <Tag color="blue" style={{ margin: 0, fontWeight: 600 }}>
+                原始数据 {rowCount != null ? rowCount : 0} 行
+              </Tag>
               {hasFiltered && (
                 <Space size="small">
                   <Switch
@@ -216,13 +220,22 @@ export default function MaskView({ state, dispatch }) {
           title="脱敏预览"
           styles={{ body: { padding: 12 } }}
           extra={
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              {state.maskedRows
-                ? state.maskedSummary && state.maskedSummary.total != null
-                  ? `已脱敏 ${state.maskedSummary.total} 行`
-                  : "已脱敏"
-                : "点击下方应用生成预览"}
-            </Text>
+            <Space size="middle">
+              <Tag color="blue" style={{ margin: 0, fontWeight: 600 }}>
+                脱敏后{" "}
+                {state.maskedRows && state.maskedSummary && state.maskedSummary.total != null
+                  ? state.maskedSummary.total
+                  : "-"}{" "}
+                行
+              </Tag>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                {state.maskedRows
+                  ? state.maskedSummary && state.maskedSummary.total != null
+                    ? `已脱敏 ${state.maskedSummary.total} 行`
+                    : "已脱敏"
+                  : "点击下方应用生成预览"}
+              </Text>
+            </Space>
           }
         >
           {state.maskedRows ? (

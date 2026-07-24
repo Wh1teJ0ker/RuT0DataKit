@@ -9,6 +9,7 @@ import {
   Typography,
   Switch,
   Alert,
+  Tag,
   App as AntApp,
 } from "antd";
 import { ArrowUpOutlined, ArrowDownOutlined, DownloadOutlined } from "@ant-design/icons";
@@ -197,6 +198,31 @@ export default function ExportView({ state, dispatch }) {
     [columnOrder, exportColumns]
   );
 
+  // 计算当前 exportSource 对应的总行数（用于预览区醒目统计条）。
+  // - raw / records → records.rowCount
+  // - masked → maskedSummary.total
+  // - validate → validateResult.summary.total
+  // - 未对应或缺失 → "-"
+  const sourceTotalRows = useMemo(() => {
+    if (exportSource === "raw" || exportSource === "records") {
+      return state.records && state.records.rowCount != null
+        ? state.records.rowCount
+        : null;
+    }
+    if (exportSource === "masked") {
+      return state.maskedSummary && state.maskedSummary.total != null
+        ? state.maskedSummary.total
+        : null;
+    }
+    if (exportSource === "validate") {
+      return state.validateResult && state.validateResult.summary &&
+        state.validateResult.summary.total != null
+        ? state.validateResult.summary.total
+        : null;
+    }
+    return null;
+  }, [exportSource, state.records, state.maskedSummary, state.validateResult]);
+
   // 计算导出参数：rulesJson + selectedRowIndices。
   // 对「原始数据」源（raw / records）传空规则集避免脱敏；校验源按行过滤筛选行索引。
   // v0.4.0 T5-13：raw/records 源且开启搜索命中行过滤时，selectedRowIndices
@@ -316,6 +342,9 @@ export default function ExportView({ state, dispatch }) {
           />
         )}
         <Space size="middle" wrap>
+          <Tag color="blue" style={{ margin: 0, fontWeight: 600 }}>
+            总行数 {sourceTotalRows != null ? sourceTotalRows : "-"} 行
+          </Tag>
           <span>
             <Text type="secondary" style={{ fontSize: 12, marginRight: 8 }}>
               源数据

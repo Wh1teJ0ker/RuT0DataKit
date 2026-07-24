@@ -6,6 +6,7 @@ import {
   Typography,
   Space,
   Empty,
+  Tag,
   App as AntApp,
 } from "antd";
 import {
@@ -181,9 +182,14 @@ export default function ValidateView({ state, dispatch }) {
           title="原始数据"
           styles={{ body: { padding: 12 } }}
           extra={
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              共 {rowCount} 行 / 显示前 {PREVIEW_ROW_LIMIT} 行
-            </Text>
+            <Space size="middle">
+              <Tag color="blue" style={{ margin: 0, fontWeight: 600 }}>
+                原始数据 {rowCount != null ? rowCount : 0} 行
+              </Tag>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                共 {rowCount} 行 / 显示前 {PREVIEW_ROW_LIMIT} 行
+              </Text>
+            </Space>
           }
         >
           {hasRecords ? (
@@ -232,9 +238,26 @@ export default function ValidateView({ state, dispatch }) {
           title="校验预览"
           styles={{ body: { padding: 12 } }}
           extra={
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              {state.validateResult ? "已运行校验" : "点击下方应用生成预览"}
-            </Text>
+            <Space size="middle">
+              <Tag color="blue" style={{ margin: 0, fontWeight: 600 }}>
+                {state.validateResult
+                  ? `校验后 ${state.validateResult.summary && state.validateResult.summary.total != null ? state.validateResult.summary.total : "-"} 行`
+                  : "校验后 - 行"}
+              </Tag>
+              {state.validateResult && state.validateResult.summary ? (
+                <>
+                  <Tag color="green" style={{ margin: 0 }}>
+                    合法 {state.validateResult.summary.valid_count != null ? state.validateResult.summary.valid_count : "-"}
+                  </Tag>
+                  <Tag color="red" style={{ margin: 0 }}>
+                    非法 {state.validateResult.summary.invalid_count != null ? state.validateResult.summary.invalid_count : "-"}
+                  </Tag>
+                </>
+              ) : null}
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                {state.validateResult ? "已运行校验" : "点击下方应用生成预览"}
+              </Text>
+            </Space>
           }
         >
           {state.validateResult ? (
