@@ -39,6 +39,7 @@ fn main() {
             commands::extract_file,
             commands::export_extract,
             commands::trial_mask,
+            commands::trial_validate,
             commands::encrypt_text,
             commands::decrypt_text,
             commands::encrypt_columns,
