@@ -1,104 +1,72 @@
-# TASK-BOARD — v0.6.2 数据校验通用规则：正则校验（release_complete）
+# TASK-BOARD — v0.6.3 脱敏/校验总行数 BUG 修复 + 正则构造可视化积木重构（release_complete）
 
-> 版本：v0.6.2
-> 创建：2026-07-24
-> 完成：2026-07-24
-> 依赖版本：v0.6.1（release_complete @ 48bb419）
-> 依据：用户 goal「加入数据校验通用规则，正则校验」
+> 版本：v0.6.3
+> 创建：2026-07-23
+> 完成：2026-07-23
+> 依赖版本：v0.6.2（release_complete @ 860671c）
+> 依据：用户 goal「① 校验后 - 行 显示总行数 BUG；脱敏后 - 行 同样问题；② Tools 正则解析的构造重构为可视化积木构建」
 > **状态：release_complete（qa_passed）**
 
 ## 任务 DAG（全部 done）
 
 ```yaml
-goal: 加入内置正则校验通用规则（scope="regex", tag="validate"），用户在 RulesView
-  填写自定义正则 pattern + 失败消息，试运行验证，应用并跳转到数据校验视图绑定列。
-  与现有脱敏模版 UX 完全对称。bump 0.6.2，全链路验收通过。
-version: 0.6.2
-depends_on_version: 0.6.1
+goal: 修复脱敏/校验视图总行数显示 BUG（前端字段名对齐 total_rows/invalid_rows/
+  masked_rows）；RegexTool 构造 Tab 由自然语言描述重构为可视化积木构建（点选
+  数字/字母/至少一次等模块拼装正则，纯客户端，不外发数据）。bump 0.6.3，
+  全链路验收通过。
+version: 0.6.3
+depends_on_version: 0.6.2
 tasks:
-  - id: T17-1
-    title: Core 添加 regex 内置校验规则（regex_validate_rule）
-    status: done  # builtin.rs:199 + mod.rs:24 + 2 新测试，cargo test 493 passed
-  - id: T17-2
-    title: Tauri 添加 trial_validate 命令
-    status: done  # validate.rs:64 + main.rs:42，Value::Null 修复，cargo build 0 error
-  - id: T17-3
-    title: Frontend RulesView 校验参数表单 + 试运行 + 应用
-    status: done  # tauri.js trialValidate + RulesView VALIDATE_PARAM_META/getParamMeta/
-                  # runValidateTrialForRow/applyValidateForRow，npm build 绿
-  - id: T17-4
-    title: 版本号 bump 0.6.1→0.6.2（4 manifest）+ docs 同步 + QA 报告
+  - id: T18-1
+    title: 修复脱敏/校验视图总行数显示（前端字段名对齐）
+    status: done  # MaskView.jsx 5 处 .total→.total_rows；
+                  # ValidateView.jsx 4 处 .total→.total_rows / .invalid_count→.invalid_rows /
+                  # .valid_count→计算 total_rows-invalid_rows；npm build 绿
+  - id: T18-2
+    title: RegexTool 构造 Tab 改为可视化积木构建
+    status: done  # 新增 RegexConstructTab.jsx（~300 LOC，5 类 21 模块 + 3 预设 +
+                  # 参数弹窗 + 测试高亮）；RegexTool.jsx import 替换原 ConstructTab；
+                  # 后端 regex_construct.rs 保留；npm build 绿（3009 modules +1）
+  - id: T18-3
+    title: 版本号 bump 0.6.2→0.6.3（4 manifest）+ docs 同步 + QA 报告
     status: done  # 本任务
 ```
 
 任务 DAG 结构：
 
 ```
-T17-1 (core builtin) ─┐
-                       ├─→ T17-3 (frontend) ─→ T17-4 (version+docs+QA)
-T17-2 (tauri command) ─┘
+T18-1 (frontend field-name fix) ─┐
+                                 ├─→ T18-3 (version+docs+QA)
+T18-2 (regex building-block UI) ─┘
 ```
 
-T17-1 和 T17-2 无文件交集，并行实施。T17-3 依赖两者。T17-4 最后。
+T18-1 和 T18-2 无文件交集（MaskView/ValidateView vs RegexTool），可并行实施。
 
-## E2E 验收结果
+## E2E 验收
 
-| 项 | 验证命令 | 结果 |
-|----|----------|------|
-| 前端构建 | `npm --prefix frontend run build` | vite 3008 modules built，2.21s ✅ |
-| 核心测试 | `cargo test --workspace` | 493 passed / 0 failed / 5 ignored ✅（比 v0.6.1 基线 491 +2） |
-| 核心编译 | `cargo build -p ruT0-data-kit-core` | 0 error，1 warning（历史遗留 crate 名） ✅ |
-| Tauri 编译 | `cargo build --manifest-path src-tauri/Cargo.toml` | 0 error ✅ |
-| grep regex_validate_rule | `grep -rn regex_validate_rule crates/core/src/rules/builtin.rs mod.rs` | builtin.rs:48/199/554/567 + mod.rs:24 ✅ |
-| grep trial_validate | `grep -rn trial_validate src-tauri/src/commands/validate.rs main.rs` | validate.rs:1/64 + main.rs:42 ✅ |
-| grep VALIDATE_PARAM_META | `grep -n VALIDATE_PARAM_META RulesView.jsx tauri.js` | RulesView.jsx:75/85 + tauri.js:324 ✅ |
-| 版本号一致 | 4 manifest grep | 全部 0.6.2 ✅ |
+- `cargo test --workspace`：493 passed / 0 failed / 5 ignored（与 v0.6.2 基线一致，无 Rust 变更）✅
+- `cargo build --manifest-path src-tauri/Cargo.toml`：0 error ✅
+- `npm --prefix frontend run build`：vite build 3009 modules（+1 对比 v0.6.2），0 error ✅
+- grep 验证：
+  - MaskView/ValidateView `.total_rows`/`.invalid_rows`/`.masked_rows` 命中（14 行）✅
+  - 无残留 `.total`/`.valid_count`/`.invalid_count`（0 命中）✅
+  - `RegexConstructTab` / `BLOCK_MODULES` / `PRESETS` 关键符号到位 ✅
+  - 4 处 manifest 版本号 0.6.3 ✅
 
-## Release QA 门禁
+## QA 门禁
 
-- required: true → **passed**
-- report: `docs/qa/versions/0.6.2/QA-审计报告.md`（结论 qa_passed）
-- 五维度全部通过：需求覆盖 / 端到端 / 构建测试 / 代码质量 / 文档一致性 / 安全隐私
-
-## 三层改动落地证据
-
-### T17-1 Core（crates/core）
-
-- `crates/core/src/rules/builtin.rs:199`：`pub fn regex_validate_rule() -> FieldRule`
-- `crates/core/src/rules/builtin.rs:48`：加入 `builtin_ruleset().validators` vec（7→8）
-- `crates/core/src/rules/mod.rs:24`：`pub use builtin::{...}` 追加 `regex_validate_rule`
-- 新增 2 测试：`regex_validate_rule_fields` + `regex_validate_rule_with_pattern_builds_and_validates`
-
-### T17-2 Tauri（src-tauri）
-
-- `src-tauri/src/commands/validate.rs:64`：`pub fn trial_validate(scope, params_json, sample_value) -> Result<Value, String>`
-- `src-tauri/src/main.rs:42`：`generate_handler!` 注册 `commands::trial_validate`
-- `Value::Null` 修复（`json!` 宏 scope 无 `null`）
-
-### T17-3 Frontend（frontend/src）
-
-- `frontend/src/tauri.js:324`：`export async function trialValidate(scope, paramsJson, sampleValue)`
-- `frontend/src/components/RulesView.jsx:75`：`VALIDATE_PARAM_META`
-- `frontend/src/components/RulesView.jsx:85`：`getParamMeta(scope)`
-- `frontend/src/components/RulesView.jsx`：`runValidateTrialForRow` + `applyValidateForRow`
-- `RowExpanded` 结果区 mask→masked / validate→valid（合法✓ / 非法✗+message）
-- 操作列有 meta 就显示按钮（不再只看 isMaskRow）
-
-### T17-4 版本 + docs
-
-- 4 manifest 版本号 0.6.1→0.6.2（Cargo.toml:8 / src-tauri/Cargo.toml:3 / tauri.conf.json:4 / frontend/package.json:4）
-- `docs/04-版本标准.md`：v0.6.2 里程碑行
-- `docs/versions/0.6.2/更新日志.md`：回填完毕
-- `docs/qa/versions/0.6.2/QA-审计报告.md`：本版本 QA 报告
+- `docs/qa/versions/0.6.3/QA-审计报告.md`：结论 `qa_passed` ✅
+- `docs/versions/0.6.3/更新日志.md`：状态 `release_complete` ✅
+- `docs/04-版本标准.md` v0.6.3 里程碑行：`release_complete` ✅
 
 ## 安全约束（不变）
 
-- 不外发数据：全本地处理；规则与样本不上传（保留 v0.1.0 §6 安全约束，v0.6.2 不变）。
-- `trial_validate` 镜像 `trial_mask`：不读文件、不落盘，只对单条样例值在内存中校验。
+`docs/00-需求文档.md §6`「不外发数据：全本地处理；规则与样本不上传」保留，v0.6.3 不变。T18-2 积木拼装纯客户端，不调用后端、不外发数据。
 
-## 收尾
+## 提交链
 
-- 三件套（HANDOFF/REPORT/REVIEW）全部清理，仅保留本 TASK-BOARD 作为版本归档。
-- `docs/04-版本标准.md` v0.6.2 里程碑行状态 `release_complete`。
-- `docs/versions/0.6.2/更新日志.md` 版本状态 `release_complete`。
-- v0.6.2 发布完成。
+```
+T18-1+T18-2 (frontend fix + rebuild) ─→ T18-3 (version+docs+QA)
+```
+
+按 v0.6.x 惯例，T18-1/T18-2 合并为一个 feat 提交（均为前端改动，无依赖耦合），T18-3 单独 chore 提交（版本号 + docs）。
