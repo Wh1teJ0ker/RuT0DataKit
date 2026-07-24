@@ -200,8 +200,8 @@ export default function ExportView({ state, dispatch }) {
 
   // 计算当前 exportSource 对应的总行数（用于预览区醒目统计条）。
   // - raw / records → records.rowCount
-  // - masked → maskedSummary.total
-  // - validate → validateResult.summary.total
+  // - masked → maskedSummary.total_rows
+  // - validate → validateResult.summary.total_rows
   // - 未对应或缺失 → "-"
   const sourceTotalRows = useMemo(() => {
     if (exportSource === "raw" || exportSource === "records") {
@@ -210,14 +210,14 @@ export default function ExportView({ state, dispatch }) {
         : null;
     }
     if (exportSource === "masked") {
-      return state.maskedSummary && state.maskedSummary.total != null
-        ? state.maskedSummary.total
+      return state.maskedSummary && state.maskedSummary.total_rows != null
+        ? state.maskedSummary.total_rows
         : null;
     }
     if (exportSource === "validate") {
       return state.validateResult && state.validateResult.summary &&
-        state.validateResult.summary.total != null
-        ? state.validateResult.summary.total
+        state.validateResult.summary.total_rows != null
+        ? state.validateResult.summary.total_rows
         : null;
     }
     return null;
