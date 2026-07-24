@@ -302,3 +302,16 @@ export async function exportExtract(findings, format, outPath) {
     outPath,
   });
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// v0.5.x RulesView 试运行：对单条样例值应用脱敏模版，返回脱敏结果。
+// 不读文件、不落盘，供用户在作用于真实数据前验证参数。
+// 返回 { ok: bool, masked: string|null, error: string|null }。
+// ─────────────────────────────────────────────────────────────────────
+export async function trialMask(scope, paramsJson, sampleValue) {
+  return tauriInvoke("trial_mask", {
+    scope,
+    paramsJson,
+    sampleValue,
+  });
+}

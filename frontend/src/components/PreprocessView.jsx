@@ -14,9 +14,8 @@ import {
   SearchOutlined,
   SafetyCertificateOutlined,
   CheckCircleOutlined,
-  CodeOutlined,
 } from "@ant-design/icons";
-import { tauriInvoke, preprocessFile, detectSqlBlindFeatures } from "../tauri.js";
+import { tauriInvoke, preprocessFile } from "../tauri.js";
 import { PREVIEW_ROW_LIMIT } from "../state.js";
 
 const { Text } = Typography;
@@ -25,8 +24,9 @@ const { Text } = Typography;
 //   ① 顶部导入按钮（调 select_file + preprocess_file）
 //   ② Descriptions 概览（源类型 / 行数 / 列数）
 //   ③ antd Table 预览（headers + 前 200 行）
-//   ④ 底部跳转按钮组（搜索 / 数据脱敏 / 数据校验 / SQL 解析）
+//   ④ 底部跳转按钮组（搜索 / 数据脱敏 / 数据校验）
 // 导入产物写入 state.records（SET_RECORDS），切 view 不重置；跳转按钮仅 dispatch SET_VIEW。
+// v0.5.x：移除 SQL 解析跳转入口（SQL 盲注自动检测 + 跳转 Tools/Sql 子面板一并删除）。
 export default function PreprocessView({ state, dispatch }) {
   const { message } = AntApp.useApp();
   const { records, loading } = state;
@@ -50,25 +50,8 @@ export default function PreprocessView({ state, dispatch }) {
         const sourceType = res.source_type || null;
         dispatch({
           type: "SET_RECORDS",
-          records: { headers, rows, rowCount, sourceType },
+          records: { headers, rows, rowCount, sourceType, filePath: chosen },
         });
-        // v0.4.1 T6-4：导入后扫描 SQL 盲注探针特征，命中则自动跳转
-        // SqlParseTool 并预填命中行。detect 失败不阻塞主流程。
-        try {
-          const detect = await detectSqlBlindFeatures(headers, rows);
-          if (detect && detect.detected) {
-            dispatch({ type: "SET_VIEW", activeView: "tools" });
-            dispatch({ type: "SET_TOOLS_ACTIVE_TAB", toolsActiveTab: "sql" });
-            dispatch({
-              type: "SET_SQL_PARSE_INPUT",
-              sqlParseInput: (detect.samples || []).join("\n"),
-            });
-            message.success("检测到 SQL 盲注特征，已自动跳转到 SQL 解析工具");
-            return;
-          }
-        } catch (e) {
-          console.warn("detect_sql_blind_features failed:", e);
-        }
         dispatch({ type: "SET_HINT", actionHint: "" });
       } catch (e) {
         showError(`预处理失败: ${e}`);
@@ -103,7 +86,6 @@ export default function PreprocessView({ state, dispatch }) {
   }, [records]);
 
   // 段 ④ 跳转按钮组：点击 dispatch SET_VIEW 切到对应 view，records 不丢。
-  // 搜索 / SQL 解析（Tools）当前 view 未实现，由 App.jsx 渲染占位 Card。
   const jumps = [
     {
       key: "search",
@@ -122,12 +104,6 @@ export default function PreprocessView({ state, dispatch }) {
       label: "数据校验",
       icon: <CheckCircleOutlined />,
       view: "validate",
-    },
-    {
-      key: "sql",
-      label: "SQL 解析",
-      icon: <CodeOutlined />,
-      view: "tools",
     },
   ];
 

@@ -16,33 +16,20 @@ import {
 } from "@ant-design/icons";
 import { applyRulesColsRecords } from "../tauri.js";
 import { PREVIEW_ROW_LIMIT } from "../state.js";
-import ColumnRuleMapper from "./ColumnRuleMapper.jsx";
+import MaskColumnMapper from "./MaskColumnMapper.jsx";
 
 const { Text } = Typography;
 
-// v0.5.0 T12-6：「不脱敏」哨兵、summarizeRule、段②映射表抽到 ColumnRuleMapper。
-// 组件不直接 dispatch 映射操作，通过 ColumnRuleMapper 回调把映射操作转成
-// dispatch（保持与现有组件一致的字符串字面量 action type）。
+// 「不脱敏」哨兵（保留以兼容旧引用，新映射组件用 allowClear 清除）。
 const NO_MASK_SENTINEL = "__no_mask__";
 
-// v0.4.0 T5-7：脱敏视图不再各自导入文件，统一消费 PreprocessView 产出的
-// state.records。无 records 时渲染 Empty 引导用户先去预处理导入。
-// 规则筛选：v0.4.4 规则引擎重构后 tag 为单值字段，r.tag === "mask" 即脱敏侧。
-function isMaskRule(r) {
-  return r.tag === "mask";
-}
-
-// 数据脱敏主视图：四段垂直——①原始数据 ②表头-规则映射 ③预览 ④操作。
-// v0.4.2 BUG 3 修正：段②下拉源从「算子模板」（listMaskOpTypes）改为
-// 「用户在 RulesView 创建的具体规则」（state.rules.maskers）。用户为每个表头
-// 选一条已创建的规则，参数随规则带入，不再在映射表里配参数。要改参数请去
-// RulesView 编辑规则。无规则时显示 Alert 引导用户去创建。
+// 数据脱敏主视图：四段垂直——①原始数据 ②表头-脱敏映射（现场选算子+填参数）③预览 ④操作。
+// v0.5.x：段②改为 MaskColumnMapper——每列直接选脱敏算子（scope）并填参数，规则
+// 作为动态 override 写入 maskOverrides（会话级，不进规则库，导入新文件时清空）。
+// 不再依赖「规则管理」全局库，参数随列现场配置。
 export default function MaskView({ state, dispatch }) {
   const { message } = AntApp.useApp();
 
-  // v0.4.0 T5-7：数据源来自 PreprocessView 的 state.records（脱敏不再各自导入文件）。
-  // 旧 SET_FILE 路径（state.headers/rows）保留兼容，但优先读 records；为空则
-  // 渲染 Empty 引导用户回到预处理视图导入文件。
   const records = state.records || null;
   const hasRecords =
     records && Array.isArray(records.headers) && records.headers.length > 0;
@@ -85,16 +72,8 @@ export default function MaskView({ state, dispatch }) {
     }));
   }, [headers]);
 
-  // 段 ② 表头-规则映射 Table
-  // v0.5.0 T12-6：抽出 ColumnRuleMapper，本视图只负责传 props + 回调 dispatch。
-  // 规则来源：会话级 maskOverrides 优先 + 全局 rules.maskers 按 field 兜底。
-  // 临时选规则只写 maskOverrides，不污染全局规则库。
-  // v0.4.2 BUG 3：下拉源是「用户创建的具体规则」（taggedMaskers），
-  // 不再是算子模板。选规则即把该规则作为 override 写入，参数随规则带入。
-  const taggedMaskers = useMemo(
-    () => (state.rules.maskers || []).filter(isMaskRule),
-    [state.rules.maskers]
-  );
+  // 段 ② 表头-脱敏映射：每列现场选 scope + 填参数，直接写 maskOverrides。
+  // 不再从全局 rules.maskers 兜底——脱敏规则是动态配置，不进规则库。
 
   // 段 ③ 预览 Table
   const previewData = useMemo(() => {
@@ -118,21 +97,11 @@ export default function MaskView({ state, dispatch }) {
   }, [headers]);
 
   // 段 ④ onApply
-  // 应用时合并 override 优先 + 全局 rules 兜底，组成临时 RuleSet。
-  // 全局规则库不被污染。v0.4.0 T5-7：全局兜底只取「无标签 或 含 mask 标签」子集，
-  // 对应 RuleSet::by_tag_mask("mask") + 无标签规则兼容。
+  // 应用时直接用 maskOverrides（每列现场配置的动态规则）组成临时 RuleSet。
+  // 全局规则库不被污染。
   const effectiveMaskers = useMemo(() => {
-    const map = new Map();
-    // 全局规则库兜底（按 mask 标签筛 + 无标签兼容）
-    for (const r of taggedMaskers) {
-      map.set(r.field, r);
-    }
-    // 会话级 override 覆盖
-    for (const r of Object.values(state.maskOverrides || {})) {
-      map.set(r.field, r);
-    }
-    return Array.from(map.values());
-  }, [taggedMaskers, state.maskOverrides]);
+    return Object.values(state.maskOverrides || {}).filter((r) => r && r.scope);
+  }, [state.maskOverrides]);
 
   const onApply = async () => {
     if (!hasRecords) {
@@ -229,26 +198,16 @@ export default function MaskView({ state, dispatch }) {
           )}
         </Card>
 
-        {/* 段 ② 表头-规则映射 */}
-        <ColumnRuleMapper
+        {/* 段 ② 表头-脱敏映射（现场选算子 + 填参数） */}
+        <MaskColumnMapper
           headers={headers}
-          rules={taggedMaskers}
           overrides={state.maskOverrides}
-          sentinel={NO_MASK_SENTINEL}
-          sentinelLabel="不脱敏"
-          ruleColumnTitle="脱敏规则"
-          noRuleTitle="暂无脱敏规则"
-          noRuleDesc="请先到「规则管理」创建脱敏规则，再回到此视图为表头映射规则"
-          hint="为每个表头选择已创建的脱敏规则；未选择则该列不脱敏。要改参数请去「规则管理」编辑规则"
           hasRecords={hasRecords}
           onSetOverride={(header, rule) =>
             dispatch({ type: "SET_MASK_OVERRIDE", header, rule })
           }
           onClearOverride={(header) =>
             dispatch({ type: "CLEAR_MASK_OVERRIDE", header })
-          }
-          onGotoRules={() =>
-            dispatch({ type: "SET_VIEW", activeView: "rules" })
           }
         />
 

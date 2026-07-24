@@ -230,9 +230,35 @@ const fileDomain = (state, action) => {
     }
     // v0.4.0 PreprocessView 导入产物：整体覆盖 records（headers/rows/rowCount/sourceType）。
     // 切 view 不重置；只在导入新文件时覆盖。mask/validate/export 后续从此读取。
+    // v0.5.x 修复：SET_RECORDS 是 PreprocessView（主导入入口）的唯一路径，
+    // 必须像 SET_FILE 一样级联初始化列配置（columnOrder/exportColumns/
+    // selectedColumns）并清空上一次脱敏/校验结果与会话级映射，否则 ExportView
+    // 因 columnOrder 为空而显示空白 Table。
     case ACTION.RECORDS_SET: {
       const { records } = action;
-      return { ...state, records };
+      const headers = records?.headers || [];
+      // v0.5.x 修复：PreprocessView 是主导入入口，但旧 ExportView 仍从
+      // state.filePath 取后端导出 inputPath。若 SET_RECORDS 不回填 filePath，
+      // 导出会传 null → "invalid type: null, expected a string"。此处把
+      // records.filePath 同步到顶层 filePath（records 对象内也保留一份）。
+      const filePath = records?.filePath ?? null;
+      return {
+        ...state,
+        records,
+        filePath,
+        // 导入新文件时清空上一次脱敏 / 校验结果。
+        maskedRows: null,
+        maskedSummary: null,
+        validateResult: null,
+        // 会话级映射与具体文件绑定，导入新文件时清空（不污染全局规则库）。
+        maskOverrides: {},
+        validateOverrides: {},
+        // 默认全选全部数据列，列顺序 = headers，导出列 = headers。
+        selectedColumns: [...headers],
+        columnOrder: [...headers],
+        exportColumns: [...headers],
+        actionHint: "",
+      };
     }
     default:
       return state;

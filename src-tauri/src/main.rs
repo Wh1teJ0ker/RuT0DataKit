@@ -38,6 +38,11 @@ fn main() {
             commands::extract_text,
             commands::extract_file,
             commands::export_extract,
+            commands::trial_mask,
+            commands::encrypt_text,
+            commands::decrypt_text,
+            commands::encrypt_columns,
+            commands::decrypt_columns,
         ])
         .run(tauri::generate_context!())
         .expect("error while running RuT0DataKit GUI");

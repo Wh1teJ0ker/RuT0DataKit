@@ -251,6 +251,15 @@ export default function ExportView({ state, dispatch }) {
       return;
     }
     const { rulesJson, selectedRowIndices } = computeExportArgs();
+    // v0.5.x：inputPath 优先用 state.filePath（SET_FILE / SET_RECORDS 回填），
+    // 缺失时回退到 records.filePath（兼容历史 records-only 导入路径）。
+    // 两者皆空说明未从文件导入（如手工粘贴），后端导出命令需要文件路径，
+    // 此时直接报错而非传 null（否则 Tauri 反序列化报 "invalid type: null"）。
+    const inputPath = filePath || state?.records?.filePath || null;
+    if (!inputPath) {
+      message.error("缺少原始文件路径，无法导出（请从「数据预处理」重新导入文件）");
+      return;
+    }
     const ext =
       exportFormat === "xlsx" ? "xlsx" : exportFormat === "json" ? "json" : "csv";
     const defaultName = `export_${Date.now()}.${ext}`;
@@ -262,7 +271,7 @@ export default function ExportView({ state, dispatch }) {
     dispatch({ type: "SET_HINT", actionHint: "正在导出..." });
     try {
       const args = [
-        filePath,
+        inputPath,
         rulesJson,
         exportColumns,
         columnOrder,
