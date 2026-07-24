@@ -278,13 +278,8 @@ fn extract_create_table_columns(content: &str, create_pos: usize) -> Option<Vec<
 
 /// 从单个列定义行（如 `` `编号` int(255) NOT NULL AUTO_INCREMENT ``）
 /// 提取列名（去反引号）。若首 token 不是反引号字符串也不是裸标识符，
-/// 返回原字符串 trim。接收字节切片以正确处理 UTF-8 多字节列名。
-fn extract_col_name_from_def(def: &str) -> String {
-    extract_col_name_from_def_bytes(def.as_bytes())
-}
-
-/// `extract_col_name_from_def` 的字节版：直接处理 `[u8]`，避免 `b as char`
-/// 把 UTF-8 多字节序列拆散导致乱码。
+/// 返回原字符串 trim。直接处理 `[u8]`，避免 `b as char` 把 UTF-8 多
+/// 字节序列拆散导致乱码。
 fn extract_col_name_from_def_bytes(def: &[u8]) -> String {
     // trim 前后 ASCII 空白。
     let mut start = 0;

@@ -96,7 +96,7 @@ mod tests {
     }
 
     #[test]
-    fn pdf_example_valid() {
+    fn spec_example_valid() {
         // 规范示例行：78813630178（前缀 788 ∈ 集合）
         assert!(v().validate("78813630178").valid);
         // 注：规范另一示例 81825660184 前缀 818 不在集合内，与 spec 矛盾，
