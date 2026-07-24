@@ -177,44 +177,102 @@ struct ExtractItem {
 
 /// 把 findings 按指定格式（txt/csv/json）写到 out_path。
 ///
-/// txt 格式：每行 `type_value`（小写 type + 下划线，匹配 PDF spec）。
-/// csv 格式：type,value 两列（复用 write_csv）。
-/// json 格式：结构化数组（复用 write_json）。
+/// v0.6.4 T19-2：支持自定义：
+/// - `template`（txt）：占位符 `{type}` / `{value}`，默认 `{type}_{value}`。
+/// - `selected_columns` / `column_order`（csv/json）：字段勾选 + 顺序，
+///   默认 `["type","value"]`。
+/// 行级过滤由前端传入子集 findings 实现（勾选行导出），后端不再单列行索引参数。
 #[tauri::command]
 pub fn export_extract(
     findings_json: String,
     format: String,
     out_path: String,
+    template: Option<String>,
+    selected_columns: Option<Vec<String>>,
+    column_order: Option<Vec<String>>,
 ) -> Result<(), String> {
     let items: Vec<ExtractItem> = serde_json::from_str(&findings_json)
         .map_err(|e| format!("findings_json 解析失败: {e}"))?;
+
+    // csv/json 共用：解析最终输出列顺序（默认 ["type","value"]）。
+    let resolve_order = || -> Vec<String> {
+        let default_cols = vec!["type".to_string(), "value".to_string()];
+        let selected = selected_columns
+            .as_ref()
+            .filter(|v| !v.is_empty())
+            .map(|v| v.as_slice())
+            .unwrap_or_else(|| default_cols.as_slice());
+        let selected_set: HashSet<&str> =
+            selected.iter().map(|s| s.as_str()).collect();
+        let order = column_order
+            .as_ref()
+            .filter(|v| !v.is_empty())
+            .map(|v| v.as_slice())
+            .unwrap_or_else(|| selected);
+        // column_order 中保留在 selected 的；再补 selected 中未列出的（按原序）
+        let mut out: Vec<String> = order
+            .iter()
+            .filter(|c| {
+                selected_set.contains(c.as_str())
+                    && (c.as_str() == "type" || c.as_str() == "value")
+            })
+            .cloned()
+            .collect();
+        for c in selected {
+            if !out.contains(c) && (c.as_str() == "type" || c.as_str() == "value") {
+                out.push(c.clone());
+            }
+        }
+        if out.is_empty() {
+            default_cols
+        } else {
+            out
+        }
+    };
+
     match format.as_str() {
         "txt" => {
+            let tpl = template
+                .as_ref()
+                .filter(|s| !s.is_empty())
+                .map(|s| s.as_str())
+                .unwrap_or("{type}_{value}");
             let mut buf = String::new();
             for it in &items {
-                buf.push_str(&format!("{}_{}\n", it.r#type, it.value));
+                let line = tpl.replace("{type}", &it.r#type).replace("{value}", &it.value);
+                buf.push_str(&line);
+                buf.push('\n');
             }
-            // 去掉末尾多余换行
             if buf.ends_with('\n') {
                 buf.pop();
             }
             std::fs::write(&out_path, buf).map_err(|e| format!("写入失败: {e}"))
         }
-        "csv" => {
-            let headers = vec!["type".to_string(), "value".to_string()];
+        "csv" | "json" => {
+            let order = resolve_order();
+            let headers = order.clone();
             let rows: Vec<Vec<String>> = items
                 .iter()
-                .map(|it| vec![it.r#type.clone(), it.value.clone()])
+                .map(|it| {
+                    order
+                        .iter()
+                        .map(|c| {
+                            if c == "type" {
+                                it.r#type.clone()
+                            } else if c == "value" {
+                                it.value.clone()
+                            } else {
+                                String::new()
+                            }
+                        })
+                        .collect()
+                })
                 .collect();
-            write_csv(&headers, &rows, &out_path)
-        }
-        "json" => {
-            let headers = vec!["type".to_string(), "value".to_string()];
-            let rows: Vec<Vec<String>> = items
-                .iter()
-                .map(|it| vec![it.r#type.clone(), it.value.clone()])
-                .collect();
-            write_json(&headers, &rows, &out_path)
+            if format == "csv" {
+                write_csv(&headers, &rows, &out_path)
+            } else {
+                write_json(&headers, &rows, &out_path)
+            }
         }
         _ => Err(format!("unsupported format: {format}")),
     }

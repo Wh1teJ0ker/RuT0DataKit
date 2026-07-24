@@ -597,7 +597,14 @@ const extractDomain = (state, action) => {
   switch (action.type) {
     case ACTION.EXTRACT_MODE_SET: {
       const { extractMode } = action;
-      return { ...state, extractMode };
+      // v0.6.4 T19-1：切 Tab 清空对方输入与结果（符合 docs/01-页面与交互说明.md:292
+      // 「切换 Radio 时清空当前输入与结果」隔离要求）。规则选择与 tag 过滤保留。
+      return {
+        ...state,
+        extractMode,
+        extractInput: "",
+        extractResult: null,
+      };
     }
     case ACTION.EXTRACT_INPUT_SET: {
       const { extractInput } = action;

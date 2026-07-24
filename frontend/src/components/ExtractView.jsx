@@ -38,13 +38,25 @@ const TYPE_COLORS = {
   name: "red",
 };
 
+// v0.6.4 T19-2：csv/json 字段元数据（提取结果只有 type/value 两列）。
+const FIELD_META = [
+  { key: "type", label: "类型" },
+  { key: "value", label: "值" },
+];
+
+// localStorage 键：txt 模板持久化。
+const TXT_TEMPLATE_KEY = "extractTxtTemplate";
+
 // v0.4.3 T9-5 数据提取视图；v0.4.4 T10-3 加「规则选择」Card。
+// v0.6.4 T19-1+T19-2：
+//   - 切 Radio 清空对方输入与结果（state.js EXTRACT_MODE_SET 级联清空）
+//   - 导出：txt 模板可填 + csv/json 字段勾选/调序 + 结果表 rowSelection 单/批量导出
 // 5 Card 结构：
 //   ① 输入：Radio 切文件导入 | 文本粘贴
 //   ② 规则选择：从 state.rules.validators 勾选要应用的规则（Checkbox.Group）+ tag 过滤
 //   ③ 操作：开始提取按钮（按 extractMode + 选中规则构造 rulesJson 调 extractFile/extractText）
-//   ④ 结果：顶部计数 Tag（动态遍历 counts）+ antd Table（type/value 两列）
-//   ⑤ 导出：三按钮（txt/csv/json）调 saveDialog + exportExtract
+//   ④ 结果：顶部计数 Tag（动态遍历 counts）+ antd Table（type/value 两列 + rowSelection）
+//   ⑤ 导出：txt 模板输入 + csv/json 字段勾选调序 + 三按钮（txt/csv/json）+ 勾选行子集导出
 // loading 期间禁用按钮防重入；错误走 antd message。
 export default function ExtractView({ state, dispatch }) {
   const { message } = AntApp.useApp();
@@ -57,6 +69,18 @@ export default function ExtractView({ state, dispatch }) {
     extractSelectedIndices,
     extractRuleTagFilter,
   } = state;
+
+  // v0.6.4 T19-2：导出自定义本地 state。
+  const [txtTemplate, setTxtTemplate] = useState(
+    () => localStorage.getItem(TXT_TEMPLATE_KEY) || ""
+  );
+  const [exportColumns, setExportColumns] = useState(["type", "value"]);
+  const [columnOrder, setColumnOrder] = useState(["type", "value"]);
+  // 结果表行勾选（行号数组，对应 findings 下标）。
+  const [selectedFindingKeys, setSelectedFindingKeys] = useState([]);
+  // v0.6.4 T19-3：分页受控。
+  const [pageCurrent, setPageCurrent] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
 
   // tag 候选列表（仿 RulesView），规则库变化时刷新。
   const [tagOptions, setTagOptions] = useState([]);
@@ -129,6 +153,8 @@ export default function ExtractView({ state, dispatch }) {
           ? await extractFile(extractInput, rulesJson)
           : await extractText(extractInput, rulesJson);
       dispatch({ type: "SET_EXTRACT_RESULT", extractResult: result });
+      setSelectedFindingKeys([]); // 新结果清空勾选
+      setPageCurrent(1);
       message.success(`提取完成：${result.findings.length} 条`);
     } catch (e) {
       message.error(`提取失败：${e}`);
@@ -137,16 +163,54 @@ export default function ExtractView({ state, dispatch }) {
     }
   };
 
+  const handleTxtTemplateChange = (v) => {
+    setTxtTemplate(v);
+    localStorage.setItem(TXT_TEMPLATE_KEY, v);
+  };
+
+  const toggleColumn = (col, checked) => {
+    const next = checked
+      ? [...exportColumns, col]
+      : exportColumns.filter((c) => c !== col);
+    setExportColumns(next);
+  };
+
+  const moveColumn = (from, to) => {
+    if (to < 0 || to >= columnOrder.length) return;
+    const next = [...columnOrder];
+    const [item] = next.splice(from, 1);
+    next.splice(to, 0, item);
+    setColumnOrder(next);
+  };
+
   const handleExport = async (format) => {
-    if (!extractResult?.findings?.length) {
+    const all = extractResult?.findings || [];
+    if (!all.length) {
       message.warning("无可导出的结果");
       return;
     }
+    // 勾选了子集就导出子集，否则全量
+    const subset =
+      selectedFindingKeys.length > 0
+        ? selectedFindingKeys
+            .slice()
+            .sort((a, b) => a - b)
+            .map((i) => all[i])
+            .filter(Boolean)
+        : all;
     const outPath = await saveDialog(`extract.${format}`, format);
     if (!outPath) return;
     try {
-      await exportExtract(extractResult.findings, format, outPath);
-      message.success(`已导出：${outPath}`);
+      await exportExtract(subset, format, outPath, {
+        template: format === "txt" ? txtTemplate || null : null,
+        selectedColumns: format !== "txt" ? exportColumns : null,
+        columnOrder: format !== "txt" ? columnOrder : null,
+      });
+      const scope =
+        selectedFindingKeys.length > 0
+          ? `选中 ${subset.length} 条`
+          : `全部 ${subset.length} 条`;
+      message.success(`已导出（${scope}）：${outPath}`);
     } catch (e) {
       message.error(`导出失败：${e}`);
     }
@@ -163,6 +227,8 @@ export default function ExtractView({ state, dispatch }) {
     return Object.entries(extractResult.counts);
   }, [extractResult]);
 
+  const findingsCount = extractResult?.findings?.length || 0;
+
   return (
     <Spin spinning={extractLoading}>
       <Card title="输入">
@@ -176,6 +242,9 @@ export default function ExtractView({ state, dispatch }) {
           <Radio.Button value="file">文件导入</Radio.Button>
           <Radio.Button value="text">文本粘贴</Radio.Button>
         </Radio.Group>
+        <Text type="secondary" style={{ display: "block", marginBottom: 8, fontSize: 12 }}>
+          切换模式会清空当前输入与结果，文件导入与文本粘贴数据互不串扰。
+        </Text>
         {extractMode === "file" ? (
           <div>
             <Button onClick={handleSelectFile}>选择 .txt 文件</Button>
@@ -296,22 +365,109 @@ export default function ExtractView({ state, dispatch }) {
               ))
             )}
           </Space>
+          {selectedFindingKeys.length > 0 && (
+            <div style={{ marginBottom: 8 }}>
+              <Tag color="processing">已勾选 {selectedFindingKeys.length} 条</Tag>
+              <Button
+                size="small"
+                type="link"
+                onClick={() => setSelectedFindingKeys([])}
+              >
+                清除勾选
+              </Button>
+            </div>
+          )}
           <Table
             dataSource={extractResult.findings}
             columns={columns}
             rowKey={(r, i) => i}
             size="small"
-            pagination={{ pageSize: 50 }}
+            rowSelection={{
+              selectedRowKeys: selectedFindingKeys,
+              onChange: (keys) => setSelectedFindingKeys(keys),
+            }}
+            pagination={{
+              current: pageCurrent,
+              pageSize,
+              showSizeChanger: true,
+              pageSizeOptions: [10, 20, 50, 100],
+              onChange: (page, ps) => {
+                setPageCurrent(page);
+                setPageSize(ps);
+              },
+              onShowSizeChange: (page, ps) => {
+                setPageCurrent(1);
+                setPageSize(ps);
+              },
+              showTotal: (t) => `共 ${t} 条`,
+            }}
           />
         </Card>
       )}
 
-      {extractResult?.findings?.length > 0 && (
+      {findingsCount > 0 && (
         <Card title="导出" style={{ marginTop: 16 }}>
-          <Space>
-            <Button onClick={() => handleExport("txt")}>导出 TXT</Button>
-            <Button onClick={() => handleExport("csv")}>导出 CSV</Button>
-            <Button onClick={() => handleExport("json")}>导出 JSON</Button>
+          <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              {selectedFindingKeys.length > 0
+                ? `将导出勾选的 ${selectedFindingKeys.length} 条（共 ${findingsCount} 条）`
+                : `将导出全部 ${findingsCount} 条（在结果表勾选行可改为仅导出勾选行）`}
+            </Text>
+
+            {/* txt 模板 */}
+            <div>
+              <Text type="secondary" style={{ fontSize: 12, marginRight: 8 }}>
+                TXT 模板：
+              </Text>
+              <Input
+                style={{ width: 320 }}
+                placeholder="{type}_{value}（默认）"
+                value={txtTemplate}
+                onChange={(e) => handleTxtTemplateChange(e.target.value)}
+              />
+              <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+                占位符 {`{type}`} / {`{value}`}，留空为默认 {`{type}_{value}`}
+              </Text>
+            </div>
+
+            {/* csv/json 字段勾选 + 调序 */}
+            <div>
+              <Text type="secondary" style={{ fontSize: 12, marginRight: 8 }}>
+                CSV/JSON 字段：
+              </Text>
+              {columnOrder.map((h, idx) => (
+                <Space key={h} size="small" style={{ marginRight: 8 }}>
+                  <Checkbox
+                    checked={exportColumns.includes(h)}
+                    onChange={(e) => toggleColumn(h, e.target.checked)}
+                  >
+                    {FIELD_META.find((m) => m.key === h)?.label || h}
+                  </Checkbox>
+                  <Button
+                    size="small"
+                    type="text"
+                    disabled={idx === 0}
+                    onClick={() => moveColumn(idx, idx - 1)}
+                  >
+                    ↑
+                  </Button>
+                  <Button
+                    size="small"
+                    type="text"
+                    disabled={idx === columnOrder.length - 1}
+                    onClick={() => moveColumn(idx, idx + 1)}
+                  >
+                    ↓
+                  </Button>
+                </Space>
+              ))}
+            </div>
+
+            <Space>
+              <Button onClick={() => handleExport("txt")}>导出 TXT</Button>
+              <Button onClick={() => handleExport("csv")}>导出 CSV</Button>
+              <Button onClick={() => handleExport("json")}>导出 JSON</Button>
+            </Space>
           </Space>
         </Card>
       )}
