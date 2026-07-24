@@ -239,6 +239,42 @@ maskers:
 
 应用结果（对 `12345678`）：`12####78`。
 
+### GUI 数据脱敏（v0.5.x）
+
+「数据脱敏」视图的段②「表头-脱敏映射」是动态配置：每个表头一行，现场选脱敏算子（scope）
+并填参数，直接写会话级 `maskOverrides`，不进规则库、不落盘（导入新文件时清空）。无需先到
+「规则管理」创建规则——脱敏是按数据现场填参数的一次性动作。
+
+「规则管理」视图的 4 条脱敏模版（`template` / `split_template` / `regex_replace` /
+`const_replace`，tag=`mask`，params=`None`）是**内置只读**的，每条带「试运行」面板：填参数 +
+样例值 → 点「运行」调 `trial_mask` 命令 → 立即看到脱敏结果，用于在作用于真实数据前验证参数
+是否正确（试运行只算单条样例值，不读文件、不落盘）。
+
+可选算子（scope）：
+
+| scope | 参数 | 适用 |
+| --- | --- | --- |
+| `template` | keep_prefix / keep_suffix / mask_min_len / min_len / max_len / mask_char / cjk | 通用替换脱敏（保留首尾 + 中间打码） |
+| `split_template` | 上述 7 个 + separator / segment_index | 邮箱等切分后脱敏 |
+| `regex_replace` | pattern / replacement / match_mode | 正则替换 |
+| `const_replace` | with | 整列替换为常量 |
+
+按《数据脱敏规范文档》（`tests/fixtures/samples/tips/附件/数据脱敏规范文档.pdf`），导入
+`tests/fixtures/samples/csv/sample_mask_spec.csv` 后，每个表头选 `template` 算子并按下表填
+参数即可复现 PDF §4.2 脱敏结果（编号/性别两列不选算子即不脱敏）：
+
+| 表头 | keep_prefix | keep_suffix | mask_min_len | min_len | max_len | cjk | 结果示例 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 姓名 | — | — | — | — | — | true | 张三→张*、李小明→李*明、欧阳修华→欧**华 |
+| 身份证号 | 6 | 4 | 8 | 18 | 18 | false | 110101199001011234→110101********1234 |
+| 手机号 | 3 | 4 | 4 | 11 | 11 | false | 13812345678→138****5678 |
+| 出生日期 | 8 | 0 | 2 | — | — | false | 1990-01-15→1990-01-** |
+| 银行卡号 | 4 | 4 | 1 | — | — | false | 6222021234567890123→6222***********0123 |
+
+> cjk=true 走中文姓名分支（n=2→首*、n=3→首*末、n≥3→首+*(n-2)+末），此时 keep_prefix/
+> keep_suffix 被忽略，仅 mask_char / min_len / max_len guard 生效。其它规则靠 keep_prefix +
+> keep_suffix + mask_min_len 三参数即可复现。空字段不填让后端默认生效。
+
 ## 开发指南
 
 ### 仓库布局
