@@ -44,6 +44,8 @@ pub fn builtin_ruleset() -> RuleSet {
             name_validate_rule(),
             idcard_validate_rule(),
             pinfo_phone_validate_rule(),
+            // 数据校验（tag="validate"，通用正则）
+            regex_validate_rule(),
         ],
         maskers: vec![
             template_mask_rule(),
@@ -186,6 +188,25 @@ pub fn pinfo_phone_validate_rule() -> FieldRule {
     }
 }
 
+/// 通用正则校验规则：scope="regex"，tag="validate"，field="自定义正则"。
+///
+/// 用户在 RulesView 填写 `params.pattern`（正则）+ 可选 `params.message`（失败消息）
+/// + `params.empty_message`（空值失败消息），试运行验证后再到数据校验视图
+/// 把规则绑定到具体列。`ValidateOp::from_rule` 按 `scope="regex"` 构造 `RegexOp`。
+///
+/// params 默认为 None（出厂无参数）；用户填参数后由 `SET_VALIDATE_OVERRIDE`
+/// 写入 `validateOverrides`，校验 pipeline 走 `build_validator` → `ValidateOp::from_rule`。
+pub fn regex_validate_rule() -> FieldRule {
+    FieldRule {
+        field: "自定义正则".into(),
+        scope: "regex".into(),
+        tag: "validate".into(),
+        params: None,
+        message: None,
+        description: Some("正则校验（自定义 pattern）".into()),
+    }
+}
+
 // ── v0.5.x 内置脱敏模版（4 条，tag="mask"，params=None）──────────────────
 //
 // 这 4 条是「替换模版」家族的四种 scope，覆盖数据脱敏规范全部
@@ -275,8 +296,8 @@ mod tests {
     #[test]
     fn builtin_ruleset_has_three_extract_rules() {
         let rs = builtin_ruleset();
-        // 3 extract + 4 validate = 7 validators
-        assert_eq!(rs.validators.len(), 7);
+        // 3 extract + 5 validate = 8 validators
+        assert_eq!(rs.validators.len(), 8);
         assert_eq!(rs.maskers.len(), 4);
         // phone extract
         assert_eq!(rs.validators[0].field, "phone");
@@ -306,6 +327,10 @@ mod tests {
         assert_eq!(rs.validators[6].field, "手机号码");
         assert_eq!(rs.validators[6].scope, "pinfo_phone");
         assert_eq!(rs.validators[6].tag, "validate");
+        // regex validate
+        assert_eq!(rs.validators[7].field, "自定义正则");
+        assert_eq!(rs.validators[7].scope, "regex");
+        assert_eq!(rs.validators[7].tag, "validate");
         // 4 mask templates
         assert_eq!(rs.maskers[0].scope, "template");
         assert_eq!(rs.maskers[1].scope, "split_template");
@@ -523,6 +548,44 @@ mod tests {
         assert!(r.params.is_none());
         assert!(r.message.is_none());
         assert!(r.description.is_some());
+    }
+
+    #[test]
+    fn regex_validate_rule_fields() {
+        let r = regex_validate_rule();
+        assert_eq!(r.field, "自定义正则");
+        assert_eq!(r.scope, "regex");
+        assert_eq!(r.tag, "validate");
+        assert!(r.params.is_none());
+        assert!(r.message.is_none());
+        assert_eq!(r.description.as_deref(), Some("正则校验（自定义 pattern）"));
+    }
+
+    /// 内置 regex 规则（带用户 params.pattern）能通过 ValidateOp::from_rule
+    /// 构造 RegexOp，并正确校验样例值。
+    #[test]
+    fn regex_validate_rule_with_pattern_builds_and_validates() {
+        use crate::rules::validate_op::{apply_validate_op, ValidateOp};
+        use serde_yml::Value;
+        use std::collections::HashMap;
+
+        let mut params = HashMap::new();
+        params.insert(
+            "pattern".into(),
+            Value::String(r"^\d{4}-\d{2}-\d{2}$".into()),
+        );
+        params.insert("message".into(), Value::String("日期格式应为 YYYY-MM-DD".into()));
+        let rule = FieldRule {
+            field: "日期".into(),
+            scope: "regex".into(),
+            tag: "validate".into(),
+            params: Some(params),
+            message: None,
+            description: None,
+        };
+        let op = ValidateOp::from_rule(&rule).expect("regex op from rule");
+        assert!(apply_validate_op(&op, "2026-07-24").valid);
+        assert!(!apply_validate_op(&op, "2026/07/24").valid);
     }
 
     /// validate_pipeline 用内置规则集校验符合规范列结构的 CSV：合法行全 true。

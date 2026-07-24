@@ -21,7 +21,8 @@ pub mod validate_op;
 
 pub use builtin::{
     bankcard_extract_rule, builtin_ruleset, const_replace_mask_rule, ip_extract_rule,
-    phone_extract_rule, regex_replace_mask_rule, split_template_mask_rule, template_mask_rule,
+    phone_extract_rule, regex_replace_mask_rule, regex_validate_rule, split_template_mask_rule,
+    template_mask_rule,
 };
 pub use loader::{load_ruleset, load_ruleset_str};
 pub use mask_op::{
