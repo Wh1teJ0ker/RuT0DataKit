@@ -15,7 +15,7 @@ import {
   ExperimentOutlined,
   RocketOutlined,
 } from "@ant-design/icons";
-import { listRuleTags, trialMask } from "../tauri.js";
+import { listRuleTags, trialMask, trialValidate } from "../tauri.js";
 
 const { Text } = Typography;
 
@@ -69,6 +69,21 @@ const MASK_PARAM_META = {
     { key: "with", label: "替换常量", type: "text" },
   ],
 };
+
+// 各校验模版（scope）的可填参数元信息（v0.6.2 新增，与 MASK_PARAM_META 对称）。
+// regex：用户填 pattern（正则）+ 可选 message（失败消息）+ 可选 empty_message（空值失败消息）。
+const VALIDATE_PARAM_META = {
+  regex: [
+    { key: "pattern", label: "正则 pattern", type: "text" },
+    { key: "message", label: "失败消息", type: "text" },
+    { key: "empty_message", label: "空值失败消息", type: "text" },
+  ],
+};
+
+// 按 scope 查参数元信息：先查脱敏模版，再查校验模版，否则返回空（无参数）。
+function getParamMeta(scope) {
+  return MASK_PARAM_META[scope] ?? VALIDATE_PARAM_META[scope] ?? [];
+}
 
 // 单条脱敏参数输入控件（行内展开区使用）。
 function renderParamInput(meta, params, setParams) {
@@ -131,7 +146,7 @@ function renderParamInput(meta, params, setParams) {
 
 // 操作列与展开区共享的 params 清洗：过滤空串/未勾选布尔，保留数值 0。
 function buildParams(scope, params = {}) {
-  const paramMeta = MASK_PARAM_META[scope] ?? [];
+  const paramMeta = getParamMeta(scope);
   const cleaned = {};
   for (const { key, type } of paramMeta) {
     const v = params[key];
@@ -145,11 +160,12 @@ function buildParams(scope, params = {}) {
   return cleaned;
 }
 
-// 行内展开区：mask 规则渲染参数表单 + 样例值 + 运行结果；其它规则渲染描述全文。
+// 行内展开区：mask / validate 规则渲染参数表单 + 样例值 + 运行结果；其它规则渲染描述全文。
 // 状态由 RulesView 通过 rowStates[key] + setRowState 下发，保证操作列按钮与表单共享。
 function RowExpanded({ record, rowState, setRowState, state, dispatch, onRun, onApply }) {
-  const isMaskRow = record.__kind === "mask" && record.tag === "mask";
-  if (!isMaskRow) {
+  const paramMeta = getParamMeta(record.scope);
+  // 无参数元信息的规则（如 extract / pinfo validate）只显示描述全文。
+  if (paramMeta.length === 0) {
     return (
       <Text type="secondary" style={{ fontSize: 12 }}>
         {record.description || "（无描述）"}
@@ -157,7 +173,8 @@ function RowExpanded({ record, rowState, setRowState, state, dispatch, onRun, on
     );
   }
 
-  const paramMeta = MASK_PARAM_META[record.scope] ?? [];
+  const isMaskRow = record.__kind === "mask" && record.tag === "mask";
+  const isValidateRow = record.__kind === "validate" && record.tag === "validate";
   const { params = {}, sample = "", field = "", result = null } = rowState || {};
 
   const setParams = (updater) => {
@@ -168,6 +185,9 @@ function RowExpanded({ record, rowState, setRowState, state, dispatch, onRun, on
     const headers = state?.records?.headers || [];
     return headers.map((h) => ({ label: h, value: h }));
   }, [state?.records?.headers]);
+
+  // 结果区文案随规则类型变化：mask 显示脱敏结果，validate 显示合法/非法。
+  const applyLabel = isMaskRow ? "应用并跳转数据脱敏" : isValidateRow ? "应用并跳转数据校验" : "应用";
 
   return (
     <div style={{ padding: "4px 0" }}>
@@ -218,16 +238,30 @@ function RowExpanded({ record, rowState, setRowState, state, dispatch, onRun, on
           运行
         </Button>
         <Button size="small" icon={<RocketOutlined />} loading={!!rowState?.applying} onClick={() => onApply(record)}>
-          应用并跳转数据脱敏
+          {applyLabel}
         </Button>
       </Space>
       {result ? (
         <div style={{ marginTop: 4, padding: 8, background: "#fafafa", borderRadius: 4 }}>
           {result.ok ? (
-            <Space size="small" wrap align="center">
-              <Text type="secondary" style={{ fontSize: 12 }}>脱敏结果：</Text>
-              <Text strong copyable>{result.masked}</Text>
-            </Space>
+            isValidateRow ? (
+              <Space size="small" wrap align="center">
+                <Text type="secondary" style={{ fontSize: 12 }}>校验结果：</Text>
+                {result.valid ? (
+                  <Text type="success" strong>合法 ✓</Text>
+                ) : (
+                  <Text type="danger" strong>非法 ✗</Text>
+                )}
+                {result.message ? (
+                  <Text type="secondary" style={{ fontSize: 12 }}>（{result.message}）</Text>
+                ) : null}
+              </Space>
+            ) : (
+              <Space size="small" wrap align="center">
+                <Text type="secondary" style={{ fontSize: 12 }}>脱敏结果：</Text>
+                <Text strong copyable>{result.masked}</Text>
+              </Space>
+            )
           ) : (
             <Text type="danger" style={{ fontSize: 12 }}>错误：{result.error}</Text>
           )}
@@ -385,6 +419,63 @@ export default function RulesView({ state, dispatch }) {
     }
   }
 
+  // 校验试运行（v0.6.2）：与 runTrialForRow 对称，调 trial_validate。
+  async function runValidateTrialForRow(record) {
+    const rs = rowStates[record.key] ?? {};
+    if (!rs.sample) {
+      message.warning("请输入样例值再试运行");
+      setExpandedKeys((prev) => Array.from(new Set([...prev, record.key])));
+      return;
+    }
+    const paramsJson = JSON.stringify(buildParams(record.scope, rs.params ?? {}));
+    setRowState(record.key, (s) => ({ ...s, loading: true, result: null }));
+    try {
+      const r = await trialValidate(record.scope, paramsJson, rs.sample);
+      setRowState(record.key, (s) => ({ ...s, loading: false, result: r }));
+      if (r?.ok) {
+        message.success("试运行完成");
+      } else {
+        message.error(r?.error || "试运行失败");
+      }
+    } catch (e) {
+      const err = typeof e === "string" ? e : String(e);
+      setRowState(record.key, (s) => ({ ...s, loading: false, result: { ok: false, valid: null, error: err } }));
+      message.error(err);
+    }
+  }
+
+  // 校验应用并跳转（v0.6.2）：把 scope + params 写为 validateOverrides 中一条动态规则。
+  async function applyValidateForRow(record) {
+    const rs = rowStates[record.key] ?? {};
+    setRowState(record.key, (s) => ({ ...s, applying: true }));
+    try {
+      const targetField = (rs.field || "").trim() || record.field;
+      const paramsObj = buildParams(record.scope, rs.params ?? {});
+      const ruleObj = {
+        field: targetField,
+        scope: record.scope,
+        tag: "validate",
+        params: Object.keys(paramsObj).length ? paramsObj : undefined,
+        message: undefined,
+        description: undefined,
+      };
+      dispatch({ type: "SET_VALIDATE_OVERRIDE", header: targetField, rule: ruleObj });
+      const headers = state?.records?.headers || [];
+      if (headers.length > 0) {
+        if (headers.includes(targetField)) {
+          message.success(`已应用「${targetField}」列校验配置，跳转数据校验`);
+        } else {
+          message.warning(`字段「${targetField}」未在当前表头中找到，已写入配置，请在数据校验视图调整字段名`);
+        }
+      } else {
+        message.success("已应用校验配置，请先到数据预处理导入文件后再到数据校验视图使用");
+      }
+      dispatch({ type: "SET_VIEW", activeView: "validate" });
+    } finally {
+      setRowState(record.key, (s) => ({ ...s, applying: false }));
+    }
+  }
+
   const columns = [
     {
       title: "标签",
@@ -415,8 +506,9 @@ export default function RulesView({ state, dispatch }) {
       key: "action",
       width: 170,
       render: (_, r) => {
+        // 有参数元信息的规则（mask 模版 + regex 校验）才显示运行/应用按钮。
+        if (getParamMeta(r.scope).length === 0) return null;
         const isMaskRow = r.__kind === "mask" && r.tag === "mask";
-        if (!isMaskRow) return null;
         const rs = rowStates[r.key] ?? {};
         return (
           <Space size="small">
@@ -425,7 +517,7 @@ export default function RulesView({ state, dispatch }) {
               type="primary"
               icon={<ExperimentOutlined />}
               loading={!!rs.loading}
-              onClick={() => runTrialForRow(r)}
+              onClick={() => (isMaskRow ? runTrialForRow(r) : runValidateTrialForRow(r))}
             >
               运行
             </Button>
@@ -433,7 +525,7 @@ export default function RulesView({ state, dispatch }) {
               size="small"
               icon={<RocketOutlined />}
               loading={!!rs.applying}
-              onClick={() => applyForRow(r)}
+              onClick={() => (isMaskRow ? applyForRow(r) : applyValidateForRow(r))}
             >
               应用
             </Button>
@@ -503,8 +595,8 @@ export default function RulesView({ state, dispatch }) {
                     setRowState={setRowState}
                     state={state}
                     dispatch={dispatch}
-                    onRun={runTrialForRow}
-                    onApply={applyForRow}
+                    onRun={record.__kind === "mask" ? runTrialForRow : runValidateTrialForRow}
+                    onApply={record.__kind === "mask" ? applyForRow : applyValidateForRow}
                   />
                 ),
               }}
@@ -513,6 +605,7 @@ export default function RulesView({ state, dispatch }) {
           <Text type="secondary" style={{ display: "block", marginTop: 8, fontSize: 12 }}>
             脱敏模版参数为空时使用后端默认值；试运行仅用于验证参数，不会改动真实数据。
             试运行通过后点「应用」可把当前参数写入数据脱敏视图的表头映射并跳转。
+            校验模版填写 pattern 后试运行验证正则，应用后写入数据校验视图。
           </Text>
         </>
       )}

@@ -317,6 +317,19 @@ export async function trialMask(scope, paramsJson, sampleValue) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// v0.6.2 RulesView 试运行：对单条样例值应用校验模版，返回校验结果。
+// 不读文件、不落盘，供用户在作用于真实数据前验证正则参数。
+// 返回 { ok: bool, valid: bool|null, message: string|null, error: string|null }。
+// ─────────────────────────────────────────────────────────────────────
+export async function trialValidate(scope, paramsJson, sampleValue) {
+  return tauriInvoke("trial_validate", {
+    scope,
+    paramsJson,
+    sampleValue,
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // v0.6.0 T13-3 / T15-2 加密 / 编码命令封装
 // 参数名 camelCase，由 Tauri 自动转 snake_case 传到 Rust 端。
 // invoke 名对齐 src-tauri/src/commands/encrypt.rs 的 4 个 #[tauri::command]：
