@@ -59,6 +59,14 @@ export const ACTION = {
   REGEX_EXPLAIN_RESULT_SET: "SET_REGEX_EXPLAIN_RESULT",
   REGEX_CONSTRUCT_INPUT_SET: "SET_REGEX_CONSTRUCT_INPUT",
   REGEX_CONSTRUCT_RESULT_SET: "SET_REGEX_CONSTRUCT_RESULT",
+  // encrypt（T15-2）
+  ENCRYPT_ALGO_SET: "SET_ENCRYPT_ALGO",
+  ENCRYPT_MODE_SET: "SET_ENCRYPT_MODE",
+  ENCRYPT_KEY_SET: "SET_ENCRYPT_KEY",
+  ENCRYPT_INPUT_SET: "SET_ENCRYPT_INPUT",
+  ENCRYPT_RESULT_SET: "SET_ENCRYPT_RESULT",
+  ENCRYPT_COLUMNS_RESULT_SET: "SET_ENCRYPT_COLUMNS_RESULT",
+  ENCRYPT_LOADING_SET: "SET_ENCRYPT_LOADING",
   // search
   SEARCH_MODE_SET: "SET_SEARCH_MODE",
   SEARCH_KEYWORD_INPUT_SET: "SET_SEARCH_KEYWORD_INPUT",
@@ -186,6 +194,19 @@ export const initialState = {
   extractLoading: false,
   extractSelectedIndices: [],
   extractRuleTagFilter: null,
+  // v0.6.0 T15-2 加密 / 解密子界面状态（Tools Tab 第三项）。
+  // encryptAlgo：算法 "aes" | "base64" | "hex"；encryptMode：模式 "encrypt" | "decrypt"。
+  // encryptKey：AES 密钥（base64/hex 忽略）；encryptInput：单值试运行输入。
+  // encryptResult：单值结果 { ok, result, error } 或 null。
+  // encryptColumnsResult：批量列结果 { headers, processed_rows, summary, skipped_fields } 或 null。
+  // encryptLoading：运行中标志，禁用按钮防重入。切 view 不重置；切 Tab 不清。
+  encryptAlgo: "aes",
+  encryptMode: "encrypt",
+  encryptKey: "",
+  encryptInput: "",
+  encryptResult: null,
+  encryptColumnsResult: null,
+  encryptLoading: false,
 };
 
 // ─────────────────────────────────────────────────────────────────────
@@ -476,6 +497,35 @@ const toolsDomain = (state, action) => {
     case ACTION.REGEX_CONSTRUCT_RESULT_SET: {
       const { regexConstructResult } = action;
       return { ...state, regexConstructResult };
+    }
+    // v0.6.0 T15-2 加密 / 解密子界面状态。
+    case ACTION.ENCRYPT_ALGO_SET: {
+      const { encryptAlgo } = action;
+      return { ...state, encryptAlgo };
+    }
+    case ACTION.ENCRYPT_MODE_SET: {
+      const { encryptMode } = action;
+      return { ...state, encryptMode };
+    }
+    case ACTION.ENCRYPT_KEY_SET: {
+      const { encryptKey } = action;
+      return { ...state, encryptKey };
+    }
+    case ACTION.ENCRYPT_INPUT_SET: {
+      const { encryptInput } = action;
+      return { ...state, encryptInput };
+    }
+    case ACTION.ENCRYPT_RESULT_SET: {
+      const { encryptResult } = action;
+      return { ...state, encryptResult };
+    }
+    case ACTION.ENCRYPT_COLUMNS_RESULT_SET: {
+      const { encryptColumnsResult } = action;
+      return { ...state, encryptColumnsResult };
+    }
+    case ACTION.ENCRYPT_LOADING_SET: {
+      const { encryptLoading } = action;
+      return { ...state, encryptLoading };
     }
     default:
       return state;

@@ -9,6 +9,7 @@ import {
   ToolOutlined,
   ConsoleSqlOutlined,
   CodeOutlined,
+  LockOutlined,
   SlidersOutlined,
   FilterOutlined,
 } from "@ant-design/icons";
@@ -47,6 +48,7 @@ export default function Sidebar({ state, dispatch }) {
       children: [
         { key: "tools.sql", icon: <ConsoleSqlOutlined />, label: "SQL 解析" },
         { key: "tools.regex", icon: <CodeOutlined />, label: "正则解析" },
+        { key: "tools.encrypt", icon: <LockOutlined />, label: "加密/解密" },
       ],
     },
   ];
@@ -61,6 +63,9 @@ export default function Sidebar({ state, dispatch }) {
     } else if (key === "tools.regex") {
       dispatch({ type: "SET_VIEW", activeView: "tools" });
       dispatch({ type: "SET_TOOLS_ACTIVE_TAB", toolsActiveTab: "regex" });
+    } else if (key === "tools.encrypt") {
+      dispatch({ type: "SET_VIEW", activeView: "tools" });
+      dispatch({ type: "SET_TOOLS_ACTIVE_TAB", toolsActiveTab: "encrypt" });
     } else {
       dispatch({ type: "SET_VIEW", activeView: key });
     }

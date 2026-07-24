@@ -2,6 +2,7 @@ import React from "react";
 import { Card, Typography } from "antd";
 import RegexTool from "./RegexTool.jsx";
 import SqlParseTool from "./SqlParseTool.jsx";
+import EncryptTool from "./EncryptTool.jsx";
 
 const { Text } = Typography;
 
@@ -10,13 +11,21 @@ const { Text } = Typography;
 // SET_VIEW=tools + SET_TOOLS_ACTIVE_TAB=<sql|regex>。本视图不再渲染顶部 Select
 // 下拉（与 Sidebar 下拉语义重复），仅渲染对应子工具内容。
 //
+// v0.6.0 T15-2：新增第三分支「加密/解密」（toolsActiveTab="encrypt"），
+// 渲染 <EncryptTool>，title 三元对应「Tools - 加密/解密」。
+//
 // toolsActiveTab 由 Sidebar 写入，切 view 不重置；切 Tab 也不清各自子状态。
 export default function ToolsView({ state, dispatch }) {
+  const tab = state.toolsActiveTab;
+  const title =
+    tab === "encrypt"
+      ? "Tools - 加密/解密"
+      : tab === "regex"
+      ? "Tools - 正则解析"
+      : "Tools - SQL 解析";
   return (
     <Card
-      title={
-        state.toolsActiveTab === "regex" ? "Tools - 正则解析" : "Tools - SQL 解析"
-      }
+      title={title}
       extra={
         <Text type="secondary">
           切换子工具请使用左侧 Sidebar 「Tools」下拉项
@@ -24,8 +33,10 @@ export default function ToolsView({ state, dispatch }) {
       }
       styles={{ body: { padding: 12 } }}
     >
-      {state.toolsActiveTab === "regex" ? (
+      {tab === "regex" ? (
         <RegexTool state={state} dispatch={dispatch} />
+      ) : tab === "encrypt" ? (
+        <EncryptTool state={state} dispatch={dispatch} />
       ) : (
         <SqlParseTool state={state} dispatch={dispatch} />
       )}

@@ -315,3 +315,57 @@ export async function trialMask(scope, paramsJson, sampleValue) {
     sampleValue,
   });
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// v0.6.0 T13-3 / T15-2 加密 / 编码命令封装
+// 参数名 camelCase，由 Tauri 自动转 snake_case 传到 Rust 端。
+// invoke 名对齐 src-tauri/src/commands/encrypt.rs 的 4 个 #[tauri::command]：
+//   encrypt_text / decrypt_text / encrypt_columns / decrypt_columns。
+// ─────────────────────────────────────────────────────────────────────
+
+// 单值加密 / 编码：对 plaintext 应用 algo + key，返回
+// { ok: bool, result: string|null, error: string|null }。
+// algo: "aes" | "base64" | "hex"；key 仅 AES 需要（SHA-256 派生 AES-256）。
+export async function encryptText(algo, plaintext, key) {
+  return tauriInvoke("encrypt_text", { algo, plaintext, key });
+}
+
+// 单值解密 / 解码：encryptText 的逆操作，返回结构同构。
+export async function decryptText(algo, ciphertext, key) {
+  return tauriInvoke("decrypt_text", { algo, ciphertext, key });
+}
+
+// 批量列加密 / 编码：对 selectedColumns 中的列 cell 调 encrypt_text，
+// 未选列原样保留。返回 { headers, processed_rows, summary, skipped_fields }。
+export async function encryptColumns(
+  headers,
+  rows,
+  algo,
+  key,
+  selectedColumns
+) {
+  return tauriInvoke("encrypt_columns", {
+    headers,
+    rows,
+    algo,
+    key,
+    selectedColumns,
+  });
+}
+
+// 批量列解密 / 解码：encryptColumns 的逆操作，签名与返回结构同构。
+export async function decryptColumns(
+  headers,
+  rows,
+  algo,
+  key,
+  selectedColumns
+) {
+  return tauriInvoke("decrypt_columns", {
+    headers,
+    rows,
+    algo,
+    key,
+    selectedColumns,
+  });
+}
