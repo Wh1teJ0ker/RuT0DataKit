@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Card,
   Radio,
@@ -81,6 +81,10 @@ export default function ExtractView({ state, dispatch }) {
   // v0.6.4 T19-3：分页受控。
   const [pageCurrent, setPageCurrent] = useState(1);
   const [pageSize, setPageSize] = useState(50);
+  // v0.6.6 T21-1：类型重命名映射。key=原 type，value=新名。
+  // 不持久化（用户决策）：每次新结果载入时从 findings 自动列出全部 type，
+  // 高频（count ≥ 5）标星提示「可能需要重命名」，用户手动填中文名。
+  const [typeRename, setTypeRename] = useState({});
 
   // tag 候选列表（仿 RulesView），规则库变化时刷新。
   const [tagOptions, setTagOptions] = useState([]);
@@ -201,10 +205,15 @@ export default function ExtractView({ state, dispatch }) {
     const outPath = await saveDialog(`extract.${format}`, format);
     if (!outPath) return;
     try {
+      // v0.6.6 T21-1：把非空重命名映射透传给后端，导出 type 值应用重命名。
+      const nonEmptyRename = Object.fromEntries(
+        Object.entries(typeRename).filter(([, v]) => v && v.trim())
+      );
       await exportExtract(subset, format, outPath, {
         template: format === "txt" ? txtTemplate || null : null,
         selectedColumns: format !== "txt" ? exportColumns : null,
         columnOrder: format !== "txt" ? columnOrder : null,
+        typeRename: Object.keys(nonEmptyRename).length > 0 ? nonEmptyRename : null,
       });
       const scope =
         selectedFindingKeys.length > 0
@@ -216,16 +225,68 @@ export default function ExtractView({ state, dispatch }) {
     }
   };
 
-  const columns = [
-    { title: "类型", dataIndex: "type", key: "type", width: 120 },
-    { title: "值", dataIndex: "value", key: "value" },
-  ];
-
   // counts 动态渲染：v0.4.4 后端返回 BTreeMap<String, i64>，不再固定 phone/bankcard/ip。
   const countEntries = useMemo(() => {
     if (!extractResult?.counts) return [];
     return Object.entries(extractResult.counts);
   }, [extractResult]);
+
+  // v0.6.6 T21-1：结果出现时，按当前 findings 的全部 type 列出重命名映射表。
+  // 高频（count ≥ 5）加 ★ 提示「可能需要重命名」——非强制。
+  // 不持久化：每次新结果载入重建（用户决策）。
+  useEffect(() => {
+    if (!extractResult?.findings) {
+      setTypeRename({});
+      return;
+    }
+    const counts = extractResult.counts || {};
+    const next = {};
+    extractResult.findings.forEach((f) => {
+      const t = f.type;
+      if (t && !(t in next)) next[t] = "";
+    });
+    // 标准列表里把高频 type 排前面（带 ★），低频排后
+    const sortedKeys = Object.keys(next).sort((a, b) => {
+      const ca = counts[a] || 0;
+      const cb = counts[b] || 0;
+      if ((ca >= 5) !== (cb >= 5)) return ca >= 5 ? -1 : 1;
+      return cb - ca;
+    });
+    const sorted = {};
+    sortedKeys.forEach((k) => (sorted[k] = next[k]));
+    setTypeRename(sorted);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [extractResult]);
+
+  // v0.6.6 T21-1：结果表 type 列显示——若用户填了中文名则显示中文名 + 原名小字。
+  const displayType = useCallback(
+    (t) => {
+      const renamed = typeRename[t];
+      if (renamed && renamed.trim()) {
+        return (
+          <Space size={4} wrap={false}>
+            <span>{renamed.trim()}</span>
+            <Text type="secondary" style={{ fontSize: 11 }}>
+              ({t})
+            </Text>
+          </Space>
+        );
+      }
+      return t;
+    },
+    [typeRename]
+  );
+
+  const columns = [
+    {
+      title: "类型",
+      dataIndex: "type",
+      key: "type",
+      width: 160,
+      render: (_, r) => displayType(r.type),
+    },
+    { title: "值", dataIndex: "value", key: "value" },
+  ];
 
   const findingsCount = extractResult?.findings?.length || 0;
 
@@ -360,15 +421,53 @@ export default function ExtractView({ state, dispatch }) {
 
       {extractResult && (
         <Card title="结果" style={{ marginTop: 16 }}>
+          {/* v0.6.6 T21-1：类型重命名区——按当前 findings 自动列出全部 type，*/}
+          {/* 高频（count≥5）标 ★ 提示「可能需要重命名」。填中文名后结果表 */}
+          {/* 即时显示中文名 + 原名小字；导出也应用重命名。 */}
+          {Object.keys(typeRename).length > 0 && (
+            <div style={{ marginBottom: 16 }}>
+              <Text type="secondary" style={{ fontSize: 12, display: "block", marginBottom: 8 }}>
+                类型重命名（可选）：把英文 type 改成中文名，结果表与导出都会应用。带 ★ 的是高频类型。
+              </Text>
+              <Space direction="vertical" size={6} style={{ width: "100%" }}>
+                {Object.entries(typeRename).map(([t]) => {
+                  const cnt = extractResult.counts?.[t] || 0;
+                  const hot = cnt >= 5;
+                  return (
+                    <Space key={t} size="small" style={{ width: "100%" }} align="center">
+                      <Tag color={TYPE_COLORS[t] || "default"} style={{ margin: 0 }}>
+                        {hot ? "★ " : ""}{t}
+                      </Tag>
+                      <Text type="secondary" style={{ fontSize: 12 }}>×{cnt}</Text>
+                      <Text type="secondary">→</Text>
+                      <Input
+                        size="small"
+                        style={{ width: 200 }}
+                        placeholder={`例如：${t === "phone" ? "电话" : t === "idcard" ? "身份证" : t === "bankcard" ? "银行卡" : t === "email" ? "邮箱" : t === "ip" ? "IP 地址" : t === "mac" ? "MAC 地址" : t === "name" ? "名字" : t === "username" ? "用户名" : "中文名"}`}
+                        value={typeRename[t]}
+                        onChange={(e) =>
+                          setTypeRename((m) => ({ ...m, [t]: e.target.value }))
+                        }
+                      />
+                    </Space>
+                  );
+                })}
+              </Space>
+            </div>
+          )}
           <Space style={{ marginBottom: 16 }} wrap>
             {countEntries.length === 0 ? (
               <Tag>无命中</Tag>
             ) : (
-              countEntries.map(([type, count]) => (
-                <Tag key={type} color={TYPE_COLORS[type] || "default"}>
-                  {type}: {count}
-                </Tag>
-              ))
+              countEntries.map(([type, count]) => {
+                const renamed = typeRename[type]?.trim();
+                const label = renamed ? `${renamed} (${type})` : type;
+                return (
+                  <Tag key={type} color={TYPE_COLORS[type] || "default"}>
+                    {label}: {count}
+                  </Tag>
+                );
+              })
             )}
           </Space>
           {selectedFindingKeys.length > 0 && (

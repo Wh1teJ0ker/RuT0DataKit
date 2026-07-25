@@ -182,6 +182,11 @@ struct ExtractItem {
 /// - `selected_columns` / `column_order`（csv/json）：字段勾选 + 顺序，
 ///   默认 `["type","value"]`。
 /// 行级过滤由前端传入子集 findings 实现（勾选行导出），后端不再单列行索引参数。
+///
+/// v0.6.6 T21-1：支持 type 重命名（type_rename: {原type → 新type}）。
+/// - txt：`{type}` 占位符替换为重命名后的值。
+/// - csv/json：type 列单元格值替换为重命名后的值（表头仍为 "type"）。
+/// 缺省或映射为空时回退原 type。
 #[tauri::command]
 pub fn export_extract(
     findings_json: String,
@@ -190,9 +195,16 @@ pub fn export_extract(
     template: Option<String>,
     selected_columns: Option<Vec<String>>,
     column_order: Option<Vec<String>>,
+    type_rename: Option<std::collections::HashMap<String, String>>,
 ) -> Result<(), String> {
     let items: Vec<ExtractItem> = serde_json::from_str(&findings_json)
         .map_err(|e| format!("findings_json 解析失败: {e}"))?;
+
+    // v0.6.6 T21-1：type 重命名映射（缺省空映射）。命中即替换，否则原值。
+    let rename = type_rename.unwrap_or_default();
+    let rename_type = |t: &str| -> String {
+        rename.get(t).cloned().filter(|s| !s.is_empty()).unwrap_or_else(|| t.to_string())
+    };
 
     // csv/json 共用：解析最终输出列顺序（默认 ["type","value"]）。
     let resolve_order = || -> Vec<String> {
@@ -239,7 +251,8 @@ pub fn export_extract(
                 .unwrap_or("{type}_{value}");
             let mut buf = String::new();
             for it in &items {
-                let line = tpl.replace("{type}", &it.r#type).replace("{value}", &it.value);
+                let t_val = rename_type(&it.r#type);
+                let line = tpl.replace("{type}", &t_val).replace("{value}", &it.value);
                 buf.push_str(&line);
                 buf.push('\n');
             }
@@ -258,7 +271,7 @@ pub fn export_extract(
                         .iter()
                         .map(|c| {
                             if c == "type" {
-                                it.r#type.clone()
+                                rename_type(&it.r#type)
                             } else if c == "value" {
                                 it.value.clone()
                             } else {

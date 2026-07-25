@@ -297,6 +297,7 @@ export async function extractFile(path, rulesJson) {
 // 把 findings 按格式（txt/csv/json）导出到 outPath。
 // v0.6.4 T19-2：opts.template（txt 模板）/ opts.selectedColumns / opts.columnOrder
 // （csv/json 字段勾选与顺序）可选；行子集由调用方直接传 subset findings 实现。
+// v0.6.6 T21-1：opts.typeRename（{原type → 新type}）应用到导出的 type 值。
 export async function exportExtract(findings, format, outPath, opts = {}) {
   return tauriInvoke("export_extract", {
     findingsJson: JSON.stringify(findings),
@@ -305,6 +306,7 @@ export async function exportExtract(findings, format, outPath, opts = {}) {
     template: opts.template ?? null,
     selectedColumns: opts.selectedColumns ?? null,
     columnOrder: opts.columnOrder ?? null,
+    typeRename: opts.typeRename ?? null,
   });
 }
 
