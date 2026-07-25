@@ -200,3 +200,60 @@ T20-1 (state 级联 + UI + 数据源指示) ─→ T20-2 (version+docs+QA)
 
 T20-1 单独 feat 提交（state + UI + docs），T20-2 单独 chore 提交（版本号 + docs + QA）。
 
+
+---
+
+# TASK-BOARD — v0.6.6 数据提取类型重命名（release_complete）
+
+> 版本：v0.6.6
+> 状态：release_complete
+> 范围：ExtractView 结果区新增「类型重命名」功能——自动列出当前 findings 的全部 type，高频（count ≥ 5）标 ★ 提示，用户填中文名后结果表、计数 Tag、txt/csv/json 导出统一应用。不持久化。
+
+## 任务 DAG
+
+```
+T21-1 (类型重命名 UI + 后端 type_rename 透传) ─→ T21-2 (version+docs+QA)
+```
+
+## 任务清单
+
+- id: T21-1
+  title: ExtractView 类型重命名（自动列 type + 高频标记 + 输入框 + 结果表/导出应用）
+  priority: P0
+  deps: []
+  status: verified_complete
+  scope:
+    - frontend/src/components/ExtractView.jsx（typeRename state + useEffect 自动列 + ★ 标记 + 结果表 render + 计数 Tag 同步 + handleExport 透传）
+    - frontend/src/tauri.js（exportExtract opts.typeRename）
+    - src-tauri/src/commands/export.rs（export_extract 签名 +type_rename + 三格式应用）
+    - docs/01-页面与交互说明.md（类型重命名交互规范）
+  verification:
+    - npm --prefix frontend run build → 0 error（3009 modules）
+    - cargo build → 0 error
+    - grep type_rename / typeRename / ★ 标记全到位
+
+- id: T21-2
+  title: 版本号 bump 0.6.5→0.6.6 + docs + QA
+  priority: P1
+  deps: [T21-1]
+  status: verified_complete
+  scope:
+    - Cargo.toml / src-tauri/Cargo.toml / src-tauri/tauri.conf.json / frontend/package.json → 0.6.6
+    - docs/versions/0.6.6/更新日志.md
+    - docs/qa/versions/0.6.6/QA-审计报告.md
+    - docs/04-版本标准.md（v0.6.6 里程碑行）
+    - handoff/TASK-BOARD.md（v0.6.6 DAG）
+  verification:
+    - cargo build → 0 error
+    - cargo test --release → 493 passed / 0 failed / 5 ignored（search_big_file 通过）
+    - cargo test (debug) → 492 passed / 1 failed (search_big_file 预先存在 flaky) / 5 ignored
+    - npm build → 0 error
+    - grep 4 manifest 版本号 0.6.6
+
+## 提交策略
+
+T21-1 单独 feat 提交（前端 + 后端 + docs），T21-2 单独 chore 提交（版本号 + docs + QA）。
+
+## 安全约束（不变）
+
+`docs/00-需求文档.md §6`「不外发数据：全本地处理」保留，v0.6.6 不变。类型重命名纯前端 state + 后端导出渲染（`std::fs::write` 本地文件），不涉及网络/外发。
