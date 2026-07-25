@@ -148,3 +148,55 @@ T19-1+T19-2 (extract 隔离 + 导出自定义) ─→ T19-3 (分页受控化) �
 ```
 
 按 v0.6.x 惯例，T19-1+T19-2 合并为一个 feat 提交（ExtractView 集中改），T19-3 独立 fix 提交（分页受控化），T19-4 单独 chore 提交（版本号 + docs）。另含 2 个本会话前置 BUG 修复提交（正则构造白屏 + ExportView 总行数）。
+
+---
+
+# TASK-BOARD — v0.6.5 字段批量重命名 + 数据流数据源指示（release_complete）
+
+> 版本：v0.6.5
+> 状态：release_complete
+> 范围：① PreprocessView 预览表头可编辑（单字段 ✏ + 批量重命名 Modal）；② 真实改写 `records.headers` 并级联 re-key 所有 header-keyed 状态切片；③ 预处理流与提取流加数据源指示 Tag，明确两流独立、不共享 records。
+
+## 任务 DAG
+
+```
+T20-1 (state 级联 + UI + 数据源指示) ─→ T20-2 (version+docs+QA)
+```
+
+## 任务清单
+
+- id: T20-1
+  title: 字段重命名 state 级联 + PreprocessView 表头编辑 UI + 数据源指示
+  priority: P0
+  deps: []
+  status: verified_complete
+  scope:
+    - frontend/src/state.js（COLUMN_RENAME_SET action + 级联 re-key）
+    - frontend/src/components/PreprocessView.jsx（✏ 单字段 + 批量 Modal + 数据源 Tag）
+    - frontend/src/components/ExtractView.jsx（数据源 Tag）
+    - docs/01-页面与交互说明.md（交互规范补充）
+  verification:
+    - npm --prefix frontend run build → 0 error（3009 modules）
+    - grep COLUMN_RENAME_SET 级联 / EditOutlined / 数据源 Tag 全到位
+
+- id: T20-2
+  title: 版本号 bump 0.6.4→0.6.5 + docs + QA
+  priority: P1
+  deps: [T20-1]
+  status: verified_complete
+  scope:
+    - Cargo.toml / src-tauri/Cargo.toml / src-tauri/tauri.conf.json / frontend/package.json → 0.6.5
+    - docs/versions/0.6.5/更新日志.md
+    - docs/qa/versions/0.6.5/QA-审计报告.md
+    - docs/04-版本标准.md（v0.6.5 里程碑行）
+    - handoff/TASK-BOARD.md（v0.6.5 DAG）
+  verification:
+    - cargo build → 0 error
+    - cargo test → 482 passed / 0 failed / 5 ignored（search_big_file 通过）
+    - npm build → 0 error
+    - grep 4 manifest 版本号 0.6.5
+
+## 提交策略
+
+T20-1 单独 feat 提交（state + UI + docs），T20-2 单独 chore 提交（版本号 + docs + QA）。
+
