@@ -232,6 +232,12 @@ export default function ExtractView({ state, dispatch }) {
   return (
     <Spin spinning={extractLoading}>
       <Card title="输入">
+        {/* v0.6.5 T20-1：数据源指示——提取流（与预处理流独立，不共享 records） */}
+        <Space size="small" style={{ marginBottom: 12 }}>
+          <Tag color="geekblue" style={{ margin: 0 }}>
+            数据源：提取流（与预处理流独立，不共享 records）
+          </Tag>
+        </Space>
         <Radio.Group
           value={extractMode}
           onChange={(e) =>

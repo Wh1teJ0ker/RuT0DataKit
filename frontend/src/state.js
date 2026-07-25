@@ -19,6 +19,7 @@ export const ACTION = {
   // file
   FILE_SET: "SET_FILE",
   RECORDS_SET: "SET_RECORDS",
+  COLUMN_RENAME_SET: "SET_COLUMN_RENAME",
   // mask
   MASKED_SET: "SET_MASKED",
   MASK_OVERRIDE_SET: "SET_MASK_OVERRIDE",
@@ -279,6 +280,44 @@ const fileDomain = (state, action) => {
         columnOrder: [...headers],
         exportColumns: [...headers],
         actionHint: "",
+      };
+    }
+    // v0.6.5 T20-1：字段批量重命名。真实改写 records.headers，并级联 re-key
+    // 所有 header-keyed 状态切片（selectedColumns/columnOrder/exportColumns/
+    // maskOverrides/validateOverrides），同时清空旧脱敏/校验结果（headers
+    // 变了，旧 maskedRows/validateResult 不再对齐）。全局 rules.validators/
+    // maskers[].field 不改（跨会话规则库完整性）——preset 重新应用即可。
+    case ACTION.COLUMN_RENAME_SET: {
+      const { renames } = action;
+      // renames: [{ oldName, newName }]，支持批量。
+      if (!state.records || !Array.isArray(renames) || renames.length === 0) {
+        return state;
+      }
+      const map = new Map(renames.map((r) => [r.oldName, r.newName]).filter(([o, n]) => o && n && o !== n));
+      if (map.size === 0) return state;
+      const remapKey = (k) => map.get(k) ?? k;
+      const remapArr = (arr) => (arr ? arr.map(remapKey) : arr);
+      const remapOverrides = (obj = {}) =>
+        Object.fromEntries(
+          Object.entries(obj).map(([k, v]) => {
+            const nk = remapKey(k);
+            const nv = v && map.has(v.field) ? { ...v, field: map.get(v.field) } : v;
+            return [nk, nv];
+          })
+        );
+      const headers = state.records.headers.map(remapKey);
+      return {
+        ...state,
+        records: { ...state.records, headers },
+        headers,
+        selectedColumns: remapArr(state.selectedColumns),
+        columnOrder: remapArr(state.columnOrder),
+        exportColumns: remapArr(state.exportColumns),
+        maskOverrides: remapOverrides(state.maskOverrides),
+        validateOverrides: remapOverrides(state.validateOverrides),
+        maskedRows: null,
+        maskedSummary: null,
+        validateResult: null,
       };
     }
     default:

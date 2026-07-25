@@ -1,4 +1,4 @@
-import React, { useMemo } from "react";
+import React, { useMemo, useState } from "react";
 import {
   Card,
   Table,
@@ -8,6 +8,8 @@ import {
   Descriptions,
   Empty,
   Tag,
+  Modal,
+  Input,
   App as AntApp,
 } from "antd";
 import {
@@ -15,6 +17,8 @@ import {
   SearchOutlined,
   SafetyCertificateOutlined,
   CheckCircleOutlined,
+  EditOutlined,
+  DiffOutlined,
 } from "@ant-design/icons";
 import { tauriInvoke, preprocessFile } from "../tauri.js";
 import { PREVIEW_ROW_LIMIT } from "../state.js";
@@ -24,13 +28,17 @@ const { Text } = Typography;
 // 数据预处理主视图（v0.4.0 入口）：
 //   ① 顶部导入按钮（调 select_file + preprocess_file）
 //   ② Descriptions 概览（源类型 / 行数 / 列数）
-//   ③ antd Table 预览（headers + 前 200 行）
+//   ③ antd Table 预览（headers + 前 200 行）— v0.6.5 表头可编辑（✏/批量重命名）
 //   ④ 底部跳转按钮组（搜索 / 数据脱敏 / 数据校验）
 // 导入产物写入 state.records（SET_RECORDS），切 view 不重置；跳转按钮仅 dispatch SET_VIEW。
 // v0.5.x：移除 SQL 解析跳转入口（SQL 盲注自动检测 + 跳转 Tools/Sql 子面板一并删除）。
+// v0.6.5 T20-1：表头可编辑 + 批量重命名（SET_COLUMN_RENAME 级联 re-key）+ 数据源指示。
 export default function PreprocessView({ state, dispatch }) {
-  const { message } = AntApp.useApp();
+  const { message, modal } = AntApp.useApp();
   const { records, loading } = state;
+  // v0.6.5 T20-1：批量重命名弹窗内的临时编辑态。key=原表头，value=新表头。
+  const [renameMap, setRenameMap] = useState({});
+  const [renameOpen, setRenameOpen] = useState(false);
 
   const showError = (msg) => message.error(String(msg));
 
@@ -64,6 +72,66 @@ export default function PreprocessView({ state, dispatch }) {
     }
   };
 
+  // v0.6.5 T20-1：单个表头重命名（✏ 按钮）。弹 Modal 收集新名，dispatch 级联。
+  const handleRenameOne = (oldName) => {
+    let newName = oldName;
+    modal.confirm({
+      title: "重命名字段",
+      content: (
+        <div style={{ marginTop: 8 }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            原名：{oldName}
+          </Text>
+          <Input
+            placeholder="新字段名"
+            defaultValue={oldName}
+            autoFocus
+            onChange={(e) => (newName = e.target.value)}
+            style={{ marginTop: 8 }}
+            onPressEnter={(e) => {
+              newName = e.target.value;
+              const doc = document.querySelector(".ant-modal-confirm-btns .ant-btn-primary");
+              if (doc) doc.click();
+            }}
+          />
+        </div>
+      ),
+      onOk: () => {
+        const v = newName.trim();
+        if (!v || v === oldName) return;
+        dispatch({
+          type: "SET_COLUMN_RENAME",
+          renames: [{ oldName, newName: v }],
+        });
+        message.success(`已重命名「${oldName}」→「${v}」（脱敏/校验结果已清空，请重新运行）`);
+      },
+    });
+  };
+
+  // v0.6.5 T20-1：批量重命名弹窗。列出所有 headers + 对应 Input，
+  // 一次性提交所有变更（只取改名了的）。
+  const openBatchRename = () => {
+    if (!records) return;
+    const initMap = {};
+    records.headers.forEach((h) => (initMap[h] = h));
+    setRenameMap(initMap);
+    setRenameOpen(true);
+  };
+
+  const submitBatchRename = () => {
+    const renames = Object.entries(renameMap)
+      .filter(([oldName, newName]) => newName && newName.trim() && newName.trim() !== oldName)
+      .map(([oldName, newName]) => ({ oldName, newName: newName.trim() }));
+    if (renames.length === 0) {
+      message.info("无字段需要重命名");
+      setRenameOpen(false);
+      return;
+    }
+    dispatch({ type: "SET_COLUMN_RENAME", renames });
+    message.success(`已重命名 ${renames.length} 个字段（脱敏/校验结果已清空，请重新运行）`);
+    setRenameOpen(false);
+  };
+
   // 段 ③ 预览 Table：取 records.headers / records.rows 前 PREVIEW_ROW_LIMIT 行。
   const previewData = useMemo(() => {
     if (!records) return [];
@@ -79,11 +147,23 @@ export default function PreprocessView({ state, dispatch }) {
   const previewColumns = useMemo(() => {
     if (!records) return [];
     return records.headers.map((h) => ({
-      title: h,
+      title: (
+        <Space size={4} align="center" wrap={false}>
+          <span>{h}</span>
+          <Button
+            type="text"
+            size="small"
+            icon={<EditOutlined />}
+            onClick={() => handleRenameOne(h)}
+            title="重命名此字段"
+          />
+        </Space>
+      ),
       dataIndex: h,
       key: h,
       ellipsis: true,
     }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [records]);
 
   // 段 ④ 跳转按钮组：点击 dispatch SET_VIEW 切到对应 view，records 不丢。
@@ -125,6 +205,10 @@ export default function PreprocessView({ state, dispatch }) {
             <Text type="secondary" style={{ fontSize: 12 }}>
               支持 csv / xlsx / sql / json / pcap / log，自动识别源类型
             </Text>
+            {/* v0.6.5 T20-1：数据源指示——预处理流（records），与提取流独立 */}
+            <Tag color="geekblue" style={{ margin: 0 }}>
+              数据源：预处理流
+            </Tag>
           </Space>
         </Card>
 
@@ -150,7 +234,7 @@ export default function PreprocessView({ state, dispatch }) {
           title="预览"
           styles={{ body: { padding: 12 } }}
           extra={
-            <Space size="middle">
+            <Space size="middle" wrap>
               <Tag color="blue" style={{ margin: 0, fontWeight: 600 }}>
                 总行数 {records && records.rowCount != null ? records.rowCount : "-"} 行
               </Tag>
@@ -159,6 +243,16 @@ export default function PreprocessView({ state, dispatch }) {
                   ? `共 ${records.rowCount} 行 / 显示前 ${PREVIEW_ROW_LIMIT} 行`
                   : "导入文件后此处显示预览"}
               </Text>
+              {/* v0.6.5 T20-1：批量重命名入口 */}
+              <Button
+                size="small"
+                icon={<DiffOutlined />}
+                disabled={!records}
+                onClick={openBatchRename}
+                title="批量修改字段名"
+              >
+                批量重命名
+              </Button>
             </Space>
           }
         >
@@ -202,6 +296,43 @@ export default function PreprocessView({ state, dispatch }) {
           </div>
         </Card>
       </Space>
+
+      {/* v0.6.5 T20-1：批量重命名弹窗 */}
+      <Modal
+        title="批量重命名字段"
+        open={renameOpen}
+        onOk={submitBatchRename}
+        onCancel={() => setRenameOpen(false)}
+        okText="应用重命名"
+        cancelText="取消"
+        width={520}
+      >
+        <Text type="secondary" style={{ fontSize: 12, display: "block", marginBottom: 12 }}>
+          修改字段名后会级联更新脱敏/校验/导出/搜索的列引用，并清空已有脱敏/校验结果（需重新运行）。
+        </Text>
+        <Space direction="vertical" size="small" style={{ width: "100%" }}>
+          {Object.entries(renameMap).map(([oldName, newName]) => (
+            <Space key={oldName} size="small" style={{ width: "100%" }}>
+              <Input
+                value={oldName}
+                disabled
+                style={{ width: "45%" }}
+                size="small"
+              />
+              <Text type="secondary">→</Text>
+              <Input
+                value={newName}
+                onChange={(e) =>
+                  setRenameMap((m) => ({ ...m, [oldName]: e.target.value }))
+                }
+                style={{ width: "45%" }}
+                size="small"
+                placeholder={oldName}
+              />
+            </Space>
+          ))}
+        </Space>
+      </Modal>
     </Card>
   );
 }
