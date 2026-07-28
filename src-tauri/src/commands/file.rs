@@ -34,18 +34,14 @@ pub fn detect_source_type(path: String) -> Result<String, String> {
     Ok(source_type_name(t).to_string())
 }
 
-/// 读取 CSV/XLSX 返回预览所需的完整数据。前端自行截断显示行数。
+/// 读取 CSV/XLSX/sql/json/log/pcap/txt 返回预览所需的完整数据。前端自行截断显示行数。
 ///
-/// 与原 v0.1.0「不回传原值」策略不同：此为预览场景，前端只显示当前数据，
-/// 不提供「原值表」对比。`rows` 为全量数据行（不含表头）。
+/// v0.6.8.2：原 v0.1.0 仅支持 csv/xlsx，与 `preprocess_file` 行为不一致；现统一
+/// 委托 core `read_records`，支持全格式。`rows` 为全量数据行（不含表头）。
 #[tauri::command]
 pub fn load_preview(path: String) -> Result<Value, String> {
-    let t = detect_type(Path::new(&path)).map_err(|e| e.to_string())?;
-    if t != ruT0_data_kit_core::pipeline::SourceType::Csv
-        && t != ruT0_data_kit_core::pipeline::SourceType::Xlsx
-    {
-        return Err("v0.1.0 仅支持 csv/xlsx".into());
-    }
+    let p = Path::new(&path);
+    let t = detect_type(p).map_err(|e| e.to_string())?;
     let records = read_records(&path, t)?;
     Ok(json!({
         "headers": records.headers,

@@ -40,7 +40,6 @@ use std::fs::File;
 use std::path::Path;
 
 use ruT0_data_kit_core::pipeline::{detect_type, SourceType};
-use ruT0_data_kit_core::readers::{CsvReader, SourceReader, XlsxReader};
 use ruT0_data_kit_core::rules::{RuleSet, load_ruleset};
 use ruT0_data_kit_core::report::csv_report::build_csv_mask_report;
 
@@ -68,16 +67,16 @@ pub(super) fn resolve_rules(rules_path: &Option<String>) -> Result<RuleSet, Stri
 }
 
 /// 按源类型选择 reader 读取文件，返回 [`ruT0_data_kit_core::readers::Records`]。
+///
+/// v0.6.8.2：原 v0.1.0 仅支持 csv/xlsx，导出非 csv/xlsx（如 log/pcap/json/sql/txt）
+/// 时报 "v0.1.0 仅支持 csv/xlsx" 失败。core 的统一入口
+/// [`ruT0_data_kit_core::readers::read_records`] 早已支持全部 7 种格式，
+/// 这里直接委托，`t` 参数仅保留以维持调用方签名兼容（不再用于 dispatch）。
 pub(super) fn read_records(
     path: &str,
-    t: SourceType,
+    _t: SourceType,
 ) -> Result<ruT0_data_kit_core::readers::Records, String> {
-    let p = Path::new(path);
-    match t {
-        SourceType::Csv => CsvReader::new().read(p).map_err(|e| e.to_string()),
-        SourceType::Xlsx => XlsxReader::new().read(p).map_err(|e| e.to_string()),
-        _ => Err("v0.1.0 仅支持 csv/xlsx".into()),
-    }
+    ruT0_data_kit_core::readers::read_records(Path::new(path)).map_err(|e| e.to_string())
 }
 
 /// 执行脱敏 pipeline 并构造报告。返回 `(MaskResult, Report)` 的 JSON 表达。
@@ -94,9 +93,8 @@ pub(super) fn run_mask_pipeline(
     String,
 > {
     let t = detect_type(Path::new(input_path)).map_err(|e| e.to_string())?;
-    if t != SourceType::Csv && t != SourceType::Xlsx {
-        return Err("v0.1.0 仅支持 csv/xlsx".into());
-    }
+    // v0.6.8.2：移除 csv/xlsx-only 限制，让脱敏 pipeline 支持全格式（core
+    // read_records 已支持 csv/xlsx/sql/json/pcap/log/txt）。
     let rules = resolve_rules(rules_path)?;
     let records = read_records(input_path, t)?;
     let result = ruT0_data_kit_core::pipeline::mask_pipeline(&records, &rules)
@@ -115,16 +113,14 @@ pub(super) fn parse_ruleset_json(rules_json: &str) -> Result<RuleSet, String> {
     serde_json::from_str::<RuleSet>(rules_json).map_err(|e| format!("rules_json 解析失败: {e}"))
 }
 
-/// `read_records` 的无 `SourceType` 入参版本：自动 detect。仅支持 csv/xlsx，
-/// 其他类型报错。
+/// `read_records` 的无 `SourceType` 入参版本：自动 detect。
+///
+/// v0.6.8.2：移除 csv/xlsx-only 限制，直接委托 core 统一入口
+/// [`ruT0_data_kit_core::readers::read_records`]，支持全部 7 种格式。
 pub(super) fn read_records_auto(
     input_path: &str,
 ) -> Result<ruT0_data_kit_core::readers::Records, String> {
-    let t = detect_type(Path::new(input_path)).map_err(|e| e.to_string())?;
-    if t != SourceType::Csv && t != SourceType::Xlsx {
-        return Err("v0.1.0 仅支持 csv/xlsx".into());
-    }
-    read_records(input_path, t)
+    ruT0_data_kit_core::readers::read_records(Path::new(input_path)).map_err(|e| e.to_string())
 }
 
 /// 用 csv crate 写 UTF-8 CSV（表头 + 数据行）。

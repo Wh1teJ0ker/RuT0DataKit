@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use ruT0_data_kit_core::pipeline::{detect_type, mask_pipeline_selected, SourceType};
+use ruT0_data_kit_core::pipeline::{detect_type, mask_pipeline_selected};
 use ruT0_data_kit_core::pipeline::mask_pipeline_columns;
 use ruT0_data_kit_core::readers::Records;
 use ruT0_data_kit_core::report::csv_report::write_masked_csv;
@@ -53,9 +53,7 @@ pub fn apply_rules(
 ) -> Result<Value, String> {
     let rules = parse_ruleset_json(&rules_json)?;
     let t = detect_type(Path::new(&input_path)).map_err(|e| e.to_string())?;
-    if t != SourceType::Csv && t != SourceType::Xlsx {
-        return Err("v0.1.0 仅支持 csv/xlsx".into());
-    }
+    // v0.6.8.2：移除 csv/xlsx-only 限制，全格式走 core read_records。
     let records = read_records(&input_path, t)?;
     let selected: HashSet<usize> = selected_row_indices.into_iter().collect();
     let result = mask_pipeline_selected(&records, &rules, &selected).map_err(|e| e.to_string())?;
@@ -79,9 +77,7 @@ pub fn export_selected_csv(
 ) -> Result<(), String> {
     let rules = parse_ruleset_json(&rules_json)?;
     let t = detect_type(Path::new(&input_path)).map_err(|e| e.to_string())?;
-    if t != SourceType::Csv && t != SourceType::Xlsx {
-        return Err("v0.1.0 仅支持 csv/xlsx".into());
-    }
+    // v0.6.8.2：移除 csv/xlsx-only 限制，全格式走 core read_records。
     let records = read_records(&input_path, t)?;
     let selected: HashSet<usize> = selected_row_indices.into_iter().collect();
     let result = mask_pipeline_selected(&records, &rules, &selected).map_err(|e| e.to_string())?;
