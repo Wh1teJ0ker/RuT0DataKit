@@ -240,6 +240,10 @@ function RowExpanded({ record, rowState, setRowState, state, dispatch, onRun, on
   }, [state?.records?.headers]);
 
   // 结果区文案随规则类型变化：mask 显示脱敏结果，validate/extract 显示合法/非法（匹配/不匹配）。
+  // v0.6.8.1 修复：刚展开行时 rowState.result 为 null，原代码直接读 result.valid 会抛
+  // TypeError: Cannot read properties of null (reading 'valid')，导致整个 RowExpanded
+  // 渲染崩溃、展开区空白（用户所见「点击手机号出现空白」即此根因）。改用可选链，
+  // result 为 null 时 validText 退回空串；result 在下方条件渲染中仍会跳过结果区。
   const applyLabel = isMaskRow
     ? "应用并跳转数据脱敏"
     : isValidateRow
@@ -249,8 +253,8 @@ function RowExpanded({ record, rowState, setRowState, state, dispatch, onRun, on
         : "应用";
   const resultLabel = isMaskRow ? "脱敏结果：" : isExtractRow ? "匹配结果：" : "校验结果：";
   const validText = isExtractRow
-    ? (result.valid ? "匹配 ✓" : "不匹配 ✗")
-    : (result.valid ? "合法 ✓" : "非法 ✗");
+    ? (result?.valid ? "匹配 ✓" : "不匹配 ✗")
+    : (result?.valid ? "合法 ✓" : "非法 ✗");
 
   return (
     <div style={{ padding: "4px 0" }}>
