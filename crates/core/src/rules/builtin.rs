@@ -13,13 +13,17 @@
 //! 手机号码（pinfo_phone）。这些规则供 `validate_pipeline` 按 field 命中列后
 //! 逐 cell 校验。
 //!
+//! v0.6.7：补全 2 条数据提取规则——身份证号（idcard）/ 中文姓名（name）。
+//! 至此 extract 规则覆盖用户诉求的「身份证号 + 手机号 + 姓名（中文）」三类。
+//! 配合 patterns.rs `(?-u)\b` 修复，手机号在中文文本中也能召回。
+//!
 //! `builtin_ruleset()` 返回当前所有内置规则组成的 `RuleSet`，供：
 //! - `extract::extract_text` / `extract_file` 在未传 rules_json 时作为默认规则集
-//!   （这样无需用户配置即可提取手机号 / 银行卡号 / IP）
+//!   （这样无需用户配置即可提取手机号 / 银行卡号 / IP / 身份证号 / 姓名）
 //! - tauri `list_builtin_rules` 命令序列化为 JSON 返回给前端，启动时加载到
 //!   `state.rules`，让 RulesView / ExtractView / ValidateView 显示内置规则
 //!
-//! 后续版本按数据类型逐条接入：email / mac / ...
+//! 后续版本按数据类型逐条接入：email / mac / username 提取 ...
 //! 每条只需在此追加一个 `FieldRule`，无需改 scan/extract 算法。
 
 use crate::rules::{FieldRule, MaskRule, RuleSet};
@@ -27,7 +31,9 @@ use crate::rules::{FieldRule, MaskRule, RuleSet};
 /// 返回内置规则集（v0.4.5：phone / bankcard / ip 三条数据提取规则；
 /// v0.5.x：template / split_template / regex_replace / const_replace 四条
 /// 通用脱敏模版，params 全为 None，用户在 RulesView 试运行或 MaskView 按列填参数；
-/// v0.5.x：username / name / idcard / pinfo_phone 四条数据校验规则）。
+/// v0.5.x：username / name / idcard / pinfo_phone 四条数据校验规则；
+/// v0.6.7：补 idcard / name 两条数据提取规则——extract 规则覆盖
+/// 用户诉求的「身份证号 + 手机号 + 姓名（中文）」三类）。
 ///
 /// 内置规则是「出厂自带」的，与用户在 RulesView 创建的规则区分。前端启动
 /// 时通过 `list_builtin_rules` 命令拉取并写入 `state.rules`，用户可见可用
@@ -39,6 +45,8 @@ pub fn builtin_ruleset() -> RuleSet {
             phone_extract_rule(),
             bankcard_extract_rule(),
             ip_extract_rule(),
+            idcard_extract_rule(),
+            name_extract_rule(),
             // 数据校验（tag="validate"，个人信息规范）
             username_validate_rule(),
             name_validate_rule(),
@@ -59,7 +67,8 @@ pub fn builtin_ruleset() -> RuleSet {
 /// 手机号提取规则：scope="phone"，tag="extract"。
 ///
 /// - `scope="phone"` 作为 `scan::extract_pattern` 查键（`\b\d{11}\b`）+
-///   `ValidatorRegistry::get("phone")` 查键（`patterns::PHONE.validate` 校验首位为 1）。
+///   `build_validator` 查键（`PhoneValidator` 校验：缺省 1 开头，可由
+///   `params.prefixes` 自定义前 1-3 位号段）。
 /// - `tag="extract"` 标记为数据提取用途（RulesView 按标签筛选 / ExtractView
 ///   勾选规则时按 tag 过滤）。
 /// - `field="phone"` 为列名占位（extract 不依赖列名，但字段必填）。
@@ -70,7 +79,7 @@ pub fn phone_extract_rule() -> FieldRule {
         tag: "extract".into(),
         params: None,
         message: None,
-        description: Some("手机号提取（11 位数字，首位 1）".into()),
+        description: Some("手机号提取（11 位数字；默认 1 开头，可在 RulesView 自定义前三位号段）".into()),
     }
 }
 
@@ -110,16 +119,67 @@ pub fn ip_extract_rule() -> FieldRule {
     }
 }
 
+/// 身份证号提取规则：scope="idcard"，tag="extract"（v0.6.7 新增）。
+///
+/// - `scope="idcard"` 作为 `scan::extract_pattern` 查键
+///   （`(?-u)\b\d{17}[\dXx]\b`，ASCII 边界，中文旁也能召回）+
+///   `ValidatorRegistry::get("idcard")` 查键（`IdCardValidator` 做
+///   GB11643 校验码 + YYYYMMDD 出生日期校验，过滤误报）。
+/// - `tag="extract"` 标记为数据提取用途。
+/// - `field="idcard"` 为列名占位（extract 不依赖列名，但字段必填）。
+///
+/// 与 `idcard_validate_rule` 区分：本规则 tag="extract" 用于扫描文本提取
+/// 身份证号；`idcard_validate_rule` tag="validate" 用于按列校验 CSV 字段。
+/// 两者 scope 都是 "idcard"，复用同一 validator。
+pub fn idcard_extract_rule() -> FieldRule {
+    FieldRule {
+        field: "idcard".into(),
+        scope: "idcard".into(),
+        tag: "extract".into(),
+        params: None,
+        message: None,
+        description: Some("身份证号提取（18 位 + GB11643 校验码）".into()),
+    }
+}
+
+/// 中文姓名提取规则：scope="name"，tag="extract"（v0.6.7 新增）。
+///
+/// - `scope="name"` 作为 `scan::extract_pattern` 查键
+///   （`[\x{4e00}-\x{9fa5}]{2,4}`，限长 2-4 字，召回连续中文段）+
+///   `ValidatorRegistry::get("name")` 查键（`NameValidator` 全中文校验，
+///   过滤含数字/字母的误报）。
+/// - `tag="extract"` 标记为数据提取用途。
+/// - `field="name"` 为列名占位（extract 不依赖列名，但字段必填）。
+///
+/// 注意：中文文本中非姓名连续段（如「联系电话」「身份证号」）也会被召回，
+/// 属可接受误报，由用户在提取结果中自行判断。限长 2-4 字降低长中文段误报。
+///
+/// 与 `name_validate_rule` 区分：本规则 tag="extract" 用于扫描文本提取
+/// 姓名；`name_validate_rule` tag="validate" 用于按列校验 CSV 字段。
+/// 两者 scope 都是 "name"，复用同一 validator。
+pub fn name_extract_rule() -> FieldRule {
+    FieldRule {
+        field: "name".into(),
+        scope: "name".into(),
+        tag: "extract".into(),
+        params: None,
+        message: None,
+        description: Some("中文姓名提取（2-4 字连续中文段，可能含误报）".into()),
+    }
+}
+
 // ── v0.5.x 内置数据校验规则（4 条，tag="validate"，个人信息规范）──────────
 //
 // 这 4 条对应规范定义的 4 类需校验字段：
 // - 用户名(username)：仅字母数字
 // - 姓名(name)：全中文
 // - 身份证号(idcard)：18 位 + GB11643 校验码算法
-// - 手机号码(pinfo_phone)：11 位 + 规范指定的 52 个虚假号段前缀集合
+// - 手机号码(pinfo_phone)：11 位数字，默认 1 开头正常号码（v0.6.8 修订），
+//   可由 params.prefixes 自定义前 1-3 位号段集合
 //
-// `scope` 同时是 `ValidatorRegistry::get` 查键：username / name / idcard 复用
-// 既有 validator；pinfo_phone 走 `PInfoPhoneValidator`（独立于通用 phone）。
+// `scope` 同时是 `build_validator` 查键：username / name / idcard 复用
+// 既有 validator；pinfo_phone 走 `PhoneValidator::new(params)`（v0.6.8 修订后
+// 与 phone scope 统一，原 PInfoPhoneValidator 已删除）。
 //
 // `field` 用规范列名（中文），这样用户导入符合规范列结构的
 // CSV 后，validate_pipeline 按 header 名命中即可直接生效，无需用户手填 field。
@@ -171,11 +231,12 @@ pub fn idcard_validate_rule() -> FieldRule {
 
 /// 手机号码校验规则：scope="pinfo_phone"，tag="validate"，field="手机号码"。
 ///
-/// spec：11 位 10 进制数字，前 3 位必须在规范指定的 52 个虚假号段集合内
-/// （734/735/.../799，详见 `validators::pinfo_phone::PINFO_PHONE_PREFIXES`）。
+/// v0.6.8（修订）：11 位数字，默认 1 开头正常号码（与 phone scope 行为一致），
+/// 可由 `params.prefixes` 自定义前 1-3 位号段集合（如 `734,735,138`）。
+/// 上一轮 v0.6.8 默认 52 虚假号段的设计不正确（用户反馈），已废弃，
+/// `PInfoPhoneValidator` 已删除，scope 在 `build_validator` 中路由到
+/// `PhoneValidator::new(params)`。
 ///
-/// 与通用 `phone` scope（仅校验首位 1，去绝对化、无号段白名单，用于 extract）
-/// 区分：本校验器严格按虚假号段集合，仅用于个人信息规范的校验场景。
 /// field 用规范列名「手机号码」（注意：通用 phone 提取规则的 field 是 "phone"）。
 pub fn pinfo_phone_validate_rule() -> FieldRule {
     FieldRule {
@@ -184,7 +245,7 @@ pub fn pinfo_phone_validate_rule() -> FieldRule {
         tag: "validate".into(),
         params: None,
         message: None,
-        description: Some("手机号码校验（11 位 + 52 个虚假号段前缀）".into()),
+        description: Some("手机号码校验（11 位数字；默认 1 开头，可在 RulesView 自定义前三位号段）".into()),
     }
 }
 
@@ -294,10 +355,10 @@ mod tests {
     use crate::scan::{DefaultSensitiveScan, SensitiveScan};
 
     #[test]
-    fn builtin_ruleset_has_three_extract_rules() {
+    fn builtin_ruleset_has_extract_and_validate_rules() {
         let rs = builtin_ruleset();
-        // 3 extract + 5 validate = 8 validators
-        assert_eq!(rs.validators.len(), 8);
+        // v0.6.7：5 extract (phone/bankcard/ip/idcard/name) + 5 validate = 10 validators
+        assert_eq!(rs.validators.len(), 10);
         assert_eq!(rs.maskers.len(), 4);
         // phone extract
         assert_eq!(rs.validators[0].field, "phone");
@@ -311,26 +372,34 @@ mod tests {
         assert_eq!(rs.validators[2].field, "ip");
         assert_eq!(rs.validators[2].scope, "ip");
         assert_eq!(rs.validators[2].tag, "extract");
-        // username validate
-        assert_eq!(rs.validators[3].field, "用户名");
-        assert_eq!(rs.validators[3].scope, "username");
-        assert_eq!(rs.validators[3].tag, "validate");
-        // name validate
-        assert_eq!(rs.validators[4].field, "姓名");
+        // idcard extract (v0.6.7 新增)
+        assert_eq!(rs.validators[3].field, "idcard");
+        assert_eq!(rs.validators[3].scope, "idcard");
+        assert_eq!(rs.validators[3].tag, "extract");
+        // name extract (v0.6.7 新增)
+        assert_eq!(rs.validators[4].field, "name");
         assert_eq!(rs.validators[4].scope, "name");
-        assert_eq!(rs.validators[4].tag, "validate");
-        // idcard validate
-        assert_eq!(rs.validators[5].field, "身份证号");
-        assert_eq!(rs.validators[5].scope, "idcard");
+        assert_eq!(rs.validators[4].tag, "extract");
+        // username validate
+        assert_eq!(rs.validators[5].field, "用户名");
+        assert_eq!(rs.validators[5].scope, "username");
         assert_eq!(rs.validators[5].tag, "validate");
-        // pinfo_phone validate
-        assert_eq!(rs.validators[6].field, "手机号码");
-        assert_eq!(rs.validators[6].scope, "pinfo_phone");
+        // name validate
+        assert_eq!(rs.validators[6].field, "姓名");
+        assert_eq!(rs.validators[6].scope, "name");
         assert_eq!(rs.validators[6].tag, "validate");
-        // regex validate
-        assert_eq!(rs.validators[7].field, "自定义正则");
-        assert_eq!(rs.validators[7].scope, "regex");
+        // idcard validate
+        assert_eq!(rs.validators[7].field, "身份证号");
+        assert_eq!(rs.validators[7].scope, "idcard");
         assert_eq!(rs.validators[7].tag, "validate");
+        // pinfo_phone validate
+        assert_eq!(rs.validators[8].field, "手机号码");
+        assert_eq!(rs.validators[8].scope, "pinfo_phone");
+        assert_eq!(rs.validators[8].tag, "validate");
+        // regex validate
+        assert_eq!(rs.validators[9].field, "自定义正则");
+        assert_eq!(rs.validators[9].scope, "regex");
+        assert_eq!(rs.validators[9].tag, "validate");
         // 4 mask templates
         assert_eq!(rs.maskers[0].scope, "template");
         assert_eq!(rs.maskers[1].scope, "split_template");
@@ -392,6 +461,80 @@ mod tests {
         assert!(r.params.is_none());
         assert!(r.message.is_none());
         assert!(r.description.is_some());
+    }
+
+    // ── v0.6.7 新增 extract 规则字段断言 ──
+
+    #[test]
+    fn idcard_extract_rule_fields() {
+        let r = idcard_extract_rule();
+        assert_eq!(r.field, "idcard");
+        assert_eq!(r.scope, "idcard");
+        assert_eq!(r.tag, "extract");
+        assert!(r.params.is_none());
+        assert!(r.message.is_none());
+        assert!(r.description.is_some());
+    }
+
+    #[test]
+    fn name_extract_rule_fields() {
+        let r = name_extract_rule();
+        assert_eq!(r.field, "name");
+        assert_eq!(r.scope, "name");
+        assert_eq!(r.tag, "extract");
+        assert!(r.params.is_none());
+        assert!(r.message.is_none());
+        assert!(r.description.is_some());
+    }
+
+    /// v0.6.7 核心 bug 回归测试：中文紧贴文本提取手机号。
+    /// 旧版本 PHONE.extract = `\b\d{11}\b`（Unicode-aware）在
+    /// `联系13812345678打电话` 中无 `\b` 边界，find_iter 召回不到候选 → 提取失败。
+    /// 修复后 `(?-u)\b\d{11}\b` 切到 ASCII 模式，中文旁也能召回。
+    #[test]
+    fn builtin_ruleset_extracts_phone_from_chinese_text() {
+        let rs = builtin_ruleset();
+        let scan = DefaultSensitiveScan::new();
+        let findings = scan.scan("联系13812345678打电话", &rs);
+        let phones: Vec<&str> = findings
+            .iter()
+            .filter(|f| f.r#type == "phone")
+            .map(|f| f.value.as_str())
+            .collect();
+        assert!(phones.contains(&"13812345678"), "got {:?}", phones);
+    }
+
+    /// v0.6.7 新增：中文紧贴文本提取身份证号（286071197501111126 合法）。
+    #[test]
+    fn builtin_ruleset_extracts_idcard_from_text() {
+        let rs = builtin_ruleset();
+        let scan = DefaultSensitiveScan::new();
+        let findings = scan.scan("身份证286071197501111126登记", &rs);
+        let ids: Vec<&str> = findings
+            .iter()
+            .filter(|f| f.r#type == "idcard")
+            .map(|f| f.value.as_str())
+            .collect();
+        assert!(ids.contains(&"286071197501111126"), "got {:?}", ids);
+    }
+
+    /// v0.6.7 新增：中文文本提取姓名（「广怀萍」3 字合法）。
+    /// 注意：scan 召回所有 2-4 字连续中文段，连续中文段长度 > 4 时会被切成
+    /// 多个 4 字片段。本测试用半角冒号把姓名与其他中文段隔开，确保「广怀萍」
+    /// 作为独立 3 字段被召回。实际使用中非姓名中文段（如「联系电话」）也会被召回，
+    /// 属可接受误报，由用户在提取结果中自行判断。
+    #[test]
+    fn builtin_ruleset_extracts_name_from_text() {
+        let rs = builtin_ruleset();
+        let scan = DefaultSensitiveScan::new();
+        // 用半角冒号 + 逗号隔开姓名段，避免与「联系人」「登记」连成 4 字段
+        let findings = scan.scan("联系人:广怀萍,登记", &rs);
+        let names: Vec<&str> = findings
+            .iter()
+            .filter(|f| f.r#type == "name")
+            .map(|f| f.value.as_str())
+            .collect();
+        assert!(names.contains(&"广怀萍"), "got {:?}", names);
     }
 
     /// 内置规则集能从文本提取手机号（scan 路径：scope -> extract_pattern
@@ -590,7 +733,8 @@ mod tests {
 
     /// validate_pipeline 用内置规则集校验符合规范列结构的 CSV：合法行全 true。
     ///
-    /// 使用规范示例行（前缀 788 ∈ 虚假号段集合）。
+    /// v0.6.8（修订）：pinfo_phone 默认改为 1 开头正常号码，故手机号用
+    /// 1 开头的合成测试号。
     #[test]
     fn builtin_ruleset_validates_spec_rows() {
         use crate::pipeline::validate::validate_pipeline;
@@ -609,13 +753,13 @@ mod tests {
                 "GAn4NPxq5omi".into(),
                 "广怀萍".into(),
                 "779200198010124642".into(),
-                "79180497760".into(),
+                "13812345678".into(), // v0.6.8 默认 1 开头 → valid
             ]],
         };
         let rs = builtin_ruleset();
         let r = validate_pipeline(&records, &rs).expect("validate");
         // 用户名（纯字母数字）、姓名（全中文）、身份证号（校验码合法）、
-        // 手机号码（791 ∈ 虚假号段集合）均合法 → 整行 valid。
+        // 手机号码（1 开头正常号码）均合法 → 整行 valid。
         assert!(
             r.valid_matrix[0].iter().all(|&v| v),
             "expected all-valid row, got {:?}",
@@ -625,7 +769,7 @@ mod tests {
     }
 
     /// validate_pipeline 用内置规则集标记非法 cell：用户名含下划线 / 姓名
-    /// 含数字 / 手机号用真实号段（138 不在号段集合）。
+    /// 含数字 / 手机号首位非 1（788 开头，v0.6.8 默认 1 开头判定为非法）。
     #[test]
     fn builtin_ruleset_marks_invalid_pinfo_cells() {
         use crate::pipeline::validate::validate_pipeline;
@@ -644,7 +788,7 @@ mod tests {
                 "ad_1in".into(),      // 含下划线 → 非法
                 "张3".into(),         // 含数字 → 非法
                 "779200198010124642".into(), // 合法
-                "13812345678".into(),  // 真实号段，不在号段集合 → 非法
+                "78813630178".into(),  // v0.6.8 默认 1 开头，788 首位非 1 → 非法
             ]],
         };
         let rs = builtin_ruleset();

@@ -1,10 +1,15 @@
 //! Validator trait 与内置校验器注册。
 //!
 //! 提供 `Validator` trait / `ValidationResult` / `RegexValidator`（YAML `regex`
-//! 兜底），以及 9 个内置业务校验器：idcard / phone / bankcard / email / ip /
-//! mac / username / name / pinfo_phone。`register_builtin_validators` 把它们注册进
+//! 兜底），以及 8 个内置业务校验器：idcard / phone / bankcard / email / ip /
+//! mac / username / name。`register_builtin_validators` 把它们注册进
 //! `ValidatorRegistry`，`default_validator_registry` 返回一个已注册全部内置校验器
 //! 的注册表。
+//!
+//! v0.6.8（修订）：`pinfo_phone` scope 不再有独立校验器文件（原
+//! `validators/pinfo_phone.rs` 已删除），改由 `build_validator` 在 `pinfo_phone`
+//! scope 时直接构造 `PhoneValidator::new(params)`，与 `phone` scope 统一。
+//! 默认行为从 52 虚假号段改为 1 开头正常号码（用户反馈修正）。
 
 pub mod bankcard;
 pub mod email;
@@ -13,7 +18,6 @@ pub mod ip;
 pub mod mac;
 pub mod name;
 pub mod phone;
-pub mod pinfo_phone;
 pub mod username;
 
 use std::collections::HashMap;
@@ -83,9 +87,9 @@ impl Validator for RegexValidator {
 
 /// 注册内置校验器到给定注册表。
 ///
-/// 注册：idcard / phone / bankcard / email / ip / mac / username / name /
-/// pinfo_phone，均以默认参数构造。具体参数注入（如 mac 的 `prefix`）由调用方
-/// 直接构造对应 validator 实现（T0-5 pipeline）。
+/// 注册：idcard / phone / bankcard / email / ip / mac / username / name，
+/// 均以默认参数构造。具体参数注入（如 phone 的 `prefixes`、mac 的 `prefix`）
+/// 由调用方直接构造对应 validator 实现（T0-5 pipeline / build_validator）。
 pub fn register_builtin_validators(reg: &mut ValidatorRegistry) {
     reg.register("idcard", || {
         Box::new(idcard::IdCardValidator::new(HashMap::new()))
@@ -108,9 +112,6 @@ pub fn register_builtin_validators(reg: &mut ValidatorRegistry) {
     });
     reg.register("name", || {
         Box::new(name::NameValidator::new(HashMap::new()))
-    });
-    reg.register("pinfo_phone", || {
-        Box::new(pinfo_phone::PInfoPhoneValidator::new(HashMap::new()))
     });
 }
 
@@ -137,7 +138,6 @@ mod tests {
             "mac",
             "username",
             "name",
-            "pinfo_phone",
         ] {
             assert!(reg.contains(name), "missing builtin validator: {name}");
         }

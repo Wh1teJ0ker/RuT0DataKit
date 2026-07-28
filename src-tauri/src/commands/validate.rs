@@ -6,6 +6,7 @@ use ruT0_data_kit_core::pipeline::validate_pipeline;
 use ruT0_data_kit_core::readers::Records;
 use ruT0_data_kit_core::rules::types::FieldRule;
 use ruT0_data_kit_core::rules::{apply_validate_op, ValidateOp};
+use ruT0_data_kit_core::validators::Validator;
 use serde_json::{json, Value};
 use serde_yml;
 
@@ -97,11 +98,26 @@ pub fn trial_validate(
     let op = match ValidateOp::from_rule(&rule) {
         Some(op) => op,
         None => {
+            // v0.6.8（修订）：phone / pinfo_phone scope 走 PhoneValidator 试运行，
+            // 透传 params.prefixes（自定义前 1-3 位号段集合），缺省走默认 1 开头。
+            // 与 build_validator 中 phone/pinfo_phone 分支保持一致。
+            if rule.scope == "phone" || rule.scope == "pinfo_phone" {
+                let v = ruT0_data_kit_core::validators::phone::PhoneValidator::new(
+                    rule.params.clone().unwrap_or_default(),
+                );
+                let result = v.validate(&sample_value);
+                return Ok(json!({
+                    "ok": true,
+                    "valid": result.valid,
+                    "message": if result.valid { Value::Null } else { Value::from(result.message.clone()) },
+                    "error": null,
+                }));
+            }
             return Ok(json!({
                 "ok": false,
                 "valid": null,
                 "message": null,
-                "error": "未识别的校验算子 scope（当前支持 regex）".to_string(),
+                "error": "未识别的校验算子 scope（当前支持 regex / phone / pinfo_phone）".to_string(),
             }));
         }
     };

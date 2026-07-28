@@ -20,9 +20,9 @@ pub mod types;
 pub mod validate_op;
 
 pub use builtin::{
-    bankcard_extract_rule, builtin_ruleset, const_replace_mask_rule, ip_extract_rule,
-    phone_extract_rule, regex_replace_mask_rule, regex_validate_rule, split_template_mask_rule,
-    template_mask_rule,
+    bankcard_extract_rule, builtin_ruleset, const_replace_mask_rule, idcard_extract_rule,
+    ip_extract_rule, name_extract_rule, phone_extract_rule, regex_replace_mask_rule,
+    regex_validate_rule, split_template_mask_rule, template_mask_rule,
 };
 pub use loader::{load_ruleset, load_ruleset_str};
 pub use mask_op::{
@@ -52,14 +52,15 @@ pub fn build_validator(
     if let Some(op) = ValidateOp::from_rule(rule) {
         return Some(Box::new(op));
     }
-    // v0.4.4：pinfo_phone 需透传 params.prefixes（自定义号段集合）到 validator
-    // 构造，而 ValidatorRegistry 工厂闭包是零参数的，无法接收运行时 params。
-    // 这里直接构造 PInfoPhoneValidator::new(rule.params)，缺省 params 走默认
-    // 52 前缀，与注册表默认工厂行为一致。语义参考 build_masker 透传 params 的做法。
-    if rule.scope == "pinfo_phone" {
+    // v0.6.8（修订）：phone / pinfo_phone 统一用 PhoneValidator，透传
+    // params.prefixes（自定义前 1-3 位号段集合）。ValidatorRegistry 工厂闭包是
+    // 零参数的，无法接收运行时 params，故这里直接构造。
+    // 缺省（params 无 prefixes 或空）走默认 1 开头正常号码；上一轮 v0.6.8 默认
+    // 52 虚假号段的设计不正确（用户反馈），已废弃，PInfoPhoneValidator 已删除。
+    if rule.scope == "phone" || rule.scope == "pinfo_phone" {
         let params = rule.params.clone().unwrap_or_default();
         return Some(Box::new(
-            crate::validators::pinfo_phone::PInfoPhoneValidator::new(params),
+            crate::validators::phone::PhoneValidator::new(params),
         ) as Box<dyn crate::validators::Validator>);
     }
     reg.get(&rule.scope)
@@ -124,8 +125,9 @@ mod tests {
     }
 
     #[test]
-    fn build_validator_pinfo_phone_scope_uses_default_prefixes() {
-        // v0.4.4：scope="pinfo_phone" 无 params 时走默认 52 前缀。
+    fn build_validator_pinfo_phone_scope_uses_default_one_prefix() {
+        // v0.6.8（修订）：scope="pinfo_phone" 无 params 时走默认 1 开头正常号码。
+        // 上一轮 v0.6.8 默认 52 虚假号段的设计已废弃。
         let reg = crate::validators::default_validator_registry();
         let rule = FieldRule {
             field: "手机号".into(),
@@ -136,16 +138,16 @@ mod tests {
             description: None,
         };
         let v = build_validator(&rule, &reg).expect("pinfo_phone scope should build");
-        // 788 ∈ 默认集合
-        assert!(v.validate("78813630178").valid);
-        // 138 ∉ 默认集合
-        assert!(!v.validate("13812345678").valid);
+        // 138 ∈ 1 开头 → valid
+        assert!(v.validate("13812345678").valid);
+        // 788 首位非 1 → invalid
+        assert!(!v.validate("78813630178").valid);
     }
 
     #[test]
     fn build_validator_pinfo_phone_scope_with_custom_prefixes_param() {
-        // v0.4.4：scope="pinfo_phone" + params.prefixes 自定义号段集合，
-        // 透传到 PInfoPhoneValidator::new，覆盖默认集合。
+        // v0.6.8（修订）：scope="pinfo_phone" + params.prefixes 自定义号段集合，
+        // 透传到 PhoneValidator::new，覆盖默认 1 开头。
         let reg = crate::validators::default_validator_registry();
         let prefixes = Value::Sequence(vec![
             Value::String("138".into()),
@@ -167,14 +169,39 @@ mod tests {
         assert!(v.validate("13812345678").valid);
         assert!(v.validate("15987654321").valid);
         assert!(v.validate("81825660184").valid);
-        // 788 ∈ 默认集合但 ∉ 自定义集合 → 失败
+        // 788 ∉ 自定义集合 → 失败
         assert!(!v.validate("78813630178").valid);
     }
 
     #[test]
-    fn build_validator_phone_scope_uses_registry() {
-        // v0.4.4：scope="phone" 在 ValidateOp::from_rule 中暂无映射（后续接入），
-        // 回退到 ValidatorRegistry::get("phone") 命中内置 PhoneValidator。
+    fn build_validator_phone_scope_with_custom_prefixes_param() {
+        // v0.6.8（修订）：scope="phone" + params.prefixes 同样透传到 PhoneValidator。
+        let reg = crate::validators::default_validator_registry();
+        let prefixes = Value::Sequence(vec![
+            Value::String("734".into()),
+            Value::String("799".into()),
+        ]);
+        let mut params = HashMap::new();
+        params.insert("prefixes".to_string(), prefixes);
+        let rule = FieldRule {
+            field: "phone".into(),
+            scope: "phone".into(),
+            tag: "extract".into(),
+            params: Some(params),
+            message: None,
+            description: None,
+        };
+        let v = build_validator(&rule, &reg).expect("phone with params should build");
+        assert!(v.validate("73412345678").valid);
+        assert!(v.validate("79912345678").valid);
+        // 138 ∉ 自定义集合 → 失败（自定义覆盖默认 1 开头）
+        assert!(!v.validate("13812345678").valid);
+    }
+
+    #[test]
+    fn build_validator_phone_scope_uses_registry_default() {
+        // v0.6.8（修订）：scope="phone" 无 params 时仍透传到 PhoneValidator::new
+        // （空 params），走默认 1 开头正常号码。
         let reg = crate::validators::default_validator_registry();
         let rule = FieldRule {
             field: "phone".into(),
@@ -184,7 +211,7 @@ mod tests {
             message: None,
             description: None,
         };
-        let v = build_validator(&rule, &reg).expect("phone scope should hit registry");
+        let v = build_validator(&rule, &reg).expect("phone scope should build");
         assert!(v.validate("13812345678").valid);
         assert!(!v.validate("abc").valid);
     }

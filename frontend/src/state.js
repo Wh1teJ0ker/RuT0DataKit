@@ -30,6 +30,11 @@ export const ACTION = {
   VALIDATE_OVERRIDE_SET: "SET_VALIDATE_OVERRIDE",
   VALIDATE_OVERRIDE_CLEAR: "CLEAR_VALIDATE_OVERRIDE",
   VALIDATE_OVERRIDE_CLEAR_ALL: "CLEAR_ALL_VALIDATE_OVERRIDES",
+  // extract（v0.6.8 修订：phone 提取规则支持自定义前三位号段，
+  // 与 validateOverrides 对称，仅 ExtractView 使用，不污染全局 rules）
+  EXTRACT_OVERRIDE_SET: "SET_EXTRACT_OVERRIDE",
+  EXTRACT_OVERRIDE_CLEAR: "CLEAR_EXTRACT_OVERRIDE",
+  EXTRACT_OVERRIDE_CLEAR_ALL: "CLEAR_ALL_EXTRACT_OVERRIDES",
   // log
   LOG_ENTRIES_SET: "SET_LOG_ENTRIES",
   LOG_REPORT_SET: "SET_LOG_REPORT",
@@ -132,6 +137,9 @@ export const initialState = {
   // key=表头，value={masker/validator, params, description?}
   maskOverrides: {}, // { [header]: MaskRule }
   validateOverrides: {}, // { [header]: FieldRule }
+  // v0.6.8 修订：ExtractView 的会话级「表头-提取算子」映射，与 validateOverrides
+  // 对称；用于 RulesView phone（extract）行「应用」按钮写入，导入新文件时清空。
+  extractOverrides: {}, // { [header]: FieldRule }
   // 列勾选
   selectedColumns: [], // MaskView 用：要脱敏的列名
   columnOrder: [], // ExportView 用：列顺序
@@ -236,6 +244,7 @@ const fileDomain = (state, action) => {
         // 会话级映射与具体文件绑定，导入新文件时清空（不污染全局规则库）。
         maskOverrides: {},
         validateOverrides: {},
+        extractOverrides: {},
         // 默认全选全部数据列，列顺序 = headers，导出列 = headers。
         selectedColumns: [...headers],
         columnOrder: [...headers],
@@ -275,6 +284,7 @@ const fileDomain = (state, action) => {
         // 会话级映射与具体文件绑定，导入新文件时清空（不污染全局规则库）。
         maskOverrides: {},
         validateOverrides: {},
+        extractOverrides: {},
         // 默认全选全部数据列，列顺序 = headers，导出列 = headers。
         selectedColumns: [...headers],
         columnOrder: [...headers],
@@ -315,6 +325,7 @@ const fileDomain = (state, action) => {
         exportColumns: remapArr(state.exportColumns),
         maskOverrides: remapOverrides(state.maskOverrides),
         validateOverrides: remapOverrides(state.validateOverrides),
+        extractOverrides: remapOverrides(state.extractOverrides),
         maskedRows: null,
         maskedSummary: null,
         validateResult: null,
@@ -665,6 +676,25 @@ const extractDomain = (state, action) => {
     case ACTION.EXTRACT_RULE_TAG_FILTER_SET: {
       const { extractRuleTagFilter } = action;
       return { ...state, extractRuleTagFilter };
+    }
+    // v0.6.8 修订：ExtractView 的会话级「表头-提取算子」映射（extractOverrides），
+    // 与 validateDomain 中 validateOverrides 完全对称。仅 ExtractView 使用，不污染
+    // 全局 rules；导入新文件时由 fileDomain 清空。
+    case ACTION.EXTRACT_OVERRIDE_SET: {
+      const { header, rule } = action;
+      const next = { ...state.extractOverrides };
+      if (rule == null) delete next[header];
+      else next[header] = rule;
+      return { ...state, extractOverrides: next };
+    }
+    case ACTION.EXTRACT_OVERRIDE_CLEAR: {
+      const { header } = action;
+      const next = { ...state.extractOverrides };
+      delete next[header];
+      return { ...state, extractOverrides: next };
+    }
+    case ACTION.EXTRACT_OVERRIDE_CLEAR_ALL: {
+      return { ...state, extractOverrides: {} };
     }
     default:
       return state;

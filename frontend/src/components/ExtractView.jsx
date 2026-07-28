@@ -68,7 +68,23 @@ export default function ExtractView({ state, dispatch }) {
     extractLoading,
     extractSelectedIndices,
     extractRuleTagFilter,
+    extractOverrides,
   } = state;
+
+  // v0.6.8 修订：合并全局 rules.validators（tag="extract"）与 extractOverrides
+  // （RulesView phone 行「应用」写入的会话级规则）。override 按 field 去重覆盖，
+  // 与 ValidateView.effectiveValidators 完全对称。后续 filteredRules/ruleOptions/
+  // handleExtract 均以此为准，确保自定义 prefixes 提取规则生效。
+  const effectiveValidators = useMemo(() => {
+    const map = new Map();
+    for (const r of (rules.validators || [])) {
+      if (r.tag === "extract") map.set(r.field || r.scope, r);
+    }
+    for (const r of Object.values(extractOverrides || {})) {
+      map.set(r.field || r.scope, r);
+    }
+    return Array.from(map.values());
+  }, [rules.validators, extractOverrides]);
 
   // v0.6.4 T19-2：导出自定义本地 state。
   const [txtTemplate, setTxtTemplate] = useState(
@@ -103,18 +119,22 @@ export default function ExtractView({ state, dispatch }) {
     };
   }, [rules]);
 
-  // 规则池：state.rules.validators（校验规则），按 tag 过滤（单值匹配）。
+  // v0.6.7 T22-2：规则池按 tag 过滤——提取界面只显示 tag="extract" 的规则，
+  // 与数据校验规则（tag="validate"）分离。extractRuleTagFilter 为 null 时显示全部
+  // extract 规则；用户在 Select 选了具体 tag 时进一步筛选 extract 子集
+  // （但选项已被限定为 extract 相关，不会混入 validate）。
+  // v0.6.8 修订：基集由 rules.validators 改为 effectiveValidators（合并
+  // extractOverrides）。
   const filteredRules = useMemo(() => {
-    const all = rules.validators || [];
-    if (!extractRuleTagFilter) return all;
-    return all.filter((r) => r.tag === extractRuleTagFilter);
-  }, [rules.validators, extractRuleTagFilter]);
+    const extracts = effectiveValidators.filter((r) => r.tag === "extract");
+    if (!extractRuleTagFilter) return extracts;
+    return extracts.filter((r) => r.tag === extractRuleTagFilter);
+  }, [effectiveValidators, extractRuleTagFilter]);
 
-  // Checkbox.Group 的 options：value=规则在 rules.validators 中的全局下标（稳定 key）。
+  // Checkbox.Group 的 options：value=规则在 effectiveValidators 中的下标（稳定 key）。
   const ruleOptions = useMemo(() => {
-    const all = rules.validators || [];
     return filteredRules.map((r) => {
-      const globalIdx = all.indexOf(r);
+      const idx = effectiveValidators.indexOf(r);
       const label = (
         <Space size={4}>
           <Tag color={TYPE_COLORS[r.scope] || "default"} style={{ marginRight: 0 }}>
@@ -125,9 +145,9 @@ export default function ExtractView({ state, dispatch }) {
           </Text>
         </Space>
       );
-      return { label, value: globalIdx };
+      return { label, value: idx };
     });
-  }, [filteredRules, rules.validators]);
+  }, [filteredRules, effectiveValidators]);
 
   const handleSelectFile = async () => {
     const path = await tauriInvoke("select_file");
@@ -143,10 +163,11 @@ export default function ExtractView({ state, dispatch }) {
       message.warning("请至少勾选一条提取规则");
       return;
     }
-    // 按选中下标构造 RuleSet JSON（validators 子集，maskers 空）。
-    const all = rules.validators || [];
+    // 按选中下标从 effectiveValidators 构造 RuleSet JSON（validators 子集，maskers 空）。
+    // v0.6.8 修订：effectiveValidators 合并了 extractOverrides，自定义 prefixes
+    // 提取规则按勾选下标生效。
     const selectedRules = extractSelectedIndices
-      .map((i) => all[i])
+      .map((i) => effectiveValidators[i])
       .filter(Boolean);
     const rulesJson = JSON.stringify({ validators: selectedRules, maskers: [] });
 
@@ -341,7 +362,7 @@ export default function ExtractView({ state, dispatch }) {
           <Space>
             <span>规则选择</span>
             <Tag color="blue">
-              {extractSelectedIndices.length} / {rules.validators?.length || 0}
+              {extractSelectedIndices.length} / {filteredRules.length}
             </Tag>
           </Space>
         }
@@ -359,9 +380,13 @@ export default function ExtractView({ state, dispatch }) {
                 extractRuleTagFilter: v === "__all__" ? null : v,
               })
             }
+            // v0.6.7 T22-2：filteredRules 已锁 extract 子集，options 只列
+            // 「全部提取规则」+ extract 单选，避免用户选 validate 后看不到规则。
             options={[
-              { label: "全部", value: "__all__" },
-              ...tagOptions.map((t) => ({ label: t, value: t })),
+              { label: "全部提取规则", value: "__all__" },
+              ...tagOptions
+                .filter((t) => t === "extract")
+                .map((t) => ({ label: t, value: t })),
             ]}
             allowClear
             onClear={() =>
@@ -378,9 +403,9 @@ export default function ExtractView({ state, dispatch }) {
         {ruleOptions.length === 0 ? (
           <Empty
             description={
-              (rules.validators?.length || 0) === 0
+              effectiveValidators.length === 0
                 ? "规则池为空，内置规则加载失败时此列表为空"
-                : `无带「${extractRuleTagFilter}」标签的规则`
+                : "无带「extract」标签的提取规则"
             }
           />
         ) : (

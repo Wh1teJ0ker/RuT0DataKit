@@ -72,11 +72,33 @@ const MASK_PARAM_META = {
 
 // 各校验模版（scope）的可填参数元信息（v0.6.2 新增，与 MASK_PARAM_META 对称）。
 // regex：用户填 pattern（正则）+ 可选 message（失败消息）+ 可选 empty_message（空值失败消息）。
+// v0.6.8（修订）：phone（extract）与 pinfo_phone（validate）统一支持 prefixes
+// （前 1-3 位号段列表，逗号分隔输入 → 数组）。Rust 端 PhoneValidator::new 读
+// params.prefixes（Value::Sequence 字符串序列），缺省/空走默认 1 开头正常号码
+// （上一轮 v0.6.8 默认 52 虚假号段的设计不正确，已废弃）。前端用 list 类型，
+// buildParams 保留非空数组。
 const VALIDATE_PARAM_META = {
   regex: [
     { key: "pattern", label: "正则 pattern", type: "text" },
     { key: "message", label: "失败消息", type: "text" },
     { key: "empty_message", label: "空值失败消息", type: "text" },
+  ],
+  // v0.6.8（修订）：phone scope 用于数据提取规则，支持自定义前三位号段。
+  phone: [
+    {
+      key: "prefixes",
+      label: "前 1-3 位号段（逗号分隔，留空=默认 1 开头正常号码）",
+      type: "list",
+      placeholder: "138,159,734",
+    },
+  ],
+  pinfo_phone: [
+    {
+      key: "prefixes",
+      label: "前 1-3 位号段（逗号分隔，留空=默认 1 开头正常号码）",
+      type: "list",
+      placeholder: "138,159,734",
+    },
   ],
 };
 
@@ -127,6 +149,29 @@ function renderParamInput(meta, params, setParams) {
       </label>
     );
   }
+  if (type === "list") {
+    // v0.6.8 T23-1：list 类型支持逗号分隔字符串输入 → 内部存为 string[]。
+    // 显示时数组转逗号串；onChange 时 split + trim + 过滤空串 → 数组。
+    const text = Array.isArray(params[key]) ? params[key].join(",") : (params[key] ?? "");
+    return (
+      <label key={key} style={{ display: "flex", flexDirection: "column", gap: 2, fontSize: 12, minWidth: 240 }}>
+        {label}
+        <Input.TextArea
+          size="small"
+          autoSize={{ minRows: 2, maxRows: 4 }}
+          value={text}
+          onChange={(e) => {
+            const arr = e.target.value
+              .split(",")
+              .map((s) => s.trim())
+              .filter((s) => s.length > 0);
+            setParams((p) => ({ ...p, [key]: arr }));
+          }}
+          placeholder={meta.placeholder ?? ""}
+        />
+      </label>
+    );
+  }
   // number
   return (
     <label key={key} style={{ display: "flex", flexDirection: "column", gap: 2, fontSize: 12, width: 90 }}>
@@ -145,6 +190,7 @@ function renderParamInput(meta, params, setParams) {
 }
 
 // 操作列与展开区共享的 params 清洗：过滤空串/未勾选布尔，保留数值 0。
+// v0.6.8 T23-1：list 类型保留非空数组、过滤空数组（留空 → 不写 params → 走后端默认）。
 function buildParams(scope, params = {}) {
   const paramMeta = getParamMeta(scope);
   const cleaned = {};
@@ -154,17 +200,23 @@ function buildParams(scope, params = {}) {
       if (v) cleaned[key] = true;
       continue;
     }
+    if (type === "list") {
+      if (Array.isArray(v) && v.length > 0) cleaned[key] = v;
+      continue;
+    }
     if (v === undefined || v === "" || v === null) continue;
     cleaned[key] = v;
   }
   return cleaned;
 }
 
-// 行内展开区：mask / validate 规则渲染参数表单 + 样例值 + 运行结果；其它规则渲染描述全文。
+// 行内展开区：mask / validate / extract 规则渲染参数表单 + 样例值 + 运行结果；其它规则渲染描述全文。
 // 状态由 RulesView 通过 rowStates[key] + setRowState 下发，保证操作列按钮与表单共享。
 function RowExpanded({ record, rowState, setRowState, state, dispatch, onRun, onApply }) {
   const paramMeta = getParamMeta(record.scope);
-  // 无参数元信息的规则（如 extract / pinfo validate）只显示描述全文。
+  // 无参数元信息的规则（如通用 validate 不带可编辑参数）只显示描述全文。
+  // v0.6.8（修订）：phone（extract）与 pinfo_phone（validate）均有 prefixes 参数，
+  // 会走下方的参数表单分支。
   if (paramMeta.length === 0) {
     return (
       <Text type="secondary" style={{ fontSize: 12 }}>
@@ -175,6 +227,7 @@ function RowExpanded({ record, rowState, setRowState, state, dispatch, onRun, on
 
   const isMaskRow = record.__kind === "mask" && record.tag === "mask";
   const isValidateRow = record.__kind === "validate" && record.tag === "validate";
+  const isExtractRow = record.__kind === "validate" && record.tag === "extract";
   const { params = {}, sample = "", field = "", result = null } = rowState || {};
 
   const setParams = (updater) => {
@@ -186,8 +239,18 @@ function RowExpanded({ record, rowState, setRowState, state, dispatch, onRun, on
     return headers.map((h) => ({ label: h, value: h }));
   }, [state?.records?.headers]);
 
-  // 结果区文案随规则类型变化：mask 显示脱敏结果，validate 显示合法/非法。
-  const applyLabel = isMaskRow ? "应用并跳转数据脱敏" : isValidateRow ? "应用并跳转数据校验" : "应用";
+  // 结果区文案随规则类型变化：mask 显示脱敏结果，validate/extract 显示合法/非法（匹配/不匹配）。
+  const applyLabel = isMaskRow
+    ? "应用并跳转数据脱敏"
+    : isValidateRow
+      ? "应用并跳转数据校验"
+      : isExtractRow
+        ? "应用并跳转数据提取"
+        : "应用";
+  const resultLabel = isMaskRow ? "脱敏结果：" : isExtractRow ? "匹配结果：" : "校验结果：";
+  const validText = isExtractRow
+    ? (result.valid ? "匹配 ✓" : "不匹配 ✗")
+    : (result.valid ? "合法 ✓" : "非法 ✗");
 
   return (
     <div style={{ padding: "4px 0" }}>
@@ -244,22 +307,22 @@ function RowExpanded({ record, rowState, setRowState, state, dispatch, onRun, on
       {result ? (
         <div style={{ marginTop: 4, padding: 8, background: "#fafafa", borderRadius: 4 }}>
           {result.ok ? (
-            isValidateRow ? (
+            isMaskRow ? (
               <Space size="small" wrap align="center">
-                <Text type="secondary" style={{ fontSize: 12 }}>校验结果：</Text>
+                <Text type="secondary" style={{ fontSize: 12 }}>脱敏结果：</Text>
+                <Text strong copyable>{result.masked}</Text>
+              </Space>
+            ) : (
+              <Space size="small" wrap align="center">
+                <Text type="secondary" style={{ fontSize: 12 }}>{resultLabel}</Text>
                 {result.valid ? (
-                  <Text type="success" strong>合法 ✓</Text>
+                  <Text type="success" strong>{validText}</Text>
                 ) : (
-                  <Text type="danger" strong>非法 ✗</Text>
+                  <Text type="danger" strong>{validText}</Text>
                 )}
                 {result.message ? (
                   <Text type="secondary" style={{ fontSize: 12 }}>（{result.message}）</Text>
                 ) : null}
-              </Space>
-            ) : (
-              <Space size="small" wrap align="center">
-                <Text type="secondary" style={{ fontSize: 12 }}>脱敏结果：</Text>
-                <Text strong copyable>{result.masked}</Text>
               </Space>
             )
           ) : (
@@ -419,7 +482,9 @@ export default function RulesView({ state, dispatch }) {
     }
   }
 
-  // 校验试运行（v0.6.2）：与 runTrialForRow 对称，调 trial_validate。
+  // 校验/提取试运行（v0.6.2，v0.6.8 扩展）：与 runTrialForRow 对称，调 trial_validate。
+  // v0.6.8（修订）：phone（extract）与 pinfo_phone（validate）scope 已在 trial_validate
+  // 后端命令中支持，复用同一试运行入口。
   async function runValidateTrialForRow(record) {
     const rs = rowStates[record.key] ?? {};
     if (!rs.sample) {
@@ -476,6 +541,39 @@ export default function RulesView({ state, dispatch }) {
     }
   }
 
+  // 提取应用并跳转（v0.6.8 修订）：把 scope + params 写为 extractOverrides 中一条动态规则。
+  // 与 applyValidateForRow 对称，但 tag="extract"、写入 extractOverrides、跳数据提取视图。
+  async function applyExtractForRow(record) {
+    const rs = rowStates[record.key] ?? {};
+    setRowState(record.key, (s) => ({ ...s, applying: true }));
+    try {
+      const targetField = (rs.field || "").trim() || record.field;
+      const paramsObj = buildParams(record.scope, rs.params ?? {});
+      const ruleObj = {
+        field: targetField,
+        scope: record.scope,
+        tag: "extract",
+        params: Object.keys(paramsObj).length ? paramsObj : undefined,
+        message: undefined,
+        description: undefined,
+      };
+      dispatch({ type: "SET_EXTRACT_OVERRIDE", header: targetField, rule: ruleObj });
+      const headers = state?.records?.headers || [];
+      if (headers.length > 0) {
+        if (headers.includes(targetField)) {
+          message.success(`已应用「${targetField}」提取配置，跳转数据提取`);
+        } else {
+          message.warning(`字段「${targetField}」未在当前表头中找到，已写入配置，请在数据提取视图调整字段名`);
+        }
+      } else {
+        message.success("已应用提取配置，请先到数据预处理导入文件后再到数据提取视图使用");
+      }
+      dispatch({ type: "SET_VIEW", activeView: "extract" });
+    } finally {
+      setRowState(record.key, (s) => ({ ...s, applying: false }));
+    }
+  }
+
   const columns = [
     {
       title: "标签",
@@ -506,10 +604,13 @@ export default function RulesView({ state, dispatch }) {
       key: "action",
       width: 170,
       render: (_, r) => {
-        // 有参数元信息的规则（mask 模版 + regex 校验）才显示运行/应用按钮。
+        // 有参数元信息的规则（mask 模版 + regex/pinfo_phone 校验 + phone 提取）才显示运行/应用按钮。
         if (getParamMeta(r.scope).length === 0) return null;
         const isMaskRow = r.__kind === "mask" && r.tag === "mask";
+        const isExtractRow = r.__kind === "validate" && r.tag === "extract";
         const rs = rowStates[r.key] ?? {};
+        const runHandler = isMaskRow ? runTrialForRow : isExtractRow ? runValidateTrialForRow : runValidateTrialForRow;
+        const applyHandler = isMaskRow ? applyForRow : isExtractRow ? applyExtractForRow : applyValidateForRow;
         return (
           <Space size="small">
             <Button
@@ -517,7 +618,7 @@ export default function RulesView({ state, dispatch }) {
               type="primary"
               icon={<ExperimentOutlined />}
               loading={!!rs.loading}
-              onClick={() => (isMaskRow ? runTrialForRow(r) : runValidateTrialForRow(r))}
+              onClick={() => runHandler(r)}
             >
               运行
             </Button>
@@ -525,7 +626,7 @@ export default function RulesView({ state, dispatch }) {
               size="small"
               icon={<RocketOutlined />}
               loading={!!rs.applying}
-              onClick={() => (isMaskRow ? applyForRow(r) : applyValidateForRow(r))}
+              onClick={() => applyHandler(r)}
             >
               应用
             </Button>
@@ -595,8 +696,12 @@ export default function RulesView({ state, dispatch }) {
                     setRowState={setRowState}
                     state={state}
                     dispatch={dispatch}
-                    onRun={record.__kind === "mask" ? runTrialForRow : runValidateTrialForRow}
-                    onApply={record.__kind === "mask" ? applyForRow : applyValidateForRow}
+                    onRun={record.__kind === "mask"
+                      ? runTrialForRow
+                      : (record.tag === "extract" ? runValidateTrialForRow : runValidateTrialForRow)}
+                    onApply={record.__kind === "mask"
+                      ? applyForRow
+                      : (record.tag === "extract" ? applyExtractForRow : applyValidateForRow)}
                   />
                 ),
               }}
