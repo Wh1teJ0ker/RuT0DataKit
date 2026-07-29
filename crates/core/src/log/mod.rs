@@ -269,6 +269,25 @@ pub fn url_decode_twice(input: &str) -> String {
     url_decode_once(&once)
 }
 
+/// 检测字符串是否含 URL 编码序列 `%XX`（XX 为合法 hex）（v0.7.1）。
+///
+/// `parse_sqls` / `detect_sql_blind_features` 用它判断输入是否需要先做 URL
+/// 解码再喂盲注探针正则。已解码输入（无 `%XX` hex 序列）返回 `false`，走
+/// 原路径，零行为变化。
+///
+/// **已知边界**：`LIKE '%ab%'` 这种字面百分号后跟合法 hex（如 `%ab`）会被
+/// 识别为编码序列并解码为字节 0xAB（replacement char）。SQLi payload 场景
+/// 此形态极罕见，且即使误解码也不影响盲注探针正则匹配——这是合理保守的
+/// 简化。若未来需更严格区分，可改为要求 `%XX` 后跟非 hex 字符。
+pub fn looks_like_url_encoded(input: &str) -> bool {
+    use std::sync::OnceLock;
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"(?i)%[0-9a-f]{2}").expect("url-encoded detector regex must compile")
+    })
+    .is_match(input)
+}
+
 /// 把 query 串拆成 `Vec<(key, value)>`，key/value 按 form-urlencoded 语义解码。
 ///
 /// 解码顺序（关键，符合 application/x-www-form-urlencoded 标准）：
@@ -301,4 +320,34 @@ pub fn parse_query(query: &str) -> Vec<(String, String)> {
         ));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn looks_like_url_encoded_pct20() {
+        assert!(looks_like_url_encoded("1'%20or%201=1#"));
+    }
+
+    #[test]
+    fn looks_like_url_encoded_pct3e_pct23() {
+        assert!(looks_like_url_encoded(
+            "username=1'%20or%20ascii(substr((database()),1,1))%3E79%23&password=1"
+        ));
+    }
+
+    #[test]
+    fn looks_like_url_encoded_plain_sql() {
+        // 纯文本 SQL，无 `%XX` hex 序列。
+        assert!(!looks_like_url_encoded("SELECT * FROM users"));
+        assert!(!looks_like_url_encoded("1' or 1=1#"));
+    }
+
+    #[test]
+    fn looks_like_url_encoded_bare_pct_no_hex() {
+        // `%` 后跟非 hex 字符（如 `%q`）→ 非合法编码序列 → false。
+        assert!(!looks_like_url_encoded("100% sure"));
+    }
 }

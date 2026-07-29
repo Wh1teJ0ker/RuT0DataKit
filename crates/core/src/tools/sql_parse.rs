@@ -30,22 +30,34 @@
 //! 产出，按 6 类首命中规则归类（time / error / union / tautology / comment
 //! 覆盖 5 类非盲注探针，blind_boolean 在 payload_parser 里也归一类但本模块
 //! 优先用 BlindProbe 表达，避免重复）。
+//!
+//! ## v0.7.1：自动 URL 解码
+//!
+//! `parse_sqls` 内部用 [`crate::log::looks_like_url_encoded`] 检测输入是否含
+//! `%XX` hex 序列，命中则先调 [`crate::log::url_decode_twice`] 双重 URL 解码
+//! 再喂探针正则。caller 可直接传 raw（如 `username=1'%20or%20...%23`），
+//! 无需自行解码。对已解码输入零影响（向后兼容 v0.5.0 ~ v0.7.0 行为）。
 
 use crate::logsign::payload_parser::parse_payload;
 use crate::logsign::{
     extract_blind_probe, AggregatedResult, BlindAggregator, BlindProbe, ParsedPayload,
     ReconstructedDatabase,
 };
+use crate::log::{looks_like_url_encoded, url_decode_twice};
 
 /// 单条 SQL 解析输入（v0.5.0 T5-9）。
 ///
-/// 与 `LogEntry` 解耦：caller 只需提供已解码的 SQL 文本 + 可选响应 body
+/// 与 `LogEntry` 解耦：caller 只需提供 SQL 文本 + 可选响应 body
 /// 大小 + 可选来源 IP。`response_body_size` 为 `None` 时该 input 跳过盲注
 /// 探针提取（无 body size 无法判真假），但仍会尝试 payload_parser 6 类语义
 /// 解析兜底。
+///
+/// **v0.7.1**：`sql` 字段可传 raw 或已解码形态——[`parse_sqls`] 内部用
+/// [`looks_like_url_encoded`] 检测 `%XX` 序列，命中则自动调
+/// [`url_decode_twice`] 解码后再喂探针正则。caller 无需自行解码。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SqlParseInput {
-    /// 已解码的 SQL 文本（caller 负责 URL 解码）。
+    /// SQL 文本（v0.7.1 起 `parse_sqls` 自动检测 `%XX` 并解码，caller 可直传 raw）。
     pub sql: String,
     /// HTTP 响应 body 字节数；`None` 表示未知（盲注探针跳过该 input）。
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -90,9 +102,18 @@ pub fn parse_sqls(inputs: Vec<SqlParseInput>) -> SqlParseResult {
     let mut parsed_payloads: Vec<ParsedPayload> = Vec::new();
 
     for input in &inputs {
+        // v0.7.1：自动识别 URL-encoded 输入，命中 `%XX` hex 序列则先双重 URL
+        // 解码再喂探针正则。对已解码输入零影响（looks_like_url_encoded 仅在
+        // 含合法 `%XX` 时返回 true）。
+        let decoded_sql = if looks_like_url_encoded(&input.sql) {
+            url_decode_twice(&input.sql)
+        } else {
+            input.sql.clone()
+        };
+
         // 盲注探针：boolean/equality/length（无 response_body_size 跳过）。
         let mut p = extract_blind_probe(
-            &input.sql,
+            &decoded_sql,
             input.response_body_size,
             input.source_ip.as_deref(),
         );
@@ -101,7 +122,7 @@ pub fn parse_sqls(inputs: Vec<SqlParseInput>) -> SqlParseResult {
         // 6 类语义解析兜底：time/error/union/tautology/comment 等无二分序列
         // 的探针在这里被记录。blind_boolean 也会出现，作为 parsed_payload
         // 副产物（与 probes 不冲突，下游前端可按需展示）。
-        if let Some(pp) = parse_payload(&input.sql) {
+        if let Some(pp) = parse_payload(&decoded_sql) {
             parsed_payloads.push(pp);
         }
     }
@@ -438,5 +459,76 @@ mod tests {
             .collect();
         ips.sort();
         assert_eq!(ips, vec!["1.1.1.1".to_string(), "2.2.2.2".to_string()]);
+    }
+
+    #[test]
+    fn parse_sqls_decodes_url_encoded_ascii_binary() {
+        // v0.7.1：用户报告的 URL-encoded payload，`%20`→space / `%3E`→`>` /
+        // `%23`→`#`，解码后命中 ascii_binary 探针。
+        let inputs = vec![SqlParseInput {
+            sql: "username=1'%20or%20ascii(substr((database()),1,1))%3E79%23&password=1"
+                .to_string(),
+            response_body_size: Some(862),
+            source_ip: Some("1.1.1.1".to_string()),
+        }];
+
+        let result = parse_sqls(inputs);
+        assert_eq!(result.probes.len(), 1, "probes = {:?}", result.probes);
+        assert_eq!(result.probes[0].probe_kind, ProbeKind::AsciiBinary);
+        assert_eq!(result.probes[0].read_target, "database()");
+        assert_eq!(result.probes[0].char_position, 1);
+        assert_eq!(result.probes[0].threshold, 79);
+        assert_eq!(result.probes[0].body_size, 862);
+    }
+
+    #[test]
+    fn parse_sqls_decodes_url_encoded_equality() {
+        // `%27p%27` → `'p'`，解码后命中 Equality 探针。
+        let inputs = vec![SqlParseInput {
+            sql: "substr((database()),1,1)=%27p%27".to_string(),
+            response_body_size: Some(862),
+            source_ip: Some("1.1.1.1".to_string()),
+        }];
+
+        let result = parse_sqls(inputs);
+        assert_eq!(result.probes.len(), 1, "probes = {:?}", result.probes);
+        assert_eq!(result.probes[0].probe_kind, ProbeKind::Equality);
+        assert_eq!(result.probes[0].equality_char, Some('p'));
+        assert_eq!(result.probes[0].char_position, 1);
+    }
+
+    #[test]
+    fn parse_sqls_passes_plain_sql_unchanged() {
+        // 已解码纯文本输入：looks_like_url_encoded 返回 false，走原路径，
+        // 行为与 v0.7.0 一致（回归保护）。
+        let inputs = vec![SqlParseInput {
+            sql: "1' or ascii(substr((database()),1,1))>79#".to_string(),
+            response_body_size: Some(862),
+            source_ip: Some("1.1.1.1".to_string()),
+        }];
+
+        let result = parse_sqls(inputs);
+        assert_eq!(result.probes.len(), 1);
+        assert_eq!(result.probes[0].probe_kind, ProbeKind::AsciiBinary);
+        assert_eq!(result.probes[0].read_target, "database()");
+        assert_eq!(result.probes[0].threshold, 79);
+    }
+
+    #[test]
+    fn parse_sqls_url_encoded_time_payload() {
+        // `1'%20or%20sleep(5)%23` → `1' or sleep(5)#`，解码后命中 time 类。
+        let inputs = vec![SqlParseInput {
+            sql: "1'%20or%20sleep(5)%23".to_string(),
+            response_body_size: Some(1000),
+            source_ip: Some("1.1.1.1".to_string()),
+        }];
+
+        let result = parse_sqls(inputs);
+        assert!(result
+            .parsed_payloads
+            .iter()
+            .any(|p| p.attack_type == "time"),
+            "parsed_payloads = {:?}",
+            result.parsed_payloads);
     }
 }

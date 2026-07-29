@@ -4,11 +4,10 @@
 全部处理在本地完成，不上传任何样本或规则。本仓库面向数据安全竞赛与红队场景中的
 "敏感数据快速清洗 / 解析" 需求，不依赖 Python 运行时。
 
-> **当前状态：v0.7.0 已发布（T24-1 ~ T24-4 verified_complete，release_complete）。** v0.7.0 是面向数据安全 CTF 场景的「工具收敛 + 列级 SQL 解析」功能版本：
-> - **删除 Tools/正则解析子工具（T24-1）**：用户明确要求删除正则解析功能。前端 `RegexTool.jsx` / `RegexConstructTab.jsx` 删除，`ToolsView.jsx` / `Sidebar.jsx` / `state.js` / `tauri.js` 同步清理；Tauri `commands/tools.rs` 重写为仅 `parse_sql_tool`，`main.rs` 删除 `explain_regex` / `regex_construct` 两项注册（handler 39 → 37）；core `tools/mod.rs` 重写为仅 `encrypt` + `sql_parse`，删除 `regex_explain.rs` / `regex_construct.rs` / `regex_template.rs` 三文件。**保留** `SearchQuery::Regex`、masker 内部 regex、logsign blind regex（与本子工具无关）。
-> - **PreprocessView 列级 SQL 解析跳转（T24-2）**：预览表表头在 ✏ 改名按钮旁新增 `ConsoleSqlOutlined` 按钮，点击触发 `handleColumnSqlParse(columnName)`——取该列所有非空 cell 值作为 `SqlParseInput[]` → `parseSqlTool(inputs)` → 写入 `SET_SQL_PARSE_INPUT` + `SET_SQL_PARSE_RESULT` → 跳转 Tools/Sql 复用现有 `SqlParseTool.jsx` UI（镜像 Sidebar.jsx:60-62 跳转模式）。用户可在 Tools/Sql 继续编辑 textarea 重跑。
-> - **版本号 0.6.8 → 0.7.0**：4 处 manifest 同步（Cargo.toml workspace / src-tauri Cargo.toml / tauri.conf.json / frontend package.json）。破坏性变更：删除 Tools/正则解析子工具（用户明确要求），其余公开 API / 行为零变化。版本状态约定见 `docs/04-版本标准.md`。
-> - 详见 `docs/versions/0.7.0/更新日志.md` 与 `docs/qa/versions/0.7.0/QA-审计报告.md`。
+> **当前状态：v0.7.1 已发布（T25-1 ~ T25-2 verified_complete，release_complete）。** v0.7.1 是 v0.7.0 之后针对 SQL 解析路径的 URL-encoded 输入识别 patch：
+> - **SQL 解析路径自动识别 URL-encoded 输入（T25-1）**：用户报告 URL-encoded SQLi payload（如 `username=1'%20or%20ascii(substr((database()),1,1))%3E79%23&password=1`）解析失败。根因：`parse_sqls` / `detect_sql_blind_features` 把 raw 输入直接喂纯文本正则，遇到 `%20` / `%3E` / `%23` 不匹配 → 0 探针。修复：新增 `crates/core/src/log/mod.rs::looks_like_url_encoded`（正则 `(?i)%[0-9a-f]{2}` + OnceLock 单例），`parse_sqls` 与 `detect_sql_blind_features` 命中才调既有 `url_decode_twice` 双重解码再喂探针正则。caller 可直传 raw，对已解码输入零影响（向后兼容）。新增 8 core 单测 + 3 Tauri 单测。
+> - **版本号 0.7.0 → 0.7.1**：4 处 manifest 同步（Cargo.toml workspace / src-tauri Cargo.toml / tauri.conf.json / frontend package.json）。非破坏性 patch：仅放宽 `SqlParseInput.sql` 字段语义（caller 可传 raw），其余公开 API / 行为零变化。版本状态约定见 `docs/04-版本标准.md`。
+> - 详见 `docs/versions/0.7.1/更新日志.md` 与 `docs/qa/versions/0.7.1/QA-审计报告.md`。
 
 ## 功能
 
@@ -111,6 +110,11 @@ v0.4.1 5 项缺陷修复已落地：
 - **T24-2 PreprocessView 列级 SQL 解析跳转**：预览表表头 `<Space>` 在 ✏ 改名按钮旁新增 `ConsoleSqlOutlined` 按钮，`handleColumnSqlParse(columnName)`：遍历 `records.rows` 按 `headers.indexOf(columnName)` 取列下标，收集所有非空 cell 值 → `parseSqlTool(inputs)` → 写 `SET_SQL_PARSE_INPUT` + `SET_SQL_PARSE_RESULT` → `SET_VIEW("tools")` + `SET_TOOLS_ACTIVE_TAB("sql")`。与 T6-4「盲注自动跳转」互补：前者是用户针对单列主动触发，后者是导入时按全部 cell 探测。`SqlParseTool.jsx` 不修改，已读取这两个 state 字段。
 - **T24-3 版本 bump + docs 全面清理**：4 处 manifest `0.6.8 → 0.7.0`；docs/00/01/02/03/04 + README + README_EN 同步删除正则解析条目 + 新增 v0.7.0 列级 SQL 跳转说明；`docs/versions/0.7.0/更新日志.md` + `docs/qa/versions/0.7.0/QA-审计报告.md` 落盘。
 - **T24-4 Release QA + finalize**：5 维度 Release QA（功能 / 回归 / 构建 / 安全 / 文档）结论 qa_passed；`cargo test -p ruT0-data-kit-core --release` 464 passed + tauri 5 passed + npm build 3007 modules 0 error；commit + push origin main。
+
+## v0.7.1 已落地
+
+- **T25-1 双调用点 URL-decode-on-detection**：用户报告 URL-encoded SQLi payload（`username=1'%20or%20ascii(substr((database()),1,1))%3E79%23&password=1`）解析失败。根因：`parse_sqls` / `detect_sql_blind_features` 把 raw 输入直接喂纯文本正则（期望字面空格 ` ` / `>` / `#`），遇到 `%20` / `%3E` / `%23` 不匹配 → 0 探针。修复：新增 `crates/core/src/log/mod.rs::looks_like_url_encoded`（正则 `(?i)%[0-9a-f]{2}` + `OnceLock` 单例，复用既有 `regex::Regex` 零新依赖）；core `tools/sql_parse.rs::parse_sqls` 循环内对 `input.sql` 条件解码后喂 `extract_blind_probe` / `parse_payload`；Tauri `commands/log.rs::detect_sql_blind_features` 对 cell 条件解码后喂 `looks_like_blind_probe`，`samples` 改收集解码后形态（与 `parse_sqls` 入口一致，避免下游二次解码）。`SqlParseInput.sql` 字段语义放宽：caller 可直传 raw。对已解码输入零影响（`looks_like_url_encoded` 返回 `false` 走原路径，向后兼容 v0.5.0 ~ v0.7.0）。新增 8 core 单测 + 3 Tauri 单测。
+- **T25-2 版本 bump + docs + Release QA + finalize**：4 处 manifest `0.7.0 → 0.7.1`；docs/00/02/03/04 + README + README_EN 同步新增 v0.7.1 说明；`docs/versions/0.7.1/更新日志.md` + `docs/qa/versions/0.7.1/QA-审计报告.md` 落盘；5 维度 Release QA 结论 qa_passed；`cargo test -p ruT0-data-kit-core --release` 472 passed + tauri 8 passed + npm build 3007 modules 0 error；commit + push origin main。
 
 ## 安装
 
@@ -331,6 +335,7 @@ cargo tauri dev
 | v0.4.3 | txt 兼容 + 数据提取独立模块（ExtractView）+ 规则引擎去绝对化（PhoneValidator 删白名单 + 新增 IpValidator） | 已发布 v0.4.3 |
 | v0.5.0 | 架构性质升级：blind_aggregator/commands/operator 三大 God 文件拆分 + rules/patterns.rs 正则集中化 + 前端 state 领域切片 + ColumnRuleMapper 公共组件（依据代码质量审计报告 P0+P1+P2，零行为回归） | 已发布 v0.5.0 |
 | v0.7.0 | 删除 Tools/正则解析子工具（前端 RegexTool/RegexConstructTab + Tauri explain_regex/regex_construct + core regex_explain/regex_construct/regex_template 全移除）+ PreprocessView 表头新增「列级 SQL 解析」按钮（取该列全部非空行 → `parseSqlTool` → 跳转 Tools/Sql 复用现有 UI） | 已发布 v0.7.0 |
+| v0.7.1 | SQL 解析路径自动识别 URL-encoded 输入：新增 `looks_like_url_encoded`（`(?i)%[0-9a-f]{2}`）+ `parse_sqls` / `detect_sql_blind_features` 命中才调 `url_decode_twice` 双重解码再喂探针正则；caller 可直传 raw，对已解码输入零影响（patch，非破坏性） | 已发布 v0.7.1 |
 
 版本判定标准见 `docs/04-版本标准.md`。
 
