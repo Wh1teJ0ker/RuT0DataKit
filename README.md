@@ -4,12 +4,11 @@
 全部处理在本地完成，不上传任何样本或规则。本仓库面向数据安全竞赛与红队场景中的
 "敏感数据快速清洗 / 解析" 需求，不依赖 Python 运行时。
 
-> **当前状态：v0.5.0 架构性质升级（T12-1 ~ T12-6 verified_complete，已 release_complete）。** v0.5.0 是专门的架构升级版本，基于 `docs/qa/代码质量审计报告.md` P0+P1+P2 路线图，零行为回归的内部重构：
-> - **God 文件拆分（T12-1/2/3）**：`blind_aggregator.rs` 1790 LOC → `logsign/blind/{mod,probe,aggregate,reconstruct}.rs`；`commands.rs` 1173 LOC → `commands/{mod + 10 领域}.rs`；`operator.rs` 976 LOC → `rules/{mask_op,validate_op}.rs`。三大 God 文件全删除（3939 LOC → 14 个职责单一子文件）。
-> - **正则集中化（T12-4）**：新建 `rules/patterns.rs` 集中 8 scope 成对 extract/validate 正则，`scan` 与 `validators` 统一引用，phone `1\d{10}` 跨文件散布 0 命中。
-> - **前端状态切片（T12-5）**：`state.js` 按领域切片为 13 个子函数 + 54 ACTION 常量，组件 dispatch 调用零改动。
-> - **公共组件抽取（T12-6）**：新建 `ColumnRuleMapper.jsx`，MaskView 500→323 LOC（-35%），ValidateView 478→294 LOC（-39%）。
-> - **版本号 0.4.4 → 0.5.0**：5 处 manifest 同步（Cargo.toml workspace / crates/core `version.workspace` / src-tauri Cargo.toml / tauri.conf.json / frontend package.json）。破坏性变更：无（纯内部重构，公开 API / 行为 / 前端调用链零变化）。版本状态约定见 `docs/04-版本标准.md`。
+> **当前状态：v0.7.0 已发布（T24-1 ~ T24-4 verified_complete，release_complete）。** v0.7.0 是面向数据安全 CTF 场景的「工具收敛 + 列级 SQL 解析」功能版本：
+> - **删除 Tools/正则解析子工具（T24-1）**：用户明确要求删除正则解析功能。前端 `RegexTool.jsx` / `RegexConstructTab.jsx` 删除，`ToolsView.jsx` / `Sidebar.jsx` / `state.js` / `tauri.js` 同步清理；Tauri `commands/tools.rs` 重写为仅 `parse_sql_tool`，`main.rs` 删除 `explain_regex` / `regex_construct` 两项注册（handler 39 → 37）；core `tools/mod.rs` 重写为仅 `encrypt` + `sql_parse`，删除 `regex_explain.rs` / `regex_construct.rs` / `regex_template.rs` 三文件。**保留** `SearchQuery::Regex`、masker 内部 regex、logsign blind regex（与本子工具无关）。
+> - **PreprocessView 列级 SQL 解析跳转（T24-2）**：预览表表头在 ✏ 改名按钮旁新增 `ConsoleSqlOutlined` 按钮，点击触发 `handleColumnSqlParse(columnName)`——取该列所有非空 cell 值作为 `SqlParseInput[]` → `parseSqlTool(inputs)` → 写入 `SET_SQL_PARSE_INPUT` + `SET_SQL_PARSE_RESULT` → 跳转 Tools/Sql 复用现有 `SqlParseTool.jsx` UI（镜像 Sidebar.jsx:60-62 跳转模式）。用户可在 Tools/Sql 继续编辑 textarea 重跑。
+> - **版本号 0.6.8 → 0.7.0**：4 处 manifest 同步（Cargo.toml workspace / src-tauri Cargo.toml / tauri.conf.json / frontend package.json）。破坏性变更：删除 Tools/正则解析子工具（用户明确要求），其余公开 API / 行为零变化。版本状态约定见 `docs/04-版本标准.md`。
+> - 详见 `docs/versions/0.7.0/更新日志.md` 与 `docs/qa/versions/0.7.0/QA-审计报告.md`。
 
 ## 功能
 
@@ -27,6 +26,7 @@
 | v0.4.2 | 设置模块首期：Sidebar 底部「设置」入口 + tshark 多平台自动检测 + 路径配置持久化 + SettingsView UI（+ 3 项 patch 修复：文件导入对话框补 json/sql 扩展名 / 侧边栏与主页面分离滚动 / 脱敏校验下拉改用用户规则，版本号不变） | 已发布 v0.4.2 |
 | v0.4.3 | txt 兼容（PreprocessView 支持 .txt 导入）+ 数据提取独立模块（ExtractView：文件/文本输入 → phone/bankcard/ip 提取 → txt/csv/json 导出，匹配 PDF spec type_value 格式）+ 规则引擎去绝对化（PhoneValidator 删 CTF/real 白名单 → `^1\d{10}$`；新增 IpValidator） | 已发布 v0.4.3 |
 | v0.5.0 | 架构性质升级：blind_aggregator/commands/operator 三大 God 文件拆分 + rules/patterns.rs 正则集中化 + 前端 state 领域切片 + ColumnRuleMapper 公共组件（依据代码质量审计报告 P0+P1+P2，零行为回归） | 已发布 v0.5.0 |
+| v0.7.0 | 删除 Tools/正则解析子工具（前端 RegexTool/RegexConstructTab + Tauri explain_regex/regex_construct + core regex_explain/regex_construct/regex_template 全移除）+ PreprocessView 表头新增「列级 SQL 解析」按钮（取该列全部非空行 → `parseSqlTool` → 跳转 Tools/Sql 复用现有 UI） | 已发布 v0.7.0 |
 
 v0.1.0 已落地：
 - core pipeline：`detect_type` → `SourceReader` → `mask_pipeline` / `mask_pipeline_selected`（行选择，向后兼容）/ `mask_pipeline_columns`（列勾选） → `validate_pipeline`（校验） → `write_masked_csv` / `export_records_csv` / `export_records_xlsx`
@@ -93,16 +93,24 @@ v0.4.0 架构性完整重构已落地：
 - **多标签规则引擎（界面 2）**：`FieldRule` 与 `MaskRule` 增加 `tags: Vec<String>`（默认空 Vec 向后兼容），`RuleSet::by_tag(tag)` / `by_tag_mask(tag)` 按标签过滤；一条规则可同时挂多个标签（如 `[mask, sensitive]` / `[validate, sensitive]`），让同一规则在脱敏 / 校验 / 搜索 / SQL 解析多个视图复用；`RulesView` Drawer 多标签编辑。
 - **统一搜索（界面 3）**：`search_records(records, query)` 统一入口，`SearchQuery` 枚举 `Keyword { terms, mode: And|Or }` / `Regex { pattern }` / `ExactField { field, value }`；keyword 走 `SearchIndex::build` 倒排索引 + `search_keyword`，regex 线性扫（非法 pattern 返回 `InvalidInput`），exact_field 按列名定位 + 精确匹配。`SearchView` 三选 Radio + 命中表（`<mark>` 高亮，无 `dangerouslySetInnerHTML`），「跳转脱敏 / 跳转导出」把命中行号去重排序写入 `state.filteredRowIndices`。
 - **数据脱敏/校验/导出（界面 4-6）**：四段垂直布局，MaskView/ValidateView 消费 `state.filteredRowIndices` 实现「仅搜索命中行」过滤；ExportView 单一 antd Table + 表头 Checkbox 勾选导出列 + 上下移调序 + 单元格预览 + 源数据 Select（脱敏后 / 校验后 / 原始）+ 行过滤 + 格式 Select（CSV / XLSX / JSON）。
-- **Tools 页面（界面 7）**：antd Tabs 下拉两个子工具——(a) **SQL 解析**：`parse_sqls(inputs) -> SqlParseResult { probes, aggregated, reconstructed, parsed_payloads }`，`extract_blind_probe(sql, response_body_size, source_ip)` 抽 `BlindProbe`（AsciiBinary / Equality / Length 三类），`reconstruct_database` 关联 4 类 read_target 自动还原数据库 schema/tables；非盲注 payload 走 `parse_payload` 兜底。(b) **正则解析**：`explain_regex(pattern) -> Vec<RegexTokenDesc>` 手写逐字符扫描 + 8 内置模板（v0.4.1 起改为语句→构造正则）。
+- **Tools 页面（界面 7）**：Sidebar SubMenu 下拉两个子工具——(a) **SQL 解析**：`parse_sqls(inputs) -> SqlParseResult { probes, aggregated, reconstructed, parsed_payloads }`，`extract_blind_probe(sql, response_body_size, source_ip)` 抽 `BlindProbe`（AsciiBinary / Equality / Length 三类），`reconstruct_database` 关联 4 类 read_target 自动还原数据库 schema/tables；非盲注 payload 走 `parse_payload` 兜底。(b) **加密/解密**：通用 EncryptTool。**v0.7.0：原「正则解析」子工具已删除**（详见 v0.7.0 更新日志）。
+- **PreprocessView 列级 SQL 解析跳转（v0.7.0 T24-2）**：预览表表头 ✏ 改名按钮旁新增 `ConsoleSqlOutlined` 按钮，点击触发 `handleColumnSqlParse(columnName)`——取该列所有非空 cell 值作为 `SqlParseInput[]` → `parseSqlTool(inputs)` → 写入 `SET_SQL_PARSE_INPUT` + `SET_SQL_PARSE_RESULT` → 跳转 Tools/Sql 复用现有 `SqlParseTool.jsx` UI（镜像 Sidebar.jsx:60-62 跳转模式）；用户可在 Tools/Sql 继续编辑 textarea 重跑。空列 warning 不跳转，失败 message.error 不清空已有结果。仅本地处理，不外发数据。
 - **跨视图 state 不丢**：`App.jsx` 顶层 `useReducer` 内存常驻，`SET_VIEW` 只切 view 不重置数据；搜索命中行号、脱敏结果、校验结果、SQL 解析结果均跨视图保留。
 - **不外发数据**：全本地处理；规则与样本不上传（保留 v0.1.0 §6 安全约束）。
 
 v0.4.1 5 项缺陷修复已落地：
 - **T6-1 数据流打通**：`ExportView` 从读 `state.filePath`（SET_FILE 通道，v0.4.0 实现漏写）迁移到读 `state.records`（SET_RECORDS 通道，与 `PreprocessView.handleImport` 唯一写入端对齐）；`computeExportArgs` fallback 到 records 作为后端 inputPath；新增 e2e `preprocess_to_search_finds_hits`（csv → `read_records` → `search_records(Keyword "张三")` 命中行数 ≥1 + cell 含「张三」）端到端验证「预处理 → 搜索」链路，修复用户反馈「预处理导入后在搜索界面无法搜到」的根因。
 - **T6-2 移除各界面 FileToolbar**：删除 `frontend/src/components/FileToolbar.jsx`（-106 行）+ `App.jsx` 移除 `NO_TOOLBAR_VIEWS` 集合与 `<FileToolbar/>` 渲染分支；导入唯一入口收敛到 `PreprocessView` 内置「选择文件」按钮（v0.4.0 设计本意）；消除各界面顶部冗余的导入按钮。
-- **T6-3 ToolsView 下拉栏**：`Sidebar.jsx` 的「Tools」项由普通 Menu item 改为 antd `Menu.SubMenu`，`children=[{key:"tools.sql",label:"SQL 解析"},{key:"tools.regex",label:"正则解析"}]`，点击「Tools」标题展开/折叠（`openKeys` 受控为 `state.sidebarToolsOpen`，默认折叠）；子项点击双重 dispatch `SET_VIEW("tools")` + `SET_TOOLS_ACTIVE_TAB(<sql|regex>)`，`selectedKeys` 在 `activeView === "tools"` 时高亮 `tools.<toolsActiveTab>`；`ToolsView.jsx` 本体不再渲染视图内 `Select` 下拉（与 Sidebar SubMenu 语义重复），仅渲染 Card + 子工具内容，Card `title` 随 `toolsActiveTab` 切换为 `Tools - SQL 解析` / `Tools - 正则解析`；用户反馈「侧边导航栏的 Tools 有下拉功能」最终落到 Sidebar SubMenu 形态。
+- **T6-3 ToolsView 下拉栏**：`Sidebar.jsx` 的「Tools」项由普通 Menu item 改为 antd `Menu.SubMenu`，`children=[{key:"tools.sql",label:"SQL 解析"},{key:"tools.encrypt",label:"加密/解密"}]`（v0.7.0：原 `tools.regex` 子项已删除），点击「Tools」标题展开/折叠（`openKeys` 受控为 `state.sidebarToolsOpen`，默认折叠）；子项点击双重 dispatch `SET_VIEW("tools")` + `SET_TOOLS_ACTIVE_TAB(<sql|encrypt>)`，`selectedKeys` 在 `activeView === "tools"` 时高亮 `tools.<toolsActiveTab>`；`ToolsView.jsx` 本体不再渲染视图内 `Select` 下拉（与 Sidebar SubMenu 语义重复），仅渲染 Card + 子工具内容，Card `title` 随 `toolsActiveTab` 切换；用户反馈「侧边导航栏的 Tools 有下拉功能」最终落到 Sidebar SubMenu 形态。
 - **T6-4 SQL 盲注特征自动跳转**：core `looks_like_blind_probe(sql: &str) -> bool` 复用 `ascii_binary_regex` / `equality_regex` / `length_regex` 三类正则，不依赖 `response_body_size`（区别于 `extract_blind_probe`，可用于预处理阶段仅 SQL 文本场景）；Tauri `detect_sql_blind_features(headers, rows) -> {detected, samples}`；GUI `PreprocessView.handleImport` 命中即自动跳转到 SqlParseTool 并预填样本；仅本地正则匹配，不外发数据。
-- **T6-5 RegexTool 语句→构造正则**：移除内置模板 Tab + 新增 `ConstructTab`（antd `TextArea` 语句 → `regexConstruct(statement)` → `pattern` `Paragraph` copyable + `matched_clues` `Tag` 列表 + 测试样例高亮）；core 新增 `crates/core/src/tools/regex_construct.rs::construct_regex(statement) -> Result<ConstructedRegex, CoreError>`，规则化推断 6 类线索（位数 / 字符集 / 锚定前缀 / 邮箱 / URL / 身份证），语义优先级 邮箱 > URL > 身份证 > 通用，末尾 `Regex::new` 校验保证 pattern 可编译；10 单测全绿。用户反馈「不是要求内置模板，而是我给出一个语句，能自动化帮我构造」。
+- **T6-5 RegexTool 语句→构造正则**（v0.7.0 已删除）：历史 v0.4.1 重构项——移除内置模板 Tab + 新增 `ConstructTab`（antd `TextArea` 语句 → `regexConstruct(statement)` → `pattern` `Paragraph` copyable + `matched_clues` `Tag` 列表 + 测试样例高亮）；core 新增 `crates/core/src/tools/regex_construct.rs::construct_regex(statement) -> Result<ConstructedRegex, CoreError>`。v0.7.0 整体删除，详见 v0.7.0 更新日志。
+
+## v0.7.0 已落地
+
+- **T24-1 删除正则解析功能**：用户明确要求删除。前端 `RegexTool.jsx` / `RegexConstructTab.jsx` 删除，`ToolsView.jsx` / `Sidebar.jsx` / `state.js` / `tauri.js` 同步清理（删 5 个 ACTION + 5 个 state 字段 + 5 个 reducer case）；Tauri `commands/tools.rs` 重写为仅 `parse_sql_tool`，`main.rs` 删除 `explain_regex` / `regex_construct` 两项注册（handler 39 → 37）；core `tools/mod.rs` 重写为仅 `encrypt` + `sql_parse`，删除 `regex_explain.rs` / `regex_construct.rs` / `regex_template.rs` 三文件。**明确保留** `SearchQuery::Regex`、masker 内部 regex（`regex_replace` / `regex_extract`）、logsign blind regex、`state.searchRegexInput` / `SEARCH_REGEX_*`——这些位置用 regex 但与 Tools/正则解析子工具无关。
+- **T24-2 PreprocessView 列级 SQL 解析跳转**：预览表表头 `<Space>` 在 ✏ 改名按钮旁新增 `ConsoleSqlOutlined` 按钮，`handleColumnSqlParse(columnName)`：遍历 `records.rows` 按 `headers.indexOf(columnName)` 取列下标，收集所有非空 cell 值 → `parseSqlTool(inputs)` → 写 `SET_SQL_PARSE_INPUT` + `SET_SQL_PARSE_RESULT` → `SET_VIEW("tools")` + `SET_TOOLS_ACTIVE_TAB("sql")`。与 T6-4「盲注自动跳转」互补：前者是用户针对单列主动触发，后者是导入时按全部 cell 探测。`SqlParseTool.jsx` 不修改，已读取这两个 state 字段。
+- **T24-3 版本 bump + docs 全面清理**：4 处 manifest `0.6.8 → 0.7.0`；docs/00/01/02/03/04 + README + README_EN 同步删除正则解析条目 + 新增 v0.7.0 列级 SQL 跳转说明；`docs/versions/0.7.0/更新日志.md` + `docs/qa/versions/0.7.0/QA-审计报告.md` 落盘。
+- **T24-4 Release QA + finalize**：5 维度 Release QA（功能 / 回归 / 构建 / 安全 / 文档）结论 qa_passed；`cargo test -p ruT0-data-kit-core --release` 464 passed + tauri 5 passed + npm build 3007 modules 0 error；commit + push origin main。
 
 ## 安装
 
@@ -321,6 +329,8 @@ cargo tauri dev
 | v0.4.1 | 5 项缺陷修复：数据流打通 + 移除各界面 FileToolbar + ToolsView 下拉栏 + SQL 盲注特征自动跳转 + RegexTool 语句→构造正则 | 已发布 v0.4.1 |
 | v0.4.2 | 设置模块首期 + tshark 多平台自动检测 + 路径配置持久化 + 3 项 patch 修复 | 已发布 v0.4.2 |
 | v0.4.3 | txt 兼容 + 数据提取独立模块（ExtractView）+ 规则引擎去绝对化（PhoneValidator 删白名单 + 新增 IpValidator） | 已发布 v0.4.3 |
+| v0.5.0 | 架构性质升级：blind_aggregator/commands/operator 三大 God 文件拆分 + rules/patterns.rs 正则集中化 + 前端 state 领域切片 + ColumnRuleMapper 公共组件（依据代码质量审计报告 P0+P1+P2，零行为回归） | 已发布 v0.5.0 |
+| v0.7.0 | 删除 Tools/正则解析子工具（前端 RegexTool/RegexConstructTab + Tauri explain_regex/regex_construct + core regex_explain/regex_construct/regex_template 全移除）+ PreprocessView 表头新增「列级 SQL 解析」按钮（取该列全部非空行 → `parseSqlTool` → 跳转 Tools/Sql 复用现有 UI） | 已发布 v0.7.0 |
 
 版本判定标准见 `docs/04-版本标准.md`。
 

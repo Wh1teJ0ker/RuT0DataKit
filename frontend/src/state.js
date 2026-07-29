@@ -60,11 +60,6 @@ export const ACTION = {
   SIDEBAR_TOOLS_OPEN_SET: "SET_SIDEBAR_TOOLS_OPEN",
   SQL_PARSE_INPUT_SET: "SET_SQL_PARSE_INPUT",
   SQL_PARSE_RESULT_SET: "SET_SQL_PARSE_RESULT",
-  REGEX_SUB_TAB_SET: "SET_REGEX_SUB_TAB",
-  REGEX_EXPLAIN_INPUT_SET: "SET_REGEX_EXPLAIN_INPUT",
-  REGEX_EXPLAIN_RESULT_SET: "SET_REGEX_EXPLAIN_RESULT",
-  REGEX_CONSTRUCT_INPUT_SET: "SET_REGEX_CONSTRUCT_INPUT",
-  REGEX_CONSTRUCT_RESULT_SET: "SET_REGEX_CONSTRUCT_RESULT",
   // encrypt（T15-2）
   ENCRYPT_ALGO_SET: "SET_ENCRYPT_ALGO",
   ENCRYPT_MODE_SET: "SET_ENCRYPT_MODE",
@@ -160,15 +155,9 @@ export const initialState = {
   // T5-10 SQL 解析子界面状态
   sqlParseInput: "",
   sqlParseResult: null,
-  // T5-12 正则解析子界面状态
-  // regexSubTab：RegexTool 内部子 Tab（"explain" | "construct"），切 view 不重置。
-  regexSubTab: "explain",
-  // 解析 Tab
-  regexExplainInput: "",
-  regexExplainResult: null, // Vec<RegexTokenDesc> 或 null
-  // 构造 Tab（v0.4.1 T6-5：自然语言描述 → 正则）
-  regexConstructInput: "",
-  regexConstructResult: null, // { pattern, explanation, matched_clues } 或 null
+  // v0.7.0：正则解析子界面状态已随特性整体删除（regexSubTab / regexExplainInput
+  // / regexExplainResult / regexConstructInput / regexConstructResult 不再保留）。
+  // 搜索功能仍保留 searchRegexInput 等正则模式字段，与 Tools 正则解析无关。
   // T5-6 搜索界面状态：searchMode 三选 "keyword" | "regex" | "exact_field"。
   // searchResults 为后端 SearchResult { hits: [{ row, col, field, value, snippet }] } 或 null。
   // searchElapsedMs 单次查询耗时（前端 performance.now 差值），命中数取 hits.length。
@@ -527,26 +516,6 @@ const toolsDomain = (state, action) => {
     case ACTION.SQL_PARSE_RESULT_SET: {
       const { sqlParseResult } = action;
       return { ...state, sqlParseResult };
-    }
-    case ACTION.REGEX_SUB_TAB_SET: {
-      const { regexSubTab } = action;
-      return { ...state, regexSubTab };
-    }
-    case ACTION.REGEX_EXPLAIN_INPUT_SET: {
-      const { regexExplainInput } = action;
-      return { ...state, regexExplainInput };
-    }
-    case ACTION.REGEX_EXPLAIN_RESULT_SET: {
-      const { regexExplainResult } = action;
-      return { ...state, regexExplainResult };
-    }
-    case ACTION.REGEX_CONSTRUCT_INPUT_SET: {
-      const { regexConstructInput } = action;
-      return { ...state, regexConstructInput };
-    }
-    case ACTION.REGEX_CONSTRUCT_RESULT_SET: {
-      const { regexConstructResult } = action;
-      return { ...state, regexConstructResult };
     }
     // v0.6.0 T15-2 加密 / 解密子界面状态。
     case ACTION.ENCRYPT_ALGO_SET: {

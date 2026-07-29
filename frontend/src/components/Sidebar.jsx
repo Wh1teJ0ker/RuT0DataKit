@@ -8,7 +8,6 @@ import {
   DownloadOutlined,
   ToolOutlined,
   ConsoleSqlOutlined,
-  CodeOutlined,
   LockOutlined,
   SlidersOutlined,
   FilterOutlined,
@@ -19,11 +18,14 @@ import {
 // 原 log/pcap 独立项删除（其能力下沉到搜索 / Tools，LogView/PcapView 文件保留供后续复用）。
 // 无 disabled 项；点击 dispatch SET_VIEW，未实现的 view 由 App.jsx 渲染占位 Card。
 //
-// v0.4.1 T6-3：Tools 不再是单个跳转项，而是 SubMenu 下拉——点 Tools 展开两个子项：
+// v0.4.1 T6-3：Tools 不再是单个跳转项，而是 SubMenu 下拉——点 Tools 展开子项：
 //   「SQL 解析」（key=tools.sql，进入 Tools 视图并 SET_TOOLS_ACTIVE_TAB=sql）
-//   「正则解析」（key=tools.regex，进入 Tools 视图并 SET_TOOLS_ACTIVE_TAB=regex）
+//   「加密/解密」（key=tools.encrypt，进入 Tools 视图并 SET_TOOLS_ACTIVE_TAB=encrypt）
 // 点击子项同时 dispatch SET_VIEW + SET_TOOLS_ACTIVE_TAB；Menu openKeys 受控为
 // state.sidebarToolsOpen（默认 open=false，保持折叠，点击 Tools 标题才展开）。
+//
+// v0.7.0：删除「正则解析」子项（特性整体下线），当前 Tools 仅余 SQL 解析
+// 与 加密/解密 两项。
 //
 // v0.4.2 T7-3：Sidebar 底部新增「设置」跳转按钮（脱离 antd Menu，贴底固定）。
 // Menu 加 flex:1 占满中段；下方分隔线 + Button block 把设置顶到底部。点击 dispatch
@@ -47,7 +49,6 @@ export default function Sidebar({ state, dispatch }) {
       label: "Tools",
       children: [
         { key: "tools.sql", icon: <ConsoleSqlOutlined />, label: "SQL 解析" },
-        { key: "tools.regex", icon: <CodeOutlined />, label: "正则解析" },
         { key: "tools.encrypt", icon: <LockOutlined />, label: "加密/解密" },
       ],
     },
@@ -60,9 +61,6 @@ export default function Sidebar({ state, dispatch }) {
     if (key === "tools.sql") {
       dispatch({ type: "SET_VIEW", activeView: "tools" });
       dispatch({ type: "SET_TOOLS_ACTIVE_TAB", toolsActiveTab: "sql" });
-    } else if (key === "tools.regex") {
-      dispatch({ type: "SET_VIEW", activeView: "tools" });
-      dispatch({ type: "SET_TOOLS_ACTIVE_TAB", toolsActiveTab: "regex" });
     } else if (key === "tools.encrypt") {
       dispatch({ type: "SET_VIEW", activeView: "tools" });
       dispatch({ type: "SET_TOOLS_ACTIVE_TAB", toolsActiveTab: "encrypt" });

@@ -24,8 +24,6 @@ fn main() {
             commands::scan_log_file,
             commands::scan_pcap_file,
             commands::preprocess_file,
-            commands::explain_regex,
-            commands::regex_construct,
             commands::parse_sql_tool,
             commands::export_records_json,
             commands::apply_rules_cols_records,

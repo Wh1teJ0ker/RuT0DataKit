@@ -19,8 +19,9 @@ import {
   CheckCircleOutlined,
   EditOutlined,
   DiffOutlined,
+  ConsoleSqlOutlined,
 } from "@ant-design/icons";
-import { tauriInvoke, preprocessFile } from "../tauri.js";
+import { tauriInvoke, preprocessFile, parseSqlTool } from "../tauri.js";
 import { PREVIEW_ROW_LIMIT } from "../state.js";
 
 const { Text } = Typography;
@@ -33,6 +34,9 @@ const { Text } = Typography;
 // 导入产物写入 state.records（SET_RECORDS），切 view 不重置；跳转按钮仅 dispatch SET_VIEW。
 // v0.5.x：移除 SQL 解析跳转入口（SQL 盲注自动检测 + 跳转 Tools/Sql 子面板一并删除）。
 // v0.6.5 T20-1：表头可编辑 + 批量重命名（SET_COLUMN_RENAME 级联 re-key）+ 数据源指示。
+// v0.7.0：表头新增「SQL 解析」按钮——将该列全部非空行作为 SqlParseInput[] 提交
+// （复用 parseSqlTool 命令），结果预填到 sqlParseResult + sqlParseInput，然后
+// 跳转 Tools/Sql 子面板（镜像 Sidebar.jsx:60-62 模式：SET_VIEW + SET_TOOLS_ACTIVE_TAB）。
 export default function PreprocessView({ state, dispatch }) {
   const { message, modal } = AntApp.useApp();
   const { records, loading } = state;
@@ -41,6 +45,44 @@ export default function PreprocessView({ state, dispatch }) {
   const [renameOpen, setRenameOpen] = useState(false);
 
   const showError = (msg) => message.error(String(msg));
+
+  // v0.7.0：列级 SQL 解析——取该列全部非空单元格值作为 SqlParseInput[]，
+  // 调 parseSqlTool（复用 Tools/Sql 同款命令），结果预填到 sqlParseInput
+  // （textarea 多行，每行一条 SQL）+ sqlParseResult，然后跳转 Tools/Sql
+  // 子面板（与 Sidebar.jsx:60-62 同款 SET_VIEW + SET_TOOLS_ACTIVE_TAB 模式）。
+  // 空列：warning 不跳转；失败：error 不清空已有解析结果。
+  const handleColumnSqlParse = async (columnName) => {
+    if (!records) return;
+    const sqls = [];
+    for (const row of records.rows || []) {
+      // records.rows 为二维数组（行 → 列），用 header 索引定位该列。
+      const c = records.headers.indexOf(columnName);
+      if (c < 0) break;
+      const v = row[c];
+      if (v == null) continue;
+      const s = String(v).trim();
+      if (s !== "") sqls.push(s);
+    }
+    if (sqls.length === 0) {
+      message.warning(`列「${columnName}」没有非空值可解析`);
+      return;
+    }
+    const inputs = sqls.map((sql) => ({
+      sql,
+      responseBodySize: null,
+      sourceIp: null,
+    }));
+    try {
+      const result = await parseSqlTool(inputs);
+      const text = sqls.join("\n");
+      dispatch({ type: "SET_SQL_PARSE_INPUT", sqlParseInput: text });
+      dispatch({ type: "SET_SQL_PARSE_RESULT", sqlParseResult: result });
+      dispatch({ type: "SET_VIEW", activeView: "tools" });
+      dispatch({ type: "SET_TOOLS_ACTIVE_TAB", toolsActiveTab: "sql" });
+    } catch (e) {
+      showError(`SQL 解析失败: ${e}`);
+    }
+  };
 
   const handleImport = async () => {
     dispatch({ type: "SET_LOADING", loading: true });
@@ -150,6 +192,14 @@ export default function PreprocessView({ state, dispatch }) {
       title: (
         <Space size={4} align="center" wrap={false}>
           <span>{h}</span>
+          {/* v0.7.0：将该列全部非空行作为 SQL 探针序列解析，跳转 Tools/Sql */}
+          <Button
+            type="text"
+            size="small"
+            icon={<ConsoleSqlOutlined />}
+            onClick={() => handleColumnSqlParse(h)}
+            title="将该列全部非空行作为 SQL 探针序列解析，跳转 Tools/SQL"
+          />
           <Button
             type="text"
             size="small"

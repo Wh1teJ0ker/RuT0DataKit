@@ -187,31 +187,6 @@ export async function scanPcapFile(path) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// T5-11/T5-12 新增命令封装：正则解释 / 模板生成 / 模板清单（v0.4.0 Tools Tab）
-// 参数名 camelCase，由 Tauri 自动转 snake_case 传到 Rust 端。
-// ─────────────────────────────────────────────────────────────────────
-
-// 解释一条正则字符串，返回 RegexTokenDesc 数组：
-//   { token, kind, description, position }，kind ∈
-//   literal/char_class/quantifier/anchor/group/backref/assertion/escape/unsupported。
-// 非法正则返回 Err(String)，前端 message.error 提示。
-export async function explainRegex(pattern) {
-  return tauriInvoke("explain_regex", { pattern });
-}
-
-// 按模板名 + 参数生成正则字符串。params 为 HashMap<String,String> 形态的
-// 普通对象，键名对应模板 params_schema.key。模板名见 list_regex_templates。
-// （v0.4.1 T6-5：模板生成已移除，下方保留接口注释作为历史参考。）
-
-// ─────────────────────────────────────────────────────────────────────
-// v0.4.1 T6-5：从自然语言描述构造正则，返回 {pattern, explanation, matched_clues}。
-// 纯本地规则化推断，不调用网络。
-// ─────────────────────────────────────────────────────────────────────
-export async function regexConstruct(statement) {
-  return tauriInvoke("regex_construct", { statement });
-}
-
-// ─────────────────────────────────────────────────────────────────────
 // T5-9/T5-10 新增命令封装：SQL 探针序列解析（v0.4.0 Tools Tab）
 // ─────────────────────────────────────────────────────────────────────
 
