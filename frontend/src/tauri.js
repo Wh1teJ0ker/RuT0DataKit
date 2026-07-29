@@ -218,7 +218,9 @@ export async function searchRecords(headers, rows, queryJson) {
 // ─────────────────────────────────────────────────────────────────────
 
 // 扫描预处理后的 records 找 SQL 盲注探针特征行。
-// 返回 { detected: bool, samples: string[] }，samples 上限 50。
+// v0.7.3：返回 { detected: bool, samples: [{ sql, body_size, source_ip }] }，
+// body_size / source_ip 从同行 size / ip 列配对（log 源有，其他源为 null）。
+// samples 上限 50，按 (sql, body_size, source_ip) 三元组去重。
 // 仅本地正则匹配，不调用网络（docs/00 §6 「不外发数据」约束）。
 export async function detectSqlBlindFeatures(headers, rows) {
   return tauriInvoke("detect_sql_blind_features", {

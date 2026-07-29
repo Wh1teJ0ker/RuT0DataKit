@@ -43,25 +43,36 @@ pub fn scan_log_file(path: String) -> Result<Value, String> {
 /// 扫描预处理后的 `Records` 找 SQL 盲注探针特征行（v0.4.1 T6-4）。
 ///
 /// 遍历 `rows` 所有 cell 调 core `looks_like_blind_probe`，命中则收集该 cell
-/// 原文。返回 `{ detected: bool, samples: Vec<String> }`，`samples` 上限 50
-/// 避免过大。`headers` 暂未用于过滤（保留参数以与 records 结构对齐）。
+/// 原文。返回 `{ detected: bool, samples: Vec<{ sql, body_size, source_ip }> }`，
+/// `samples` 上限 50 避免过大。
 ///
 /// **v0.7.1**：cell 先用 [`looks_like_url_encoded`] 检测，命中 `%XX` hex 序列
 /// 则调 [`url_decode_twice`] 双重解码再喂 `looks_like_blind_probe`；`samples`
 /// 收集解码后形态（与 `parse_sqls` 入口一致，避免下游二次解码）。
 ///
+/// **v0.7.3**：`samples` 改为结构化对象，从同行按 `headers` 定位 `size` 列
+/// （HTTP 响应 body 字节数）和 `ip` 列（来源 IP），配对到每个 sample 上。
+/// 非 log 源（无 `size`/`ip` 列）→ `body_size=null`、`source_ip=null`，
+/// 向后兼容非盲注 payload（走 `parse_payload` 兜底）。按
+/// `(sql, body_size, source_ip)` 三元组去重，避免 `query`（encoded）与
+/// `decoded_query`（decoded）列重复收集同一条探针。
+///
 /// 仅本地正则匹配，不调用网络（满足 docs/00 §6 「不外发数据」约束）。
-/// PreprocessView `handleImport` 成功后调它；`detected=true` 时前端 dispatch
+/// PreprocessView「盲注自动提取」按钮调它；`detected=true` 时前端 dispatch
 /// `SET_VIEW("tools")` + `SET_TOOLS_ACTIVE_TAB("sql")` + `SET_SQL_PARSE_INPUT`
-/// 自动跳转 SqlParseTool 并预填命中行。
+/// 自动跳转 SqlParseTool 并预填命中行（带 `body|sql` 前缀）。
 #[tauri::command]
 pub fn detect_sql_blind_features(
     headers: Vec<String>,
     rows: Vec<Vec<String>>,
 ) -> Result<Value, String> {
     use ruT0_data_kit_core::logsign::looks_like_blind_probe;
-    let _ = &headers; // 暂未用于过滤，保留参数以与 records 结构对齐
-    let mut samples: Vec<String> = Vec::new();
+    // v0.7.3：从 headers 定位 size / ip 列下标（按列名，兼容列重命名）。
+    let size_idx = headers.iter().position(|h| h == "size");
+    let ip_idx = headers.iter().position(|h| h == "ip");
+    // 去重 key：(sql, body_size, source_ip) 三元组。
+    let mut seen: Vec<(String, Option<u64>, Option<String>)> = Vec::new();
+    let mut samples: Vec<Value> = Vec::new();
     for row in &rows {
         for cell in row {
             if cell.is_empty() || samples.len() >= 50 {
@@ -74,10 +85,32 @@ pub fn detect_sql_blind_features(
                 cell.clone()
             };
             if looks_like_blind_probe(&probe_target) {
-                // samples 收集解码后形态：下游 SqlParseTool 直接用 samples 填
-                // textarea 再调 parse_sqls，解码后形态过 looks_like_url_encoded
-                // 返回 false，走原路径，避免二次解码。
-                samples.push(probe_target);
+                // v0.7.3：从同行 size / ip 列配对 body_size + source_ip。
+                let body_size = size_idx
+                    .and_then(|i| row.get(i))
+                    .and_then(|s| {
+                        let t = s.trim();
+                        if t.is_empty() || t == "-" {
+                            None
+                        } else {
+                            t.parse::<u64>().ok()
+                        }
+                    });
+                let source_ip = ip_idx
+                    .and_then(|i| row.get(i))
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty());
+                // 去重：同一探针 + 同一 body_size + 同一 source_ip 只保留一条。
+                let key = (probe_target.clone(), body_size, source_ip.clone());
+                if seen.iter().any(|e| e == &key) {
+                    continue;
+                }
+                seen.push(key);
+                samples.push(json!({
+                    "sql": probe_target,
+                    "body_size": body_size,
+                    "source_ip": source_ip,
+                }));
             }
         }
     }
@@ -94,6 +127,7 @@ mod tests {
     #[test]
     fn detect_sql_blind_features_decodes_url_encoded_cell() {
         // v0.7.1：URL-encoded cell 命中 ascii_binary 探针特征，解码后 detected=true。
+        // v0.7.3：samples 改为结构化对象，断言 sql/body_size/source_ip 三字段。
         let rows = vec![vec!["1'%20or%20ascii(substr((database()),1,1))%3E79%23".to_string()]];
         let v = detect_sql_blind_features(vec![], rows).unwrap();
         assert_eq!(v["detected"], json!(true));
@@ -101,19 +135,24 @@ mod tests {
         assert_eq!(samples.len(), 1);
         // samples 收集解码后形态（含字面空格和 >）
         assert_eq!(
-            samples[0].as_str().unwrap(),
+            samples[0]["sql"].as_str().unwrap(),
             "1' or ascii(substr((database()),1,1))>79#"
         );
+        // 无 size/ip 列 → body_size=null、source_ip=null
+        assert_eq!(samples[0]["body_size"], json!(null));
+        assert_eq!(samples[0]["source_ip"], json!(null));
     }
 
     #[test]
     fn detect_sql_blind_features_plain_cell_unchanged() {
-        // 已解码纯文本 cell：走原路径，samples 与原文一致。
+        // 已解码纯文本 cell：走原路径，samples sql 与原文一致。
         let rows = vec![vec!["1' or ascii(substr((database()),1,1))>79#".to_string()]];
         let v = detect_sql_blind_features(vec![], rows).unwrap();
         assert_eq!(v["detected"], json!(true));
         let samples = v["samples"].as_array().unwrap();
-        assert_eq!(samples[0].as_str().unwrap(), "1' or ascii(substr((database()),1,1))>79#");
+        assert_eq!(samples[0]["sql"].as_str().unwrap(), "1' or ascii(substr((database()),1,1))>79#");
+        assert_eq!(samples[0]["body_size"], json!(null));
+        assert_eq!(samples[0]["source_ip"], json!(null));
     }
 
     #[test]
@@ -122,5 +161,92 @@ mod tests {
         let v = detect_sql_blind_features(vec![], vec![]).unwrap();
         assert_eq!(v["detected"], json!(false));
         assert_eq!(v["samples"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn detect_sql_blind_features_carries_body_size_and_source_ip() {
+        // v0.7.3：含 size + ip 列的 log 源，sample 应配对 body_size + source_ip。
+        let headers = vec![
+            "line_no".to_string(),
+            "ip".to_string(),
+            "timestamp".to_string(),
+            "method".to_string(),
+            "path".to_string(),
+            "query".to_string(),
+            "status".to_string(),
+            "size".to_string(),
+        ];
+        // query 列（index 5）含 URL-encoded 探针；size 列（index 7）= 862；ip 列（index 1）= 1.1.1.1
+        let rows = vec![vec![
+            "1".to_string(),           // line_no
+            "1.1.1.1".to_string(),     // ip
+            "2024-01-01".to_string(),  // timestamp
+            "GET".to_string(),         // method
+            "/login".to_string(),      // path
+            "username=1'%20or%20ascii(substr((database()),1,1))%3E79%23&password=1".to_string(), // query
+            "200".to_string(),         // status
+            "862".to_string(),         // size
+        ]];
+        let v = detect_sql_blind_features(headers, rows).unwrap();
+        assert_eq!(v["detected"], json!(true));
+        let samples = v["samples"].as_array().unwrap();
+        assert_eq!(samples.len(), 1);
+        assert_eq!(
+            samples[0]["sql"].as_str().unwrap(),
+            "username=1' or ascii(substr((database()),1,1))>79#&password=1"
+        );
+        assert_eq!(samples[0]["body_size"], json!(862));
+        assert_eq!(samples[0]["source_ip"], json!("1.1.1.1"));
+    }
+
+    #[test]
+    fn detect_sql_blind_features_deduplicates() {
+        // v0.7.3：同一行 query（encoded）+ decoded_query（decoded）列都含同一探针，
+        // 去重后 samples 仅 1 条。
+        let headers = vec![
+            "query".to_string(),
+            "decoded_query".to_string(),
+        ];
+        let rows = vec![vec![
+            "1'%20or%20ascii(substr((database()),1,1))%3E79%23".to_string(), // query (encoded)
+            "1' or ascii(substr((database()),1,1))>79#".to_string(),         // decoded_query (decoded)
+        ]];
+        let v = detect_sql_blind_features(headers, rows).unwrap();
+        let samples = v["samples"].as_array().unwrap();
+        // 两条 decode 后均为 "1' or ascii(substr((database()),1,1))>79#"
+        // body_size=None（无 size 列）、source_ip=None（无 ip 列）→ 三元组相同 → 去重后 1 条
+        assert_eq!(samples.len(), 1);
+        assert_eq!(
+            samples[0]["sql"].as_str().unwrap(),
+            "1' or ascii(substr((database()),1,1))>79#"
+        );
+    }
+
+    #[test]
+    fn detect_sql_blind_features_no_size_header_body_size_none() {
+        // v0.7.3：无 size 列时 body_size=null（向后兼容非 log 源）。
+        let headers = vec!["query".to_string()];
+        let rows = vec![vec!["ascii(substr((database()),1,1))>100".to_string()]];
+        let v = detect_sql_blind_features(headers, rows).unwrap();
+        let samples = v["samples"].as_array().unwrap();
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0]["body_size"], json!(null));
+        assert_eq!(samples[0]["source_ip"], json!(null));
+    }
+
+    #[test]
+    fn detect_sql_blind_features_size_dash_parses_none() {
+        // v0.7.3：size 列为 CLF `-` 时 body_size=null（LogEntry.size=None → "-"）。
+        let headers = vec!["ip".to_string(), "query".to_string(), "size".to_string()];
+        let rows = vec![vec![
+            "1.1.1.1".to_string(),
+            "ascii(substr((database()),1,1))>100".to_string(),
+            "-".to_string(),
+        ]];
+        let v = detect_sql_blind_features(headers, rows).unwrap();
+        let samples = v["samples"].as_array().unwrap();
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0]["body_size"], json!(null));
+        assert_eq!(samples[0]["source_ip"], json!("1.1.1.1"));
     }
 }

@@ -21,7 +21,7 @@ import {
   DiffOutlined,
   ConsoleSqlOutlined,
 } from "@ant-design/icons";
-import { tauriInvoke, preprocessFile, parseSqlTool } from "../tauri.js";
+import { tauriInvoke, preprocessFile, parseSqlTool, detectSqlBlindFeatures } from "../tauri.js";
 import { PREVIEW_ROW_LIMIT } from "../state.js";
 
 const { Text } = Typography;
@@ -81,6 +81,41 @@ export default function PreprocessView({ state, dispatch }) {
       dispatch({ type: "SET_TOOLS_ACTIVE_TAB", toolsActiveTab: "sql" });
     } catch (e) {
       showError(`SQL 解析失败: ${e}`);
+    }
+  };
+
+  // v0.7.3：盲注自动提取——扫描全表所有 cell 找盲注探针特征行，
+  // 从同行 size / ip 列配对 body_size + source_ip，拼成 `body|sql` 文本
+  // 跳转 Tools/Sql 子面板。非 log 源无 size/ip 列 → body_size=null、
+  // source_ip=null（文本无 `body|` 前缀，走 parse_payload 兜底）。
+  // 与列级 handleColumnSqlParse 互补：前者用户主动选单列，后者自动扫全表。
+  const handleBlindAutoExtract = async () => {
+    if (!records) return;
+    try {
+      const res = await detectSqlBlindFeatures(
+        records.headers,
+        records.rows
+      );
+      if (!res.detected || !res.samples || res.samples.length === 0) {
+        message.warning("未检测到盲注探针特征行");
+        return;
+      }
+      // 构造 SqlParseInput[] + textarea 文本（body|sql 格式）
+      const inputs = res.samples.map((s) => ({
+        sql: s.sql,
+        responseBodySize: s.body_size ?? null,
+        sourceIp: s.source_ip ?? null,
+      }));
+      const text = res.samples
+        .map((s) => (s.body_size != null ? `${s.body_size}|${s.sql}` : s.sql))
+        .join("\n");
+      const result = await parseSqlTool(inputs);
+      dispatch({ type: "SET_SQL_PARSE_INPUT", sqlParseInput: text });
+      dispatch({ type: "SET_SQL_PARSE_RESULT", sqlParseResult: result });
+      dispatch({ type: "SET_VIEW", activeView: "tools" });
+      dispatch({ type: "SET_TOOLS_ACTIVE_TAB", toolsActiveTab: "sql" });
+    } catch (e) {
+      showError(`盲注自动提取失败: ${e}`);
     }
   };
 
@@ -336,6 +371,15 @@ export default function PreprocessView({ state, dispatch }) {
                 {j.label}
               </Button>
             ))}
+            {/* v0.7.3：盲注自动提取——扫描全表探针 + 配对 body_size/ip 跳转 Tools/Sql */}
+            <Button
+              icon={<ConsoleSqlOutlined />}
+              disabled={!records}
+              onClick={handleBlindAutoExtract}
+              title="扫描全表盲注探针，自动带 body_size + source_ip 跳转 Tools/SQL"
+            >
+              盲注自动提取
+            </Button>
           </Space>
           <div style={{ marginTop: 8 }}>
             <Text type="secondary" style={{ fontSize: 12 }}>
