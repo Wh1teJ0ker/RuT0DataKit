@@ -531,4 +531,145 @@ mod tests {
             "parsed_payloads = {:?}",
             result.parsed_payloads);
     }
+
+    #[test]
+    fn parse_sqls_body_size_enables_full_reconstruction() {
+        // v0.7.2：body_size 是盲注二分还原链路的关键——probe.rs 对 None 返回空
+        // Vec，聚合器无法聚类真假簇。本测试用既有 helper 生成自洽二分序列，
+        // 验证带 body_size 时 probes→aggregate→reconstruct 全链路贯通。
+        let inputs = ascii_binary_probes_for_char(
+            "database()",
+            1,
+            b'p' as u32,
+            862,
+            875,
+            "1.1.1.1",
+        );
+        // helper 生成 3 true（thr=109/110/111, body=862）+ 2 false
+        //（thr=112/113, body=875）→ max_true=111, min_false=112,
+        // 111+1=112 自洽 → resolved, ascii=112='p'。
+        assert_eq!(inputs.len(), 5);
+
+        let result = parse_sqls(inputs.clone());
+        assert_eq!(result.probes.len(), 5, "probes = {:?}", result.probes);
+        assert!(result
+            .probes
+            .iter()
+            .all(|p| p.probe_kind == ProbeKind::AsciiBinary));
+        assert_eq!(result.aggregated.len(), 1, "aggregated = {:?}", result.aggregated);
+        let r = &result.aggregated[0];
+        assert!(r.decoded_string.starts_with('p'), "got {}", r.decoded_string);
+        assert_eq!(r.resolved_chars, 1);
+        // reconstruct：database() 单字符 → schema="p"，无表。
+        assert_eq!(
+            result.reconstructed.schema.as_deref(),
+            Some("p"),
+            "schema = {:?}",
+            result.reconstructed.schema
+        );
+        assert!(
+            result.reconstructed.tables.is_empty(),
+            "tables = {:?}",
+            result.reconstructed.tables
+        );
+
+        // 回归对照：同一组 input 但 response_body_size=None（v0.7.2 前行为）→
+        // probe.rs 返回空 Vec → 0 探针 → 聚合/还原全空。证明 body_size 是
+        // 贯通的关键，而非 URL-decode 或其他环节。
+        let null_inputs: Vec<SqlParseInput> = inputs
+            .iter()
+            .map(|i| SqlParseInput {
+                sql: i.sql.clone(),
+                response_body_size: None,
+                source_ip: i.source_ip.clone(),
+            })
+            .collect();
+        let null_result = parse_sqls(null_inputs);
+        assert!(
+            null_result.probes.is_empty(),
+            "null body_size probes = {:?}",
+            null_result.probes
+        );
+        assert!(null_result.aggregated.is_empty());
+        assert!(null_result.reconstructed.tables.is_empty());
+        assert!(null_result.reconstructed.schema.is_none());
+    }
+
+    #[test]
+    fn parse_sqls_user_five_payloads_with_body_size_gap_documented() {
+        // v0.7.2：用户报告的 5 条 URL-encoded payload，目标 database() 位 1，
+        // `>` 阈值 79/103/109（true 侧，body=862）/ 112/115（false 侧，body=875）。
+        // v0.7.1 URL-decode + v0.7.2 body_size 贯通后探针全部提取。
+        //
+        // gap 如实说明：max_true=109, min_false=112, 109+1=110 ≠ 112 →
+        // status=insufficient_probes, ascii_val=Some(112), decoded_char=None。
+        // 严格自洽校验 `max_true+1 == min_false` 是取证工具的保守设计（ascii 落
+        // 在 [110,112] 区间，缺 110/111 探针不能精确定位）。补 110/111 两条
+        // 探针即可自洽还原 'p'（ascii=112）。本 patch 不放宽该校验。
+        let raw_payloads: &[(&str, u64)] = &[
+            (
+                "username=1'%20or%20ascii(substr((database()),1,1))%3E79%23&password=1",
+                862,
+            ),
+            (
+                "username=1'%20or%20ascii(substr((database()),1,1))%3E103%23&password=1",
+                862,
+            ),
+            (
+                "username=1'%20or%20ascii(substr((database()),1,1))%3E109%23&password=1",
+                862,
+            ),
+            (
+                "username=1'%20or%20ascii(substr((database()),1,1))%3E112%23&password=1",
+                875,
+            ),
+            (
+                "username=1'%20or%20ascii(substr((database()),1,1))%3E115%23&password=1",
+                875,
+            ),
+        ];
+        let inputs: Vec<SqlParseInput> = raw_payloads
+            .iter()
+            .map(|(sql, body)| SqlParseInput {
+                sql: sql.to_string(),
+                response_body_size: Some(*body),
+                source_ip: Some("1.1.1.1".to_string()),
+            })
+            .collect();
+
+        let result = parse_sqls(inputs);
+        // v0.7.1 URL-decode + v0.7.2 body_size 贯通 → 5 个探针全部提取。
+        assert_eq!(result.probes.len(), 5, "probes = {:?}", result.probes);
+        assert!(result
+            .probes
+            .iter()
+            .all(|p| p.probe_kind == ProbeKind::AsciiBinary));
+        assert_eq!(result.probes[0].read_target, "database()");
+        assert_eq!(result.probes[0].char_position, 1);
+        // 聚合：1 个分组（同 read_target + source_ip + ProbeKind）。
+        assert_eq!(result.aggregated.len(), 1, "aggregated = {:?}", result.aggregated);
+        let r = &result.aggregated[0];
+        assert_eq!(r.position_details.len(), 1);
+        let pd = &r.position_details[0];
+        assert_eq!(pd.position, 1);
+        // gap → 不自洽，但 ascii_val 仍取 min_false=112。
+        assert_eq!(pd.ascii_val, Some(112), "ascii_val = {:?}", pd.ascii_val);
+        assert!(pd.decoded_char.is_none(), "decoded_char = {:?}", pd.decoded_char);
+        assert_eq!(
+            pd.status, "insufficient_probes",
+            "status = {}",
+            pd.status
+        );
+        // decoded_string 因 insufficient 插 '?'。
+        assert_eq!(r.decoded_string, "?", "decoded_string = {}", r.decoded_string);
+        // schema 无法还原（decoded_string 全 '?'，但 reconstruct 仍取
+        // decoded_string 作为 schema → "?"）。
+        assert_eq!(
+            result.reconstructed.schema.as_deref(),
+            Some("?"),
+            "schema = {:?}",
+            result.reconstructed.schema
+        );
+        assert!(result.reconstructed.tables.is_empty());
+    }
 }

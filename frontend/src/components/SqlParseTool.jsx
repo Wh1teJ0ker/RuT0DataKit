@@ -26,8 +26,9 @@ const { TextArea } = Input;
 //     未 fetch 列 cells 为 null → 显示 `-`）+ unmatched 兜底列表
 //   ⑤ 下方探针明细表：read_target / char_position / comparator / compared_ascii / kind / source_ip
 //
-// 输入是纯 SQL 文本，前端拆行后构造 SqlParseInput 数组（response_body_size /
-// source_ip 留空 None）。空输入显示 Empty。
+// 输入是纯 SQL 文本，前端拆行后构造 SqlParseInput 数组。
+// v0.7.2：每行支持 `body|sql` 前缀，提取 response_body_size（盲注二分还原必需）。
+// 无前缀行 response_body_size / source_ip 留空 None（非盲注 payload 走 parse_payload 兜底）。
 export default function SqlParseTool({ state, dispatch }) {
   const { message } = AntApp.useApp();
   const [loading, setLoading] = useState(false);
@@ -54,8 +55,22 @@ export default function SqlParseTool({ state, dispatch }) {
       message.warning("请输入 SQL 探针序列");
       return;
     }
-    // 每行一条 SqlParseInput；response_body_size / source_ip 留空 None。
-    const inputs = lines.map((sql) => ({ sql, responseBodySize: null, sourceIp: null }));
+    // v0.7.2：每行支持 `body|sql` 前缀，提取 response_body_size（盲注二分
+    // 还原必需，probe.rs 无 body_size 会返回空 Vec → 0 探针 → 还原失败）。
+    // 无前缀行 responseBodySize=null（向后兼容非盲注 payload：time/error/union 等）。
+    const inputs = lines.map((line) => {
+      const m = /^(\d+)\|(.*)$/.exec(line);
+      if (m) {
+        const bodySize = Number(m[1]);
+        const sql = m[2];
+        return {
+          sql,
+          responseBodySize: Number.isFinite(bodySize) ? bodySize : null,
+          sourceIp: null,
+        };
+      }
+      return { sql: line, responseBodySize: null, sourceIp: null };
+    });
     setLoading(true);
     try {
       const res = await parseSqlTool(inputs);
@@ -127,8 +142,9 @@ export default function SqlParseTool({ state, dispatch }) {
       <Space direction="vertical" size="middle" style={{ width: "100%" }}>
         <div>
           <Text type="secondary" style={{ fontSize: 12 }}>
-            每行一条 SQL 探针序列（ascii(substr(...)) / length(...) / substr(...)='x' / char(N) 等）。
-            解析后还原数据库结构 + 探针明细。response_body_size / source_ip 在 Tools 路径留空。
+            每行一条 SQL 探针序列。盲注二分还原需带 response_body_size，格式：
+            <code>&lt;body_size&gt;|&lt;sql&gt;</code>（如 862|ascii(substr((database()),1,1))&gt;79）。
+            无前缀行视为非盲注 payload（time/error/union/tautology/comment 等，走 parse_payload 兜底）。
           </Text>
         </div>
         <Space.Compact style={{ width: "100%" }}>
@@ -141,7 +157,7 @@ export default function SqlParseTool({ state, dispatch }) {
               })
             }
             placeholder={
-              "ascii(substr((database()),1,1))>100\nascii(substr((database()),1,1))<120\n..."
+              "862|ascii(substr((database()),1,1))>79\n875|ascii(substr((database()),1,1))>112\n862|username=1'%20or%20ascii(substr((database()),1,1))%3E79%23&password=1\n..."
             }
             autoSize={{ minRows: 4, maxRows: 12 }}
             style={{ fontFamily: "monospace" }}

@@ -4,10 +4,11 @@
 全部处理在本地完成，不上传任何样本或规则。本仓库面向数据安全竞赛与红队场景中的
 "敏感数据快速清洗 / 解析" 需求，不依赖 Python 运行时。
 
-> **当前状态：v0.7.1 已发布（T25-1 ~ T25-2 verified_complete，release_complete）。** v0.7.1 是 v0.7.0 之后针对 SQL 解析路径的 URL-encoded 输入识别 patch：
-> - **SQL 解析路径自动识别 URL-encoded 输入（T25-1）**：用户报告 URL-encoded SQLi payload（如 `username=1'%20or%20ascii(substr((database()),1,1))%3E79%23&password=1`）解析失败。根因：`parse_sqls` / `detect_sql_blind_features` 把 raw 输入直接喂纯文本正则，遇到 `%20` / `%3E` / `%23` 不匹配 → 0 探针。修复：新增 `crates/core/src/log/mod.rs::looks_like_url_encoded`（正则 `(?i)%[0-9a-f]{2}` + OnceLock 单例），`parse_sqls` 与 `detect_sql_blind_features` 命中才调既有 `url_decode_twice` 双重解码再喂探针正则。caller 可直传 raw，对已解码输入零影响（向后兼容）。新增 8 core 单测 + 3 Tauri 单测。
-> - **版本号 0.7.0 → 0.7.1**：4 处 manifest 同步（Cargo.toml workspace / src-tauri Cargo.toml / tauri.conf.json / frontend package.json）。非破坏性 patch：仅放宽 `SqlParseInput.sql` 字段语义（caller 可传 raw），其余公开 API / 行为零变化。版本状态约定见 `docs/04-版本标准.md`。
-> - 详见 `docs/versions/0.7.1/更新日志.md` 与 `docs/qa/versions/0.7.1/QA-审计报告.md`。
+> **当前状态：v0.7.2 已发布（T26-1 ~ T26-3 verified_complete，release_complete）。** v0.7.2 是 v0.7.1 之后针对盲注数据库还原链路的 patch：
+> - **SqlParseTool 支持 `body|sql` 前缀打通盲注还原链路（T26-1）**：用户报告 URL-encoded payload（如 `username=1'%20or%20ascii(substr((database()),1,1))%3E79%23&password=1`）经 v0.7.1 URL 解码后仍无法完整还原数据库。根因：前端 `SqlParseTool.jsx` 对所有行构造 `responseBodySize: null`，而 `extract_blind_probe_with_line` 在 `response_body_size: None` 时直接返回空 Vec → 0 探针 → 聚合空 → 还原空。盲注二分还原**必须**有 body_size 才能区分 true（`ascii>thr` 为真，body==true_size）vs false（body!=true_size）两簇。修复：`onParse` 每行用正则 `^(\d+)\|(.*)$` 解析前缀，如 `862|username=1'%20or%20ascii(substr((database()),1,1))%3E79%23&password=1`；无前缀行保持 `null`（向后兼容非盲注 payload：time/error/union/tautology/comment 仍走 `parse_payload` 兜底）。
+> - **core 单测贯通验证 + gap 如实说明（T26-2）**：新增 2 个 core 单测——(1) `parse_sqls_body_size_enables_full_reconstruction`：用既有 helper `ascii_binary_probes_for_char("database()", 1, b'p' as u32, 862, 875, "1.1.1.1")` 生成 3 true + 2 false 自洽序列（max_true=111, min_false=112, `111+1=112` ✓），断言 5 探针 + `decoded_string.starts_with('p')` + schema=="p"；回归对照：同输入但 `response_body_size: None` → 0 探针 + 空 aggregated，证明 body_size 是贯通关键。(2) `parse_sqls_user_five_payloads_with_body_size_gap_documented`：用户提供的 5 条 payload（阈值 79/103/109 true 侧 body=862，112/115 false 侧 body=875），断言 5 探针 + aggregated 1 条 + position 1 `ascii_val=Some(112)` + `decoded_char=None` + `status="insufficient_probes"`。**gap 真相**：`max_true=109, min_false=112, 109+1=110≠112` → 严格自洽校验（`aggregate.rs:466-469`）不通过 → `insufficient_probes`。该校验是取证工具保守设计，patch **不放宽**；注释+文档说明：补 110/111 两条探针即可自洽还原 'p'。
+> - **版本号 0.7.1 → 0.7.2**：4 处 manifest 同步（Cargo.toml workspace / src-tauri Cargo.toml / tauri.conf.json / frontend package.json）+ Cargo.lock ×2。非破坏性 patch：仅前端 textarea 前缀解析 + 2 个 core 单测，`SqlParseInput` 结构 + `parse_sqls` 签名零变化，聚合算法严格自洽校验不放宽。版本状态约定见 `docs/04-版本标准.md`。
+> - 详见 `docs/versions/0.7.2/更新日志.md` 与 `docs/qa/versions/0.7.2/QA-审计报告.md`。
 
 ## 功能
 
@@ -115,6 +116,12 @@ v0.4.1 5 项缺陷修复已落地：
 
 - **T25-1 双调用点 URL-decode-on-detection**：用户报告 URL-encoded SQLi payload（`username=1'%20or%20ascii(substr((database()),1,1))%3E79%23&password=1`）解析失败。根因：`parse_sqls` / `detect_sql_blind_features` 把 raw 输入直接喂纯文本正则（期望字面空格 ` ` / `>` / `#`），遇到 `%20` / `%3E` / `%23` 不匹配 → 0 探针。修复：新增 `crates/core/src/log/mod.rs::looks_like_url_encoded`（正则 `(?i)%[0-9a-f]{2}` + `OnceLock` 单例，复用既有 `regex::Regex` 零新依赖）；core `tools/sql_parse.rs::parse_sqls` 循环内对 `input.sql` 条件解码后喂 `extract_blind_probe` / `parse_payload`；Tauri `commands/log.rs::detect_sql_blind_features` 对 cell 条件解码后喂 `looks_like_blind_probe`，`samples` 改收集解码后形态（与 `parse_sqls` 入口一致，避免下游二次解码）。`SqlParseInput.sql` 字段语义放宽：caller 可直传 raw。对已解码输入零影响（`looks_like_url_encoded` 返回 `false` 走原路径，向后兼容 v0.5.0 ~ v0.7.0）。新增 8 core 单测 + 3 Tauri 单测。
 - **T25-2 版本 bump + docs + Release QA + finalize**：4 处 manifest `0.7.0 → 0.7.1`；docs/00/02/03/04 + README + README_EN 同步新增 v0.7.1 说明；`docs/versions/0.7.1/更新日志.md` + `docs/qa/versions/0.7.1/QA-审计报告.md` 落盘；5 维度 Release QA 结论 qa_passed；`cargo test -p ruT0-data-kit-core --release` 472 passed + tauri 8 passed + npm build 3007 modules 0 error；commit + push origin main。
+
+## v0.7.2 已落地
+
+- **T26-1 前端 SqlParseTool `body|sql` 前缀解析 + UI 文案**：用户报告 URL-encoded payload 经 v0.7.1 URL 解码后仍无法完整还原数据库。根因：前端 `SqlParseTool.jsx:58` 对所有行构造 `responseBodySize: null`，而 `extract_blind_probe_with_line`（`crates/core/src/logsign/blind/probe.rs:61-64`）在 `response_body_size: None` 时 `return Vec::new()` → 0 探针 → 聚合空 → 还原空。盲注二分还原**必须**有 body_size 才能区分 true（`ascii>thr` 为真，body==true_size）vs false（body!=true_size）两簇。修复：`onParse` 每行用正则 `^(\d+)\|(.*)$` 解析 `<body_size>|<sql>` 前缀（如 `862|username=1'%20or%20ascii(substr((database()),1,1))%3E79%23&password=1`），命中则 `responseBodySize` 为整数，否则保持 `null`（向后兼容非盲注 payload：time/error/union/tautology/comment 仍走 `parse_payload` 兜底）。文件顶部注释 + 帮助文字 + placeholder 同步更新说明前缀语法。无新依赖（纯本地正则）。
+- **T26-2 core 单测贯通验证 + gap 如实说明**：新增 2 个 core 单测到 `crates/core/src/tools/sql_parse.rs` tests 模块——(1) `parse_sqls_body_size_enables_full_reconstruction`：用既有 helper `ascii_binary_probes_for_char("database()", 1, b'p' as u32, 862, 875, "1.1.1.1")` 生成 3 true + 2 false 自洽序列（max_true=111, min_false=112, `111+1=112` ✓ 自洽），断言 5 探针 + `decoded_string.starts_with('p')` + schema=="p"；回归对照：同输入但 `response_body_size: None` → 0 探针 + 空 aggregated，证明 body_size 是贯通关键。(2) `parse_sqls_user_five_payloads_with_body_size_gap_documented`：用户提供的 5 条 payload（阈值 79/103/109 true 侧 body=862，112/115 false 侧 body=875），断言 5 探针 + aggregated 1 条 + position 1 `ascii_val=Some(112)` + `decoded_char=None` + `status="insufficient_probes"`。**gap 真相**：`max_true=109, min_false=112, 109+1=110≠112` → 严格自洽校验（`aggregate.rs:466-469`）不通过 → `insufficient_probes`。该校验是取证工具保守设计，patch **不放宽**；测试注释说明：补 110/111 两条探针即可自洽还原 'p'。
+- **T26-3 版本 bump + docs + Release QA + finalize**：4 处 manifest `0.7.1 → 0.7.2` + Cargo.lock ×2 同步；docs/00/02/03/04 + README + README_EN 同步新增 v0.7.2 说明；`docs/versions/0.7.2/更新日志.md` + `docs/qa/versions/0.7.2/QA-审计报告.md` 落盘；5 维度 Release QA 结论 qa_passed；`cargo test -p ruT0-data-kit-core --release` 376 passed + 3 ignored + tauri 8 passed + npm build 3007 modules 0 error；commit + push origin main。
 
 ## 安装
 
@@ -336,6 +343,7 @@ cargo tauri dev
 | v0.5.0 | 架构性质升级：blind_aggregator/commands/operator 三大 God 文件拆分 + rules/patterns.rs 正则集中化 + 前端 state 领域切片 + ColumnRuleMapper 公共组件（依据代码质量审计报告 P0+P1+P2，零行为回归） | 已发布 v0.5.0 |
 | v0.7.0 | 删除 Tools/正则解析子工具（前端 RegexTool/RegexConstructTab + Tauri explain_regex/regex_construct + core regex_explain/regex_construct/regex_template 全移除）+ PreprocessView 表头新增「列级 SQL 解析」按钮（取该列全部非空行 → `parseSqlTool` → 跳转 Tools/Sql 复用现有 UI） | 已发布 v0.7.0 |
 | v0.7.1 | SQL 解析路径自动识别 URL-encoded 输入：新增 `looks_like_url_encoded`（`(?i)%[0-9a-f]{2}`）+ `parse_sqls` / `detect_sql_blind_features` 命中才调 `url_decode_twice` 双重解码再喂探针正则；caller 可直传 raw，对已解码输入零影响（patch，非破坏性） | 已发布 v0.7.1 |
+| v0.7.2 | SqlParseTool 支持 `body\|sql` 前缀打通盲注还原链路：前端 `onParse` 每行用正则 `^(\d+)\|(.*)$` 解析 `<body_size>\|<sql>` 前缀（如 `862\|username=1'%20or%20ascii(substr((database()),1,1))%3E79%23&password=1`），无前缀行保持 `null` 向后兼容非盲注 payload；2 个 core 单测贯通验证（自洽序列还原 'p' + 用户 5 payload gap 如实断言）；聚合算法严格自洽校验 `max_true+1==min_false` 不放宽，gap=110/111 补齐即自洽还原 'p'（patch，非破坏性） | 已发布 v0.7.2 |
 
 版本判定标准见 `docs/04-版本标准.md`。
 
