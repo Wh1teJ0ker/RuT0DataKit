@@ -4,10 +4,11 @@
 全部处理在本地完成，不上传任何样本或规则。本仓库面向数据安全竞赛与红队场景中的
 "敏感数据快速清洗 / 解析" 需求，不依赖 Python 运行时。
 
-> **当前状态：v0.7.3 已发布（T27-1 ~ T27-3 verified_complete，release_complete）。** v0.7.3 是 v0.7.2 之后针对盲注自动提取链路的 patch：
-> - **PreprocessView 新增「盲注自动提取」按钮 + detect_sql_blind_features 返回 body_size/source_ip（T27-1 ~ T27-2）**：用户报告无法手工获得 `862|username=1'%20or%20ascii(substr((database()),1,1))%3E110%23&password=1` 这种带 body_size 前缀的数据。根因：log 源的 `size` 列就是 HTTP 响应 body 字节数、`ip` 列就是来源 IP（都已存在于 records），但 `detect_sql_blind_features` 扫描盲注探针时**丢弃**了 body_size 和 source_ip，只返回纯 SQL 文本。修复：扩展命令返回 `samples: Vec<{ sql, body_size, source_ip }>`——从同行按 header 名定位 `size` 列 + `ip` 列配对，按 `(sql, body_size, source_ip)` 三元组去重；PreprocessView 段 ④ 跳转区新增「盲注自动提取」按钮，点击后扫描全表 → 拼 `body|sql` 文本 → 调 `parseSqlTool` → 跳转 Tools/Sql。非 log 源无 `size`/`ip` 列 → body_size=null 走 `parse_payload` 兜底。返回形状变更零破坏（v0.5.x 删除自动跳转入口后无前端调用方）。新增 4 个 Tauri 单测。
-> - **版本号 0.7.2 → 0.7.3**：4 处 manifest 同步（Cargo.toml workspace / src-tauri Cargo.toml / tauri.conf.json / frontend package.json）+ Cargo.lock ×2。非破坏性 patch：扩展既有 Tauri 命令返回形状 + 前端新增按钮调既有 `parseSqlTool`，`SqlParseInput` 结构 + `parse_sqls` 签名零变化。版本状态约定见 `docs/04-版本标准.md`。
-> - 详见 `docs/versions/0.7.3/更新日志.md` 与 `docs/qa/versions/0.7.3/QA-审计报告.md`。
+> **当前状态：v0.8.0 已发布（T28-1 ~ T28-5 verified_complete，release_complete）。** v0.8.0 是收尾发布 minor 版本：
+> - **v0.7.4 两处盲注 BUG 修复合并走门禁**：(a) `crates/core/src/tools/sql_parse.rs::SqlParseInput` 加 `#[serde(rename_all = "camelCase")]` root cause 修复——Tauri v2 `#[command]` 仅对顶层参数 camelCase→snake_case，嵌套 struct 字段走原生 serde，无 rename_all 则前端 camelCase `responseBodySize`/`sourceIp` 被 serde 静默丢 → `response_body_size: None` → `probe.rs None => Vec::new()` → 0 探针 → schema 空。v0.7.2 Rust 测试用 struct 字面量绕开 serde 故全绿但 GUI 从未跑通。独立 serde 验证（`/tmp/serde_test_proj`）复现：NoRename → None（静默丢）；WithRename → Some。(b) `src-tauri/src/commands/log.rs::detect_sql_blind_features` 移除 `samples.len() >= 50` 截断——长 log 上制造 gap → `insufficient_probes`，dedup 后全量传给 `parseSqlTool` IPC 体积可控。
+> - **手机号自定义前缀功能 v0.6.8 修订已交付**（commit `666b496`，本版本仅索引不改代码）：用户原话「数据提取的phone可以支持自定义前缀三位，如果没有就默认1的正常号码…默认的52是不正确的」——确认 `phone`/`pinfo_phone` 已支持 `prefixes` 参数自定义前 1-3 位号段，缺省默认 1 开头正常号码，**无 "52" 拼留**（"52" 只在历史注释里标记废弃）。入口：RulesView phone/pinfo_phone 的 prefixes TextArea（placeholder `"138,159,734"`）→ `SET_EXTRACT_OVERRIDE`/`SET_VALIDATE_OVERRIDE`。
+> - **版本号 0.7.4 → 0.8.0**：4 处 manifest 同步 + Cargo.lock ×2。非破坏性：serde 属性不改字段名/类型/签名只让前端 camelCase 正确反序列化；50-cap 移除只增不减；手机前缀零代码改动。版本状态约定见 `docs/04-版本标准.md`。
+> - 详见 `docs/versions/0.8.0/更新日志.md` 与 `docs/qa/versions/0.8.0/QA-审计报告.md`。
 
 ## 功能
 
@@ -26,6 +27,7 @@
 | v0.4.3 | txt 兼容（PreprocessView 支持 .txt 导入）+ 数据提取独立模块（ExtractView：文件/文本输入 → phone/bankcard/ip 提取 → txt/csv/json 导出，匹配 PDF spec type_value 格式）+ 规则引擎去绝对化（PhoneValidator 删 CTF/real 白名单 → `^1\d{10}$`；新增 IpValidator） | 已发布 v0.4.3 |
 | v0.5.0 | 架构性质升级：blind_aggregator/commands/operator 三大 God 文件拆分 + rules/patterns.rs 正则集中化 + 前端 state 领域切片 + ColumnRuleMapper 公共组件（依据代码质量审计报告 P0+P1+P2，零行为回归） | 已发布 v0.5.0 |
 | v0.7.0 | 删除 Tools/正则解析子工具（前端 RegexTool/RegexConstructTab + Tauri explain_regex/regex_construct + core regex_explain/regex_construct/regex_template 全移除）+ PreprocessView 表头新增「列级 SQL 解析」按钮（取该列全部非空行 → `parseSqlTool` → 跳转 Tools/Sql 复用现有 UI） | 已发布 v0.7.0 |
+| v0.8.0 | 收尾发布 minor：v0.7.4 两处盲注 BUG 修复（`SqlParseInput` 加 `#[serde(rename_all = "camelCase")]` root cause — Tauri v2 嵌套 struct 字段走原生 serde，前端 camelCase 字段被静默丢 → 0 探针 → schema 空；`detect_sql_blind_features` 移除 50 截断 — 长 log 制造 gap → insufficient_probes）+ 手机号自定义前缀 v0.6.8 修订已交付索引（`phone`/`pinfo_phone` 支持 `prefixes` 参数自定义前 1-3 位号段，缺省默认 1 开头，无 "52" 拼留，本版本仅索引不改代码） | 已发布 v0.8.0 |
 
 v0.1.0 已落地：
 - core pipeline：`detect_type` → `SourceReader` → `mask_pipeline` / `mask_pipeline_selected`（行选择，向后兼容）/ `mask_pipeline_columns`（列勾选） → `validate_pipeline`（校验） → `write_masked_csv` / `export_records_csv` / `export_records_xlsx`
@@ -350,6 +352,7 @@ cargo tauri dev
 | v0.7.1 | SQL 解析路径自动识别 URL-encoded 输入：新增 `looks_like_url_encoded`（`(?i)%[0-9a-f]{2}`）+ `parse_sqls` / `detect_sql_blind_features` 命中才调 `url_decode_twice` 双重解码再喂探针正则；caller 可直传 raw，对已解码输入零影响（patch，非破坏性） | 已发布 v0.7.1 |
 | v0.7.2 | SqlParseTool 支持 `body\|sql` 前缀打通盲注还原链路：前端 `onParse` 每行用正则 `^(\d+)\|(.*)$` 解析 `<body_size>\|<sql>` 前缀（如 `862\|username=1'%20or%20ascii(substr((database()),1,1))%3E79%23&password=1`），无前缀行保持 `null` 向后兼容非盲注 payload；2 个 core 单测贯通验证（自洽序列还原 'p' + 用户 5 payload gap 如实断言）；聚合算法严格自洽校验 `max_true+1==min_false` 不放宽，gap=110/111 补齐即自洽还原 'p'（patch，非破坏性） | 已发布 v0.7.2 |
 | v0.7.3 | PreprocessView 新增「盲注自动提取」按钮 + `detect_sql_blind_features` 返回 body_size/source_ip：扩展既有 Tauri 命令返回形状从 `samples: Vec<String>` 改为 `samples: Vec<{ sql, body_size, source_ip }>`——从同行按 header 名定位 `size` 列（HTTP 响应 body 字节数）+ `ip` 列（来源 IP）配对，按 `(sql, body_size, source_ip)` 三元组去重；PreprocessView 段 ④ 跳转区新增按钮（`handleBlindAutoExtract`），点击后扫描全表 → 拼 `body\|sql` 文本 → 调 `parseSqlTool` → 跳转 Tools/Sql；非 log 源无 size/ip 列 → body_size=null 走 `parse_payload` 兜底；新增 4 个 Tauri 单测；返回形状变更零破坏（v0.5.x 删除自动跳转入口后无前端调用方）（patch，非破坏性） | 已发布 v0.7.3 |
+| v0.8.0 | 收尾发布 minor：v0.7.4 两处盲注 BUG 修复（Fix A `SqlParseInput` 加 `#[serde(rename_all = "camelCase")]` root cause — Tauri v2 嵌套 struct 字段走原生 serde，前端 camelCase `responseBodySize`/`sourceIp` 被静默丢 → `response_body_size: None` → 0 探针 → schema 空；v0.7.2 测试用 struct 字面量绕开 serde 故全绿但 GUI 从未跑通；Fix B `detect_sql_blind_features` 移除 50 截断 — 长 log 制造 gap → insufficient_probes）+ 手机号自定义前缀 v0.6.8 修订已交付索引（`phone`/`pinfo_phone` 支持 `prefixes` 参数自定义前 1-3 位号段，缺省默认 1 开头，无 "52" 拼留，本版本仅索引不改代码）（minor，非破坏性） | 已发布 v0.8.0 |
 
 版本判定标准见 `docs/04-版本标准.md`。
 

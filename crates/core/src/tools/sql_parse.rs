@@ -55,7 +55,15 @@ use crate::log::{looks_like_url_encoded, url_decode_twice};
 /// **v0.7.1**：`sql` 字段可传 raw 或已解码形态——[`parse_sqls`] 内部用
 /// [`looks_like_url_encoded`] 检测 `%XX` 序列，命中则自动调
 /// [`url_decode_twice`] 解码后再喂探针正则。caller 无需自行解码。
+///
+/// **v0.7.4**：加 `#[serde(rename_all = "camelCase")]`——Tauri v2 `#[command]`
+/// 仅对命令顶层参数做 camelCase→snake_case 自动转换，**嵌套结构体字段走
+/// 原生 serde**。前端发 `responseBodySize` / `sourceIp`（camelCase），
+/// 无此属性则 serde 静默丢弃 → `response_body_size: None` → `probe.rs`
+/// `None => return Vec::new()` → 0 探针 → schema 空。v0.7.2 Rust 侧测试
+/// 直接构造 struct 字面量（不经 serde）所以全绿但 GUI 从未跑通。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SqlParseInput {
     /// SQL 文本（v0.7.1 起 `parse_sqls` 自动检测 `%XX` 并解码，caller 可直传 raw）。
     pub sql: String,

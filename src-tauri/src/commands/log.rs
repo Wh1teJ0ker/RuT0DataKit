@@ -43,8 +43,11 @@ pub fn scan_log_file(path: String) -> Result<Value, String> {
 /// 扫描预处理后的 `Records` 找 SQL 盲注探针特征行（v0.4.1 T6-4）。
 ///
 /// 遍历 `rows` 所有 cell 调 core `looks_like_blind_probe`，命中则收集该 cell
-/// 原文。返回 `{ detected: bool, samples: Vec<{ sql, body_size, source_ip }> }`，
-/// `samples` 上限 50 避免过大。
+/// 原文。返回 `{ detected: bool, samples: Vec<{ sql, body_size, source_ip }> }`。
+///
+/// **v0.7.4**：移除 samples 上限 50——盲注二分还原必须拿到全量探针，
+/// 截断会人为制造 gap 导致 `insufficient_probes`。dedup 后全量传给
+/// `parseSqlTool`，IPC 体积在 Tauri JSON 可控范围内。
 ///
 /// **v0.7.1**：cell 先用 [`looks_like_url_encoded`] 检测，命中 `%XX` hex 序列
 /// 则调 [`url_decode_twice`] 双重解码再喂 `looks_like_blind_probe`；`samples`
@@ -71,11 +74,14 @@ pub fn detect_sql_blind_features(
     let size_idx = headers.iter().position(|h| h == "size");
     let ip_idx = headers.iter().position(|h| h == "ip");
     // 去重 key：(sql, body_size, source_ip) 三元组。
+    // v0.7.4：移除 samples 上限 50——盲注二分还原必须拿到全量探针，
+    // 丢弃第 50 条之后的探针会导致 gap（如缺 110/111 → insufficient_probes）。
+    // dedup + 全量传给 parseSqlTool，IPC 体积在 Tauri JSON 可控范围内。
     let mut seen: Vec<(String, Option<u64>, Option<String>)> = Vec::new();
     let mut samples: Vec<Value> = Vec::new();
     for row in &rows {
         for cell in row {
-            if cell.is_empty() || samples.len() >= 50 {
+            if cell.is_empty() {
                 continue;
             }
             // v0.7.1：自动识别 URL-encoded cell，命中 `%XX` 则先解码再检测。
