@@ -27,10 +27,15 @@
   },
   "plugins": {
     "updater": {
-      "active": false,
-      "endpoints": [],
-      "pubkey": "",
-      "dialog": false
+      "active": true,
+      "endpoints": [
+        "https://github.com/Wh1teJ0ker/RuT0DataKit/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDc0QUNEODA3MDlDODEzRTIKUldUaUU4Z0pCOWlzZEc5OWpnYlI3ZVd6TUswODlERlhhcEo5UEZ6ZTVrdWxqdkR0ZEwvdHlnekEK",
+      "dialog": false,
+      "windows": {
+        "installMode": "passive"
+      }
     }
   }
 }

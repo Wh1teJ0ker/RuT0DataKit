@@ -31,7 +31,7 @@ T1 工作区脚手架
 | T3 | Sheet/Tab + antd Table | T1 | verified_complete | —（已闭环） | — | — |
 | T4 | SQLite 持久层 | T1 | verified_complete | —（已闭环） | — | — |
 | T5 | 导入流 | T3, T4 | planned | — | — | — |
-| T6 | Tauri updater 插件 | T1 | implemented_not_verified | [HANDOFF](TASK-T6-HANDOFF.md) | [REPORT](TASK-T6-REPORT.md) | — |
+| T6 | Tauri updater 插件 | T1 | verified_complete | —（已闭环） | — | — |
 | T7 | AI 占位 IPC 契约 | T1 | planned | — | — | — |
 | T8 | 设置页 + 能力面板占位提示 | T2, T6 | planned | — | — | — |
 | T9 | 双语 README + docs + QA | T1~T8 | planned | — | — | — |
