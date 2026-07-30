@@ -29,8 +29,8 @@ T1 工作区脚手架
 | T1 | 工作区脚手架 | — | verified_complete | —（已闭环） | — | — |
 | T2 | 四区布局 shell | T1 | verified_complete | —（已闭环） | — | — |
 | T3 | Sheet/Tab + antd Table | T1 | verified_complete | —（已闭环） | — | — |
-| T4 | SQLite 持久层 | T1 | verified_complete | —（已闭环） | — | — |
-| T5 | 导入流 | T3, T4 | planned | [HANDOFF](TASK-T5-HANDOFF.md) | — | — |
+| T4 | SQLite 持久层 | T1 | verified_complete | —（已闭环，含 T4-hotfix edb3ad6） | — | — |
+| T5 | 导入流 | T3, T4 | verified_complete | —（已闭环） | — | — |
 | T6 | Tauri updater 插件 | T1 | verified_complete | —（已闭环） | — | — |
 | T7 | AI 占位 IPC 契约 | T1 | verified_complete | —（已闭环） | — | — |
 | T8 | 设置页 + 能力面板占位提示 | T2, T6 | verified_complete | —（已闭环） | — | — |

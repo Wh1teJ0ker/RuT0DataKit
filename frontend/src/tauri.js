@@ -1,7 +1,7 @@
 // Tauri v2 invoke 封装层。
 //
-// v1.0.0（T7）：仅落地 AI 占位契约 `aiSuggest` / `invokeAiOp`。
-// 其它封装（导入/更新等）留给后续任务，此处仅留 TODO，不写 invoke 调用。
+// v1.0.0（T7）：AI 占位契约 `aiSuggest` / `invokeAiOp`。
+// v1.0.0（T5）：导入流 `importFile` / `getSheetData`。
 
 import { invoke } from "@tauri-apps/api/core";
 
@@ -24,5 +24,22 @@ export function invokeAiOp(op, params) {
   return invoke("invoke_ai_op", { op, params });
 }
 
-// TODO(T5): importFile(path) / getSheetData(...) 封装
-// TODO(T6): checkUpdate() / installUpdate() 封装
+/**
+ * 调用 `import_file` IPC：解析 CSV/XLSX → 写 DB cells → 返回 ImportResult。
+ * @param {string} path - 文件绝对路径（由 @tauri-apps/plugin-dialog 的 open 选出）
+ * @returns {Promise<{sessionId: number, sheetId: number, rowCount: number, headers: string[]}>} ImportResult
+ */
+export function importFile(path) {
+  return invoke("import_file", { path });
+}
+
+/**
+ * 调用 `get_sheet_data` IPC：分页查询 Sheet cells → PageData。
+ * @param {number} sheetId - Sheet ID
+ * @param {number} page - 页码，从 1 开始
+ * @param {number} pageSize - 每页行数（不含表头行）
+ * @returns {Promise<{headers: string[], rows: Array<Array<string|null>>, total: number, page: number, pageSize: number}>} PageData
+ */
+export function getSheetData(sheetId, page, pageSize) {
+  return invoke("get_sheet_data", { sheetId, page, pageSize });
+}

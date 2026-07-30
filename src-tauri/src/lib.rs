@@ -20,6 +20,8 @@ pub fn run() {
             commands::install_update,
             commands::ai_suggest,
             commands::invoke_ai_op,
+            commands::import_file,
+            commands::get_sheet_data,
         ])
         .setup(|app| {
             let dir = app.path().app_config_dir()?;

@@ -8,8 +8,8 @@ import { useReducer, useCallback } from "react";
 // ---- Sheet 工厂 ----
 // Sheet 对象结构：{ id, sessionId, name, headers, rows, total, page, pageSize,
 //                  columnOrder, columnVisibility, selection, statusHighlights }
-// TODO(T5): replace mock with real import —— mock 数据生成与初始 sheet 均为交互演示，
-// T5 接管真实导入流后移除 mock。
+// v1.0.0（T5）：真实导入流接管，mock 仅在空态演示用；导入成功路径以
+// IMPORT_SUCCESS action 用 ImportResult 填充真实 Sheet。
 let mockSheetSeq = 0;
 function createMockSheet(name) {
   mockSheetSeq += 1;
@@ -38,6 +38,26 @@ function createMockSheet(name) {
   };
 }
 
+// 由 ImportResult（camelCase）构造真实 Sheet。rows 初始为空，由 SET_SHEET_DATA
+// action 在导入后/翻页后填充首页数据。
+export function createSheetFromImport(result) {
+  const headers = result.headers || [];
+  return {
+    id: result.sheetId, // Sheet ID 来自 DB（i64），与 getSheetData 入参一致
+    sessionId: result.sessionId,
+    name: result.name || `Sheet ${result.sheetId}`,
+    headers,
+    rows: [], // 由 SET_SHEET_DATA 填充首页
+    total: result.rowCount, // DB cell 行数（含表头行；前端展示去掉表头行）
+    page: 1,
+    pageSize: 50,
+    columnOrder: [...headers],
+    columnVisibility: headers.reduce((acc, h) => ({ ...acc, [h]: true }), {}),
+    selection: { selectedRowKeys: [], lastSelectedIndex: null },
+    statusHighlights: {},
+  };
+}
+
 export const initialState = {
   // T2 字段（保留，禁止覆盖）
   currentView: "workbench", // 'workbench' | 'settings'
@@ -62,6 +82,9 @@ export const ACTION = {
   REORDER_COLUMNS: "REORDER_COLUMNS",
   SET_COLUMN_VISIBILITY: "SET_COLUMN_VISIBILITY",
   SET_PAGE: "SET_PAGE",
+  // T5 action（导入流）
+  IMPORT_SUCCESS: "IMPORT_SUCCESS",
+  SET_SHEET_DATA: "SET_SHEET_DATA",
 };
 
 function patchActiveSheet(state, patch) {
@@ -149,15 +172,57 @@ export function reducer(state, action) {
     case ACTION.SET_PAGE:
       // payload = page
       return patchActiveSheet(state, () => ({ page: action.payload }));
+
+    // ---- T5（导入流）----
+    case ACTION.IMPORT_SUCCESS: {
+      // payload = ImportResult { sessionId, sheetId, rowCount, headers } + name
+      const sheet = createSheetFromImport(action.payload);
+      // 若已存在同 sheetId 的 Sheet，替换之；否则追加。
+      const exists = state.sheets.some((s) => s.id === sheet.id);
+      const sheets = exists
+        ? state.sheets.map((s) => (s.id === sheet.id ? sheet : s))
+        : [...state.sheets, sheet];
+      return { ...state, sheets, activeSheetId: sheet.id };
+    }
+    case ACTION.SET_SHEET_DATA:
+      // payload = { sheetId, headers, rows, total, page, pageSize }
+      return {
+        ...state,
+        sheets: state.sheets.map((s) => {
+          if (s.id !== action.payload.sheetId) return s;
+          // PageData.rows 为 Vec<Vec<Option<String>>>；转为 antd 行对象。
+          const headers = action.payload.headers || s.headers;
+          const rows = action.payload.rows.map((row, i) => {
+            const obj = { key: `${action.payload.sheetId}-${action.payload.page}-${i}` };
+            headers.forEach((h, col) => {
+              obj[h] = row[col] ?? null;
+            });
+            obj.status = "default";
+            return obj;
+          });
+          return {
+            ...s,
+            headers,
+            rows,
+            total: action.payload.total ?? s.total,
+            page: action.payload.page ?? s.page,
+            pageSize: action.payload.pageSize ?? s.pageSize,
+            columnOrder: [...headers],
+            columnVisibility: headers.reduce(
+              (acc, h) => ({ ...acc, [h]: s.columnVisibility?.[h] !== false }),
+              {}
+            ),
+          };
+        }),
+      };
     default:
       return state;
   }
 }
 
-// 初始注入 1 个 mock Sheet，便于交互演示。
-// TODO(T5): replace mock with real import
-initialState.sheets = [createMockSheet("Sheet 1")];
-initialState.activeSheetId = initialState.sheets[0].id;
+// 初始空态：无 Sheet。导入前显示 Workbench 空态文案。
+initialState.sheets = [];
+initialState.activeSheetId = null;
 
 export function useAppState() {
   const [state, dispatch] = useReducer(reducer, initialState);
@@ -211,6 +276,16 @@ export function useAppState() {
     []
   );
 
+  // ---- T5（导入流）----
+  const importSuccess = useCallback(
+    (payload) => dispatch({ type: ACTION.IMPORT_SUCCESS, payload }),
+    []
+  );
+  const setSheetData = useCallback(
+    (payload) => dispatch({ type: ACTION.SET_SHEET_DATA, payload }),
+    []
+  );
+
   return {
     state,
     dispatch,
@@ -225,5 +300,7 @@ export function useAppState() {
     reorderColumns,
     setColumnVisibility,
     setPage,
+    importSuccess,
+    setSheetData,
   };
 }
