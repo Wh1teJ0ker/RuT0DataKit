@@ -30,10 +30,10 @@ T1 工作区脚手架
 | T2 | 四区布局 shell | T1 | verified_complete | —（已闭环） | — | — |
 | T3 | Sheet/Tab + antd Table | T1 | verified_complete | —（已闭环） | — | — |
 | T4 | SQLite 持久层 | T1 | verified_complete | —（已闭环） | — | — |
-| T5 | 导入流 | T3, T4 | planned | — | — | — |
+| T5 | 导入流 | T3, T4 | planned | [HANDOFF](TASK-T5-HANDOFF.md) | — | — |
 | T6 | Tauri updater 插件 | T1 | verified_complete | —（已闭环） | — | — |
-| T7 | AI 占位 IPC 契约 | T1 | planned | — | — | — |
-| T8 | 设置页 + 能力面板占位提示 | T2, T6 | planned | — | — | — |
+| T7 | AI 占位 IPC 契约 | T1 | planned | [HANDOFF](TASK-T7-HANDOFF.md) | — | — |
+| T8 | 设置页 + 能力面板占位提示 | T2, T6 | planned | [HANDOFF](TASK-T8-HANDOFF.md) | — | — |
 | T9 | 双语 README + docs + QA | T1~T8 | planned | — | — | — |
 
 状态词：`planned` / `in_progress` / `implemented_not_verified` / `partially_complete` / `blocked` / `in_review` / `review_passed` / `review_rejected` / `verified_complete` / `not_complete`
