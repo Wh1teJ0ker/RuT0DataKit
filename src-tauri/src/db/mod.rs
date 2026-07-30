@@ -84,9 +84,13 @@ impl DbManager {
         })
     }
 
-    /// 分页查询 `cells`（按 `row_idx` 升序）。
+    /// 分页查询 `cells`，按**行**分页（每页返回 `page_size` 个 `row_idx`
+    /// 对应的全部列），结果按 `row_idx` 升序、`col_idx` 升序返回。
     ///
     /// `page` 从 1 开始；`page=0` 按 1 处理（`saturating_sub`）。
+    /// 行级分页：先用子查询取本页的 `row_idx` 集合（`DISTINCT` +
+    /// `LIMIT/OFFSET`），再取这些行的全部 cells——确保多列 Sheet
+    /// 每页返回 `page_size` 行而非 `page_size` 个 cell。
     pub fn query_cells(
         &self,
         sheet_id: i64,
@@ -98,9 +102,13 @@ impl DbManager {
         let conn = self.conn.lock().expect("db mutex poisoned");
         let mut stmt = conn.prepare(
             "SELECT sheet_id, row_idx, col_idx, value FROM cells
-             WHERE sheet_id = ?1
-             ORDER BY row_idx ASC, col_idx ASC
-             LIMIT ?2 OFFSET ?3",
+             WHERE sheet_id = ?1 AND row_idx IN (
+                 SELECT DISTINCT row_idx FROM cells
+                 WHERE sheet_id = ?1
+                 ORDER BY row_idx ASC
+                 LIMIT ?2 OFFSET ?3
+             )
+             ORDER BY row_idx ASC, col_idx ASC",
         )?;
         let rows = stmt.query_map(params![sheet_id, limit, offset], |r| {
             Ok(Cell {
@@ -140,11 +148,11 @@ impl DbManager {
         Ok(())
     }
 
-    /// 统计某 sheet 的 cell 行数。
+    /// 统计某 sheet 的数据**行数**（`DISTINCT row_idx`，含表头行）。
     pub fn count_rows(&self, sheet_id: i64) -> Result<u32, DbError> {
         let conn = self.conn.lock().expect("db mutex poisoned");
         let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM cells WHERE sheet_id = ?1",
+            "SELECT COUNT(DISTINCT row_idx) FROM cells WHERE sheet_id = ?1",
             params![sheet_id],
             |r| r.get(0),
         )?;
@@ -343,6 +351,44 @@ mod tests {
         // page=0 当作 1
         let p0 = mgr.query_cells(shid, 0, 2).unwrap();
         assert_eq!(p0.len(), 2);
+    }
+
+    #[test]
+    fn write_and_query_cells_paginated_multi_column() {
+        // 多列 Sheet：3 列 × 5 行（含表头 row_idx=0），验证行级分页语义。
+        let (_dir, mgr) = open();
+        let sid = mgr.create_session("s", None, "csv", 0).unwrap();
+        let shid = mgr.create_sheet(sid, "Sheet1", 0).unwrap();
+        let mut cells: Vec<Cell> = Vec::new();
+        for row in 0..5u32 {
+            for col in 0..3u32 {
+                cells.push(Cell {
+                    sheet_id: shid,
+                    row_idx: row,
+                    col_idx: col,
+                    value: Some(format!("r{}c{}", row, col)),
+                });
+            }
+        }
+        mgr.write_cells(shid, &cells).unwrap();
+        // count_rows 应返回行数 5（而非 cell 数 15）。
+        assert_eq!(mgr.count_rows(shid).unwrap(), 5);
+        // 第 1 页 2 行 → 6 个 cell（2 行 × 3 列）。
+        let p1 = mgr.query_cells(shid, 1, 2).unwrap();
+        assert_eq!(p1.len(), 6);
+        // 全部属于 row_idx ∈ {0, 1}。
+        assert!(p1.iter().all(|c| c.row_idx <= 1));
+        // 第 2 页 2 行 → row_idx ∈ {2, 3}，6 个 cell。
+        let p2 = mgr.query_cells(shid, 2, 2).unwrap();
+        assert_eq!(p2.len(), 6);
+        assert!(p2.iter().all(|c| c.row_idx >= 2 && c.row_idx <= 3));
+        // 第 3 页 1 行 → row_idx = 4，3 个 cell。
+        let p3 = mgr.query_cells(shid, 3, 2).unwrap();
+        assert_eq!(p3.len(), 3);
+        assert!(p3.iter().all(|c| c.row_idx == 4));
+        // 第 4 页 0 行。
+        let p4 = mgr.query_cells(shid, 4, 2).unwrap();
+        assert!(p4.is_empty());
     }
 
     #[test]
