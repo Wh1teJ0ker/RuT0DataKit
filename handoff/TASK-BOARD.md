@@ -79,10 +79,12 @@ sqlite3 ~/Library/Application\ Support/com.rut0.datakit/ruT0datakit.db ".schema"
 
 | 阶段 | 触发条件 | 目标状态 |
 |---|---|---|
-| 单任务通过 | reviewer `review_passed` + 主会话确认下游未破坏 | `verified_complete`（T1~T8） |
-| 端到端通过 | T1~T8 全 `verified_complete` + E1~E9 全过 | `done_e2e` |
+| 单任务通过 | reviewer `review_passed` + 主会话确认下游未破坏 | `verified_complete`（T1~T9） |
+| 端到端通过 | T1~T9 全 `verified_complete` + E1~E9 全过 | `done_e2e` |
 | 版本 QA 通过 | Release QA 审计落盘且结论通过 | `qa_passed` |
 | 版本完成 | `qa_passed` + 版本文档同步 | `release_complete` |
+
+当前版本状态：`done_e2e`（静态+app 启动+DB 实测通过，GUI 交互项待用户手动验收）。Release QA 结论 `conditional_pass`。
 
 ## 7. 进度同步约定
 
