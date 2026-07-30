@@ -1,0 +1,32 @@
+/* DataTable 状态高亮样式（T3）。
+ * v1.0.0 仅 default 触发；invalid/masked/hit 在 CSS 占位，触发逻辑是 v1.2+。
+ */
+
+/* default：正常行（v1.0.0 mock 全 default） */
+.ant-table-row.default > td {
+  background: #fff;
+}
+
+/* invalid：非法行（v1.2+ 触发） */
+.ant-table-row.invalid > td {
+  background: #fff1f0;
+}
+
+/* masked：脱敏行（v1.2+ 触发） */
+.ant-table-row.masked > td {
+  background: #f0f5ff;
+}
+
+/* hit：命中行（v1.2+ 触发） */
+.ant-table-row.hit > td {
+  background: #f6ffed;
+}
+
+/* 拖拽中的列头置顶 */
+.data-table-wrap .ant-table-thead > tr > th {
+  position: relative;
+}
+
+.data-table-wrap .data-table-toolbar {
+  padding: 0 0 8px;
+}

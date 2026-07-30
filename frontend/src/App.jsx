@@ -11,8 +11,20 @@ const { Header } = Layout;
 // Header=TopToolbar / Sider=SidePanel / Content=Workbench / 右侧 Sider=AiPanel。
 // 注意：antd Layout 默认 Header 在顶部，下方用 flex 容器横排 SidePanel + Content + AiPanel。
 export default function App() {
-  const { state, setView, setActiveCapability, setAiPanelVisible } =
-    useAppState();
+  const {
+    state,
+    setView,
+    setActiveCapability,
+    setAiPanelVisible,
+    addSheet,
+    closeSheet,
+    setActiveSheet,
+    renameSheet,
+    setSelection,
+    reorderColumns,
+    setColumnVisibility,
+    setPage,
+  } = useAppState();
 
   return (
     <Layout style={{ height: "100vh", overflow: "hidden" }}>
@@ -35,7 +47,19 @@ export default function App() {
           activeCapability={state.activeCapability}
           setView={setView}
         />
-        <Workbench currentView={state.currentView} />
+        <Workbench
+          currentView={state.currentView}
+          sheets={state.sheets}
+          activeSheetId={state.activeSheetId}
+          addSheet={addSheet}
+          setActiveSheet={setActiveSheet}
+          closeSheet={closeSheet}
+          renameSheet={renameSheet}
+          setSelection={setSelection}
+          reorderColumns={reorderColumns}
+          setColumnVisibility={setColumnVisibility}
+          setPage={setPage}
+        />
         <AiPanel
           visible={state.aiPanel.visible}
           setVisible={setAiPanelVisible}
