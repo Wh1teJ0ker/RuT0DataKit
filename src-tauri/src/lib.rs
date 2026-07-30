@@ -18,6 +18,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::check_update,
             commands::install_update,
+            commands::ai_suggest,
+            commands::invoke_ai_op,
         ])
         .setup(|app| {
             let dir = app.path().app_config_dir()?;

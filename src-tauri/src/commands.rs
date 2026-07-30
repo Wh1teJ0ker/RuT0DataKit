@@ -7,7 +7,7 @@
 //! - `commands/ai.rs`      → ai_suggest / invoke_ai_op
 //! - `commands/settings.rs`→ get_setting / set_setting
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 use tauri_plugin_updater::UpdaterExt;
 
@@ -65,4 +65,44 @@ pub async fn install_update(app: AppHandle) -> Result<(), String> {
         .await
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// v1.1+ AI IPC 契约占位（T7）
+// ---------------------------------------------------------------------------
+
+/// AI 上下文输入（camelCase 序列化给前端）。
+/// v1.0.0 仅定义契约占位，真实推理逻辑在 v1.4+ 释放。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiContext {
+    pub sheet_id: Option<i64>,
+    pub selection: Option<Vec<i64>>,
+    pub prompt: Option<String>,
+}
+
+/// AI 建议输出（camelCase 序列化给前端）。
+/// v1.0.0 仅定义契约占位，字段为占位形态。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiSuggestion {
+    pub suggestion: String,
+    pub confidence: f64,
+}
+
+/// AI 建议占位命令。v1.0.0 永远返回 `Err`，AI 能力在 v1.1+ 释放。
+/// 真实推理逻辑（v1.4+）接入前，前端据此展示「AI 能力 v1.1+ 释放」文案。
+#[tauri::command]
+pub async fn ai_suggest(_context: AiContext) -> Result<AiSuggestion, String> {
+    Err("ai_suggest not implemented until v1.1+".to_string())
+}
+
+/// 通用 AI 操作占位命令。v1.0.0 永远返回 `Err`，接受任意 `op` + `params`。
+/// 真实分发逻辑在 v1.1+ 释放。
+#[tauri::command]
+pub async fn invoke_ai_op(
+    _op: String,
+    _params: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    Err("invoke_ai_op not implemented until v1.1+".to_string())
 }

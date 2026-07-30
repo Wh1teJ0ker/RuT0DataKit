@@ -32,7 +32,7 @@ T1 工作区脚手架
 | T4 | SQLite 持久层 | T1 | verified_complete | —（已闭环） | — | — |
 | T5 | 导入流 | T3, T4 | planned | [HANDOFF](TASK-T5-HANDOFF.md) | — | — |
 | T6 | Tauri updater 插件 | T1 | verified_complete | —（已闭环） | — | — |
-| T7 | AI 占位 IPC 契约 | T1 | planned | [HANDOFF](TASK-T7-HANDOFF.md) | — | — |
+| T7 | AI 占位 IPC 契约 | T1 | verified_complete | —（已闭环） | — | — |
 | T8 | 设置页 + 能力面板占位提示 | T2, T6 | planned | [HANDOFF](TASK-T8-HANDOFF.md) | — | — |
 | T9 | 双语 README + docs + QA | T1~T8 | planned | — | — | — |
 
