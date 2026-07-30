@@ -2626,6 +2626,7 @@ dependencies = [
 name = "ruT0-data-kit"
 version = "1.0.0"
 dependencies = [
+ "chrono",
  "ruT0-data-kit-core",
  "rusqlite",
  "serde",
@@ -2634,6 +2635,8 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-updater",
+ "tempfile",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
