@@ -34,7 +34,7 @@ T1 工作区脚手架
 | T6 | Tauri updater 插件 | T1 | verified_complete | —（已闭环） | — | — |
 | T7 | AI 占位 IPC 契约 | T1 | verified_complete | —（已闭环） | — | — |
 | T8 | 设置页 + 能力面板占位提示 | T2, T6 | verified_complete | —（已闭环） | — | — |
-| T9 | 双语 README + docs + QA | T1~T8 | planned | — | — | — |
+| T9 | 双语 README + docs + QA | T1~T8 | in_progress | [HANDOFF](TASK-T9-HANDOFF.md) | — | — |
 
 状态词：`planned` / `in_progress` / `implemented_not_verified` / `partially_complete` / `blocked` / `in_review` / `review_passed` / `review_rejected` / `verified_complete` / `not_complete`
 
