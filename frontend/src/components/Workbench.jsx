@@ -1,11 +1,12 @@
-import { Empty, Layout, Typography } from "antd";
+import { Empty, Layout } from "antd";
 import SheetTabs from "./SheetTabs";
 import DataTable from "./DataTable";
+import SettingsView from "./settings/SettingsView";
 
 const { Content } = Layout;
 
-// 中央 Workbench（T2 占位 + T3 扩展）。
-// - currentView === 'settings'：T8 设置页覆盖，本任务仅保留占位
+// 中央 Workbench（T2 占位 + T3 扩展 + T8 设置页）。
+// - currentView === 'settings'：T8 设置页（4 张卡片：更新检查 / tshark 路径 / DB 路径 / 关于）
 // - activeSheetId !== null：渲染 SheetTabs + DataTable
 // - activeSheetId === null 且 sheets 为空：T2 空态「导入数据后在此展示工作台」
 export default function Workbench({
@@ -35,9 +36,7 @@ export default function Workbench({
       }}
     >
       {currentView === "settings" ? (
-        <Typography.Text type="secondary">
-          设置页 v1.0.0 T8 释放
-        </Typography.Text>
+        <SettingsView />
       ) : activeSheet ? (
         <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
           <SheetTabs
