@@ -1,0 +1,28 @@
+[package]
+name = "ruT0-data-kit"
+version = "1.0.0"
+description = "RuT0DataKit desktop app (Tauri v2)"
+authors = ["RuT0DataKit Team"]
+license = "MIT"
+edition = "2021"
+repository = "https://github.com/Wh1teJ0ker/RuT0DataKit"
+
+[lib]
+name = "ruT0_data_kit_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-updater = "2"
+rusqlite = { version = "0.31", features = ["bundled"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+ruT0-data-kit-core = { workspace = true }
+
+[features]
+# 默认特性保持最小，业务能力在 v1.1+ 按需开启。
+default = []
