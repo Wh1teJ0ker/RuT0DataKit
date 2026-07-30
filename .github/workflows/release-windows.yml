@@ -34,12 +34,8 @@ jobs:
       - name: Install tauri-cli
         run: cargo install tauri-cli --debug --locked
 
-      - name: Build frontend
-        run: npm --prefix frontend run build
-
       - name: Build Tauri Windows bundle (nsis + msi)
         run: cargo tauri build --target x86_64-pc-windows-msvc
-        working-directory: src-tauri
 
       - name: Upload NSIS installer
         uses: actions/upload-artifact@v4
@@ -53,4 +49,3 @@ jobs:
         with:
           name: RuT0DataKit-${{ github.ref_name || 'v0.8.0' }}-windows-x64-msi
           path: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
-          if-no-files-found: warn
