@@ -15,5 +15,11 @@ frontend/dist
 .vscode/
 .idea/
 
+# 图标生成产物（icon-source.svg + generate-icons.sh 生成 .png/.icns/.ico；
+# 生成前的原始 .png 备份为 .bak，不纳入版本库）
+src-tauri/icons/*.bak
+src-tauri/icons/icon-source.svg
+src-tauri/icons/generate-icons.sh
+
 # Tauri updater 签名私钥（pubkey 在 tauri.conf.json 可入库；私钥永不入库）
 *.key

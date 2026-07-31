@@ -2698,6 +2698,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
+ "tauri-plugin-fs",
  "tauri-plugin-updater",
  "tempfile",
  "thiserror 1.0.69",
@@ -2709,6 +2710,7 @@ version = "1.0.0"
 dependencies = [
  "calamine",
  "csv",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",

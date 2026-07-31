@@ -1,54 +1,47 @@
-# TASK-BOARD — v1.0.0 框架阶段
+# TASK-BOARD — v1.0.0 架构模块化重构（延续）
 
-> 本看板服务于 [`docs/03-开发任务清单.md`](../docs/03-开发任务清单.md) 定义的 v1.0.0「纯框架 shell」MVP。所有任务的单任务状态以本看板为准，版本级状态以 [`docs/qa/versions/1.0.0/QA-审计报告.md`](../docs/qa/versions/1.0.0/QA-审计报告.md) 为准。
+> v1.0.0「纯框架 shell」T1~T9 已 `verified_complete`、版本 `done_e2e`（旧看板见 `handoff/TASK-BOARD-1.0.0-shell.md`）。
+> 本看板为 v1.0.0 的**架构修复轮次**：基于全局代码审计，把散落的 god module / prop-drilling / 死代码 / IPC 旁路重构为模块化、独立化结构，为后续能力版本铺路。**纯重构，不改外部行为。**
+> 版本号仍为 1.0.0（patch 轮次，不升 minor）。版本级状态以 `docs/qa/versions/1.0.0/QA-审计报告.md` 为准。
 
 ## 1. 任务 DAG
 
 ```
-T1 工作区脚手架
- ├─ T2 四区布局 shell ─────────────┐
- ├─ T4 SQLite 持久层 ──┐            │
- │                     ├─ T5 导入流 │
- T3 Sheet/Tab + Table ─┘            │
- ├─ T6 Tauri updater 插件           │
- ├─ T7 AI 占位 IPC 契约             ├─ T9 双语 README + docs + QA
- └─ T8 设置页 + 能力面板占位提示 ───┘
+T10 datasource 拆分           ─┐
+T11 commands 拆分             ─┼─→ T12 死代码清理（Rust）
+T13 前端 state 模块化+Context  ─→ T14 前端组件抽取+配置集中+IPC 收口
 ```
 
 依赖说明：
-- T1 为所有任务前置。
-- T2/T3/T4/T6/T7 在 T1 `verified_complete` 后可并行启动。
-- T5 依赖 T3 + T4。
-- T8 依赖 T2 + T6。
-- T9 依赖 T1~T8 全部 `verified_complete`。
+- T10/T11/T13 互不依赖、无文件重叠 → 并行候选。
+- T12 依赖 T10+T11（split 先落，再 prune dead code，避免 diff 冲突）。
+- T14 依赖 T13（先建 Context + sliced state，再在此基础上抽取组件/集中配置/收口 IPC）。
+- 任务号接 v1.0.0 shell 轮的 T1~T9，避免与历史任务号冲突。
 
 ## 2. 任务状态总表
 
 | ID | 标题 | depends_on | 状态 | handoff | report | review |
 |---|---|---|---|---|---|---|
-| T1 | 工作区脚手架 | — | verified_complete | —（已闭环） | — | — |
-| T2 | 四区布局 shell | T1 | verified_complete | —（已闭环） | — | — |
-| T3 | Sheet/Tab + antd Table | T1 | verified_complete | —（已闭环） | — | — |
-| T4 | SQLite 持久层 | T1 | verified_complete | —（已闭环，含 T4-hotfix edb3ad6） | — | — |
-| T5 | 导入流 | T3, T4 | verified_complete | —（已闭环） | — | — |
-| T6 | Tauri updater 插件 | T1 | verified_complete | —（已闭环） | — | — |
-| T7 | AI 占位 IPC 契约 | T1 | verified_complete | —（已闭环） | — | — |
-| T8 | 设置页 + 能力面板占位提示 | T2, T6 | verified_complete | —（已闭环） | — | — |
-| T9 | 双语 README + docs + QA | T1~T8 | verified_complete | —（已闭环） | — | — |
+| T10 | datasource mod 拆分（731 行 → per-format 子模块） | — | planned | handoff/TASK-T10-HANDOFF.md | — | — |
+| T11 | commands.rs 拆分（374 行 → 4 子模块） | — | planned | handoff/TASK-T11-HANDOFF.md | — | — |
+| T12 | Rust 死代码清理（placeholder/未用 model/未用 state 字段） | T10, T11 | planned | handoff/TASK-T12-HANDOFF.md | — | — |
+| T13 | 前端 state 模块化 + Context | — | planned | handoff/TASK-T13-HANDOFF.md | — | — |
+| T14 | 前端组件抽取 + 配置集中 + IPC 收口 | T13 | planned | handoff/TASK-T14-HANDOFF.md | — | — |
 
 状态词：`planned` / `in_progress` / `implemented_not_verified` / `partially_complete` / `blocked` / `in_review` / `review_passed` / `review_rejected` / `verified_complete` / `not_complete`
 
 ## 3. 端到端验收项（Phase 7）
 
-- E1：`cargo check --workspace` + `cargo test --workspace` 全绿。
+- E1：`cargo check --workspace` + `cargo test --workspace` 全绿（现有 27 测试不回归）。
 - E2：`pnpm --prefix frontend install --frozen-lockfile && pnpm --prefix frontend build` 通过。
-- E3：`cargo tauri dev` 启动，四区布局可见（工具栏左组 6 项 + 右组 4 项 / 动态能力面板 / Workbench / AI 占位）。
-- E4：导入 1000 行 CSV → Sheet 新建 → Table 渲染首页 50 行 → 分页可翻 → 重启后历史 Session 可重新加载（持久化）。
-- E5：右组能力按钮点击切换左侧能力面板，4 项面板统一 `v1.1+` 占位提示；左组禁用项点击弹 `v1.1+` 提示。
-- E6：设置页 4 卡片渲染，「检查更新」可触发 `check_update`，DB 路径与实际文件一致，「在 Finder 中显示」可打开。
-- E7：AI 面板调用 `aiSuggest` 得到 `v1.1+` 文案，UI 不崩溃。
-- E8：`sqlite3 <db> .schema` 显示 5 表 3 索引；`operations` 表有 `import` 记录。
-- E9：无网络时 `check_update` 静默降级返回 `available=false`，不弹错。
+- E3：`cargo tauri dev` 启动，四区布局可见，导入/导出/设置/tshark 检测行为与重构前一致。
+- E4：v1.0.0 所有既有功能行为不变（纯重构，无行为变更）。
+- E5：审计报告列出的 modularity 问题被实际解决：
+  - datasource 不再是 731 行单文件；
+  - commands 不再是 374 行单文件；
+  - 前端 state 不再是 314 行单文件；
+  - ExportModal 列选择不再重复；
+  - IPC 不再有 raw invoke 旁路（UpdateCard 走 tauri.js）。
 
 ## 4. 端到端验证命令
 
@@ -56,38 +49,36 @@ T1 工作区脚手架
 cargo check --workspace
 cargo test --workspace
 pnpm --prefix frontend install --frozen-lockfile && pnpm --prefix frontend build
-cargo tauri dev  # 手动核验 E3~E8
-sqlite3 ~/Library/Application\ Support/com.rut0.datakit/ruT0datakit.db ".schema"
+cargo tauri dev  # 手动核验 E3~E4
 ```
 
 ## 5. Release QA 门禁（Phase 8）
 
 - required: true
-- report: `docs/qa/versions/1.0.0/QA-审计报告.md`
+- report: `docs/qa/versions/1.0.0/QA-审计报告.md`（追加「架构重构轮次」章节）
 - audit_scope:
-  - 需求覆盖（00/01 文档的 v1.0.0 范围是否全落地）
-  - 端到端流程（E1~E9 是否全过）
-  - 构建与测试（workspace + frontend build + cargo test）
-  - 代码质量（嵌套 struct `rename_all = "camelCase"`、模块边界、out_of_scope 遵守）
-  - 安全与隐私（数据不外发、updater 仅拉签名产物、私钥不落盘仓库）
-  - 数据与迁移（5 表 3 索引、schema_version、事务回滚）
-  - 依赖与配置（版本号 1.0.0 一致、rust-toolchain 固定、tauri.conf.json 配置）
-  - 文档一致性（docs / README / 更新日志 / QA 报告互不冲突）
+  - 需求覆盖（本轮 = 纯重构，无行为变更，v1.0.0 shell 功能不回归）
+  - 端到端流程（E1~E5 是否全过）
+  - 构建与测试（workspace + frontend build + cargo test 全绿）
+  - 代码质量（模块边界清晰、无 god module、无死代码、IPC 集中、配置集中）
+  - 安全与隐私（数据不外发、updater 签名链不破坏）
+  - 数据与迁移（schema 不变、DB 行为不变）
+  - 依赖与配置（版本号仍 1.0.0、无新运行时依赖）
+  - 文档一致性（docs / 更新日志 / QA 报告互不冲突）
 - 门禁：全部维度通过且无 major/critical 问题 → `qa_passed`；否则 `qa_failed` 回流修复。
 
 ## 6. 版本状态机
 
 | 阶段 | 触发条件 | 目标状态 |
 |---|---|---|
-| 单任务通过 | reviewer `review_passed` + 主会话确认下游未破坏 | `verified_complete`（T1~T9） |
-| 端到端通过 | T1~T9 全 `verified_complete` + E1~E9 全过 | `done_e2e` |
+| 单任务通过 | reviewer `review_passed` + 主会话确认下游未破坏 | `verified_complete`（T10~T14） |
+| 端到端通过 | T10~T14 全 `verified_complete` + E1~E5 全过 | `done_e2e`（架构轮） |
 | 版本 QA 通过 | Release QA 审计落盘且结论通过 | `qa_passed` |
-| 版本完成 | `qa_passed` + 版本文档同步 | `release_complete` |
 
-当前版本状态：`done_e2e`（静态+app 启动+DB 实测通过，GUI 交互项待用户手动验收）。Release QA 结论 `conditional_pass`。
+当前版本状态：`done_e2e`（shell 轮）；架构重构轮 `planned`。
 
 ## 7. 进度同步约定
 
-- 每个单任务 `verified_complete` 后：删除该任务 HANDOFF/REPORT/REVIEW 三件套；同步 `docs/versions/1.0.0/更新日志.md` 对应行。
-- 端到端通过后：更新日志全行 `verified_complete`；TASK-BOARD 保留。
-- Release QA `qa_passed` 且版本状态同步后：删除 TASK-BOARD.md。
+- 每个单任务 `verified_complete` 后：删除该任务 HANDOFF/REPORT/REVIEW 三件套；同步 `docs/versions/1.0.0/更新日志.md` 追加对应行。
+- 端到端通过后：更新日志追加架构轮全行 `verified_complete`；TASK-BOARD 保留。
+- Release QA `qa_passed` 且版本状态同步后：删除 TASK-BOARD.md（shell 轮 + 架构轮一并收尾）。
