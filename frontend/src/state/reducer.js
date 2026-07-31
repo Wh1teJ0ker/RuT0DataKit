@@ -3,7 +3,7 @@
 // 注：initialState 仅由 AppContext.js 用于 useReducer 初始化；这里不引入
 // 以免无引用 import 报 ESLint no-unused-vars。本文件只导出 reducer / patchActiveSheet。
 import { ACTION } from "./constants";
-import { createEmptySheet, createSheetFromImport } from "./factory";
+import { createEmptySheet, createSheetFromImport, defaultSheetName } from "./factory";
 
 export function patchActiveSheet(state, patch) {
   if (!state.activeSheetId) return state;
@@ -36,7 +36,7 @@ export function reducer(state, action) {
       // 新建产生空表（无列、无行）。payload = { sheet } | { name } | {}
       const sheet =
         action.payload?.sheet ||
-        createEmptySheet(action.payload?.name || `Sheet ${sheetSeq + 1}`);
+        createEmptySheet(action.payload?.name || defaultSheetName());
       return {
         ...state,
         sheets: [...state.sheets, sheet],

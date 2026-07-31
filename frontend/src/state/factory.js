@@ -6,6 +6,13 @@
 
 let sheetSeq = 0;
 
+/// 默认 Sheet 名（递增序号，与 createEmptySheet 共享计数器）。
+/// reducer 在 payload 未指定 name 时调用此函数，避免跨模块读取私有 sheetSeq。
+export function defaultSheetName() {
+  sheetSeq += 1;
+  return `Sheet ${sheetSeq}`;
+}
+
 function createEmptySheet(name) {
   sheetSeq += 1;
   const id = `sheet-${Date.now()}-${sheetSeq}`;
