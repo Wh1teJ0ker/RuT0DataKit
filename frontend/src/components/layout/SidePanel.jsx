@@ -1,5 +1,4 @@
 import { Button, Empty, Layout } from "antd";
-import { SettingOutlined } from "@ant-design/icons";
 import MaskPanel from "../panels/MaskPanel";
 import ValidatePanel from "../panels/ValidatePanel";
 import ExtractPanel from "../panels/ExtractPanel";
@@ -15,8 +14,8 @@ const PANELS = {
 };
 
 // 左侧动态能力面板容器：由 activeCapability 驱动切换 4 个占位面板；
-// activeCapability === null 显示空态。底部常驻「⚙ 设置」按钮（点击进设置页，T8 实现）。
-export default function SidePanel({ activeCapability, setView }) {
+// activeCapability === null 显示空态。「⚙ 设置」入口已移至右侧 AiPanel。
+export default function SidePanel({ activeCapability }) {
   const PanelComp = activeCapability ? PANELS[activeCapability] : null;
 
   return (
@@ -40,20 +39,6 @@ export default function SidePanel({ activeCapability, setView }) {
             description="点击上方能力按钮展开面板"
           />
         )}
-      </div>
-      <div
-        style={{
-          borderTop: "1px solid #f0f0f0",
-          padding: 8,
-        }}
-      >
-        <Button
-          block
-          icon={<SettingOutlined />}
-          onClick={() => setView("settings")}
-        >
-          设置
-        </Button>
       </div>
     </Sider>
   );

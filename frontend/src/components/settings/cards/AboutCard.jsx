@@ -1,10 +1,10 @@
 import { Card, Space, Typography } from "antd";
+import { APP_VERSION, DEV_STATUS } from "../../../constants";
 
 const { Text, Link } = Typography;
 
 // 设置页 - 关于卡片。
-// v1.0.0 版本号 + GitHub / 文档 / License 链接。
-const APP_VERSION = "v1.0.0";
+// 版本号 + 开发状态文案来自单一真相源 frontend/src/constants.js。
 
 const LINKS = [
   { href: "https://github.com/rut0/ruT0datakit", label: "GitHub" },
@@ -27,7 +27,7 @@ export default function AboutCard() {
           ))}
         </Space>
         <Text type="secondary">
-          数据脱敏 / 校验 / 提取工作台（v1.0.0 仅布局壳，业务能力 v1.1+ 释放）
+          数据脱敏 / 校验 / 提取工作台（v1.0.0 仅布局壳，业务能力 {DEV_STATUS}）
         </Text>
       </Space>
     </Card>
