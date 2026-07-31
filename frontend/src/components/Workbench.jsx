@@ -1,27 +1,18 @@
 import { Empty, Layout } from "antd";
 import SheetTabs from "./SheetTabs";
 import DataTable from "./DataTable";
-import SettingsView from "./settings/SettingsView";
 
 const { Content } = Layout;
 
-// 中央 Workbench（T2 占位 + T3 扩展 + T8 设置页）。
-// - currentView === 'settings'：T8 设置页（4 张卡片：更新检查 / tshark 路径 / DB 路径 / 关于）
+// 中央 Workbench（工作台内容区，不含设置页）。
 // - activeSheetId !== null：渲染 SheetTabs + DataTable
-// - activeSheetId === null 且 sheets 为空：T2 空态「导入数据后在此展示工作台」
-export default function Workbench({
-  currentView,
-  sheets,
-  activeSheetId,
-  addSheet,
-  setActiveSheet,
-  closeSheet,
-  renameSheet,
-  setSelection,
-  reorderColumns,
-  setColumnVisibility,
-  setPage,
-}) {
+// - activeSheetId === null 且 sheets 为空：空态「导入数据后在此展示工作台」
+// 设置页已移到 App.jsx 顶层全屏路由，本组件不再处理 currentView。
+// T13：sheets / activeSheetId / dispatcher 经子组件各自 useAppContext 取，
+// 本组件仅保留 setPage 跨组件回调（App.jsx 注入的翻页拉数据流）。
+export default function Workbench({ setPage }) {
+  const { state } = useAppContext();
+  const { sheets, activeSheetId } = state;
   const activeSheet =
     sheets?.find((s) => s.id === activeSheetId) || null;
 
@@ -35,26 +26,18 @@ export default function Workbench({
         overflow: "auto",
       }}
     >
-      {currentView === "settings" ? (
-        <SettingsView />
-      ) : activeSheet ? (
+      {activeSheet ? (
         <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-          <SheetTabs
-            sheets={sheets}
-            activeSheetId={activeSheetId}
-            onAdd={() => addSheet()}
-            onActive={setActiveSheet}
-            onClose={closeSheet}
-            onRename={renameSheet}
-          />
+          <SheetTabs />
           <div style={{ flex: 1, minHeight: 0, marginTop: 8 }}>
-            <DataTable
-              sheet={activeSheet}
-              onSetSelection={setSelection}
-              onReorderColumns={reorderColumns}
-              onSetColumnVisibility={setColumnVisibility}
-              onSetPage={setPage}
-            />
+            {activeSheet.headers && activeSheet.headers.length > 0 ? (
+              <DataTable sheet={activeSheet} onSetPage={setPage} />
+            ) : (
+              <Empty
+                style={{ marginTop: 64 }}
+                description="空表：点击「导入」加载文件，或在工作台手动添加数据"
+              />
+            )}
           </div>
         </div>
       ) : (

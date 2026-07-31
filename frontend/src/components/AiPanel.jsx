@@ -3,41 +3,20 @@ import {
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   RobotOutlined,
+  SettingOutlined,
 } from "@ant-design/icons";
-import { useState } from "react";
 
-import { aiSuggest } from "../tauri";
+import { DEV_STATUS } from "../constants";
+import { useAppContext } from "../state";
 
 const { Sider } = Layout;
 
-// 右侧 AI 面板占位：v1.1+ 释放，预留 ai_suggest / invoke_ai_op 契约。
-// 可折叠：折叠时 collapsed=true，Sider 收为 collapsedWidth 留图标条，确保展开按钮始终可点。
-export default function AiPanel({ visible, setVisible }) {
-  // v1.0.0 占位：手动触发 aiSuggest 演示契约，错误时展示 v1.1+ 文案。
-  const [status, setStatus] = useState("idle"); // idle | pending | unavailable
-  const [detail, setDetail] = useState("");
-
-  const onTestAiSuggest = () => {
-    setStatus("pending");
-    setDetail("");
-    aiSuggest({ sheetId: null, selection: null, prompt: null })
-      .then(() => {
-        // v1.0.0 永不走到这里：后端永远返回 Err。兜底降级。
-        setStatus("unavailable");
-        setDetail("AI 能力 v1.1+ 释放");
-      })
-      .catch((err) => {
-        // 预期路径：后端返回 "ai_suggest not implemented until v1.1+"
-        // 展示 v1.1+ 文案，UI 不崩溃。
-        const msg =
-          typeof err === "string"
-            ? err
-            : err?.message || "AI 能力 v1.1+ 释放";
-        setStatus("unavailable");
-        setDetail(msg);
-      });
-  };
-
+// 右侧 AI 面板：默认折叠为图标条，展开后仅显示一行状态文案。
+// 折叠态图标条底部常驻「⚙ 设置」按钮（与左侧 SidePanel 对称入口）。
+// T13：visible / setVisible 经 useAppContext 取，仅保留 onSettings 跨组件回调。
+export default function AiPanel({ onSettings }) {
+  const { state, setAiPanelVisible } = useAppContext();
+  const { visible } = state.aiPanel;
   return (
     <Sider
       width={300}
@@ -52,13 +31,28 @@ export default function AiPanel({ visible, setVisible }) {
       trigger={null}
     >
       {!visible ? (
-        // 折叠态：仅留一个展开按钮的图标条，始终可点。
-        <Button
-          type="text"
-          icon={<MenuUnfoldOutlined />}
-          onClick={() => setVisible(true)}
-          style={{ width: 48, height: 48 }}
-        />
+        // 折叠态：图标条 + 底部设置按钮。
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            height: "100%",
+          }}
+        >
+          <Button
+            type="text"
+            icon={<MenuUnfoldOutlined />}
+            onClick={() => setAiPanelVisible(true)}
+            style={{ width: 48, height: 48 }}
+          />
+          <div style={{ flex: 1 }} />
+          <Button
+            type="text"
+            icon={<SettingOutlined />}
+            onClick={onSettings}
+            style={{ width: 48, height: 48 }}
+          />
+        </div>
       ) : (
         <div
           style={{
@@ -83,34 +77,27 @@ export default function AiPanel({ visible, setVisible }) {
               type="text"
               size="small"
               icon={<MenuFoldOutlined />}
-              onClick={() => setVisible(false)}
+              onClick={() => setAiPanelVisible(false)}
             />
           </div>
           <div style={{ flex: 1, padding: 12, overflow: "auto" }}>
             <Typography.Paragraph type="secondary">
-              AI 能力 v1.1+ 释放
+              AI 能力 {DEV_STATUS}
             </Typography.Paragraph>
-            <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
-              预留 IPC 契约：<code>ai_suggest</code> /{" "}
-              <code>invoke_ai_op</code>
-            </Typography.Paragraph>
-            <div style={{ marginTop: 8 }}>
-              <Button
-                size="small"
-                loading={status === "pending"}
-                onClick={onTestAiSuggest}
-              >
-                调用 ai_suggest 测试
-              </Button>
-            </div>
-            {status === "unavailable" && (
-              <Typography.Paragraph
-                type="secondary"
-                style={{ marginTop: 8, fontSize: 12 }}
-              >
-                {detail}
-              </Typography.Paragraph>
-            )}
+          </div>
+          <div
+            style={{
+              borderTop: "1px solid #f0f0f0",
+              padding: 8,
+            }}
+          >
+            <Button
+              block
+              icon={<SettingOutlined />}
+              onClick={onSettings}
+            >
+              设置
+            </Button>
           </div>
         </div>
       )}

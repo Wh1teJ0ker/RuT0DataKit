@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { Button, Divider, Space, message } from "antd";
 import {
   ImportOutlined,
@@ -13,7 +13,10 @@ import {
   ControlOutlined,
 } from "@ant-design/icons";
 import { open } from "@tauri-apps/plugin-dialog";
-import { importFile, getSheetData } from "../../tauri";
+import { importFile } from "../../tauri";
+import { DEV_STATUS } from "../../constants";
+import { useAppContext } from "../../state";
+import ExportModal from "../ExportModal";
 
 // 右组能力按钮配置：id 与 state.activeCapability 取值一致。
 const CAPABILITIES = [
@@ -23,18 +26,26 @@ const CAPABILITIES = [
   { id: "rules", label: "规则管理", icon: <ControlOutlined /> },
 ];
 
-// 左组数据操作：v1.0.0 仅「导入」可用，其余点击提示 v1.1+ 释放。
+// 左组数据操作：v1.0.0「导入 + 导出」可用，其余点击提示「开发中」。
 // 「导入」真实导入流（文件选择 → 写 DB → 渲染 Table）由 T5 接入。
+// 「导出」v1.0.0 客户端 CSV 导出（Blob 下载），不新增 IPC。
 const LEFT_OPS_DISABLED = [
-  { key: "export", label: "导出", tip: "导出能力 v1.1+ 释放" },
-  { key: "format", label: "格式", tip: "格式能力 v1.1+ 释放" },
-  { key: "undo", label: "撤销", tip: "撤销能力 v1.1+ 释放" },
-  { key: "column", label: "列操作", tip: "列操作能力 v1.1+ 释放" },
-  { key: "run", label: "运行", tip: "运行能力 v1.1+ 释放" },
+  { key: "format", label: "格式", tip: `格式能力 ${DEV_STATUS}` },
+  { key: "undo", label: "撤销", tip: `撤销能力 ${DEV_STATUS}` },
+  { key: "column", label: "列操作", tip: `列操作能力 ${DEV_STATUS}` },
+  { key: "run", label: "运行", tip: `运行能力 ${DEV_STATUS}` },
 ];
 
-export default function TopToolbar({ activeCapability, setActiveCapability, onImport }) {
+// T13：state/dispatch/setter 经 useAppContext 取，仅保留 onImport 跨组件回调。
+export default function TopToolbar({ onImport }) {
+  const { state, setActiveCapability } = useAppContext();
+  const { activeCapability } = state;
+  const activeSheet = state.sheets.find(
+    (s) => s.id === state.activeSheetId
+  );
+
   const [importing, setImporting] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
 
   async function handleImport() {
     if (importing) return;
@@ -43,7 +54,19 @@ export default function TopToolbar({ activeCapability, setActiveCapability, onIm
       const selected = await open({
         multiple: false,
         filters: [
-          { name: "Data", extensions: ["csv", "xlsx"] },
+          {
+            name: "Data",
+            extensions: [
+              "csv",
+              "xlsx",
+              "json",
+              "jsonl",
+              "sql",
+              "txt",
+              "pcap",
+              "pcapng",
+            ],
+          },
         ],
       });
       if (!selected) return; // 用户取消
@@ -67,6 +90,14 @@ export default function TopToolbar({ activeCapability, setActiveCapability, onIm
     }
   }
 
+  const handleExport = useCallback(() => {
+    if (!activeSheet) {
+      message.warning("请先导入数据再导出");
+      return;
+    }
+    setExportOpen(true);
+  }, [activeSheet]);
+
   return (
     <div
       style={{
@@ -84,6 +115,13 @@ export default function TopToolbar({ activeCapability, setActiveCapability, onIm
           onClick={handleImport}
         >
           导入
+        </Button>
+        <Button
+          icon={<ExportOutlined />}
+          onClick={handleExport}
+          disabled={!activeSheet}
+        >
+          导出
         </Button>
         {LEFT_OPS_DISABLED.map((op) => (
           <Button
@@ -110,14 +148,18 @@ export default function TopToolbar({ activeCapability, setActiveCapability, onIm
           </Button>
         ))}
       </Space>
+
+      <ExportModal
+        open={exportOpen}
+        sheet={activeSheet}
+        onClose={() => setExportOpen(false)}
+      />
     </div>
   );
 }
 
 function iconFor(key) {
   switch (key) {
-    case "export":
-      return <ExportOutlined />;
     case "format":
       return <FormatPainterOutlined />;
     case "undo":

@@ -15,6 +15,7 @@ import {
   arrayMove,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import { useAppContext } from "../state";
 import "./DataTable.css";
 
 // 可拖拽列头单元格（@dnd-kit/sortable）。
@@ -64,13 +65,11 @@ function HeaderCell({ "data-colkey": colkey, ...rest }) {
 // - 分页：Table.pagination，pageSize=50
 //
 // TODO(T5): replace mock with real import —— mock 数据由 state 注入，T5 接管后由真实导入流填充。
-export default function DataTable({
-  sheet,
-  onSetSelection,
-  onReorderColumns,
-  onSetColumnVisibility,
-  onSetPage,
-}) {
+// T13：selection / columnVisibility / columnOrder 等 dispatcher 经 useAppContext 取；
+// sheet 仍由 Workbench 通过 props 注入（当前激活 Sheet 对象）。
+export default function DataTable({ sheet, onSetPage }) {
+  const { setSelection, reorderColumns, setColumnVisibility } = useAppContext();
+
   const [colMenuOpen, setColMenuOpen] = useState(false);
 
   const sensors = useSensors(
@@ -120,7 +119,7 @@ export default function DataTable({
         : prevSelected.filter((k) => k !== record.key);
       nextLast = currentIdx;
     }
-    onSetSelection({
+    setSelection({
       selectedRowKeys: nextKeys,
       lastSelectedIndex: nextLast,
     });
@@ -133,7 +132,7 @@ export default function DataTable({
     const next = checked
       ? Array.from(new Set([...prev, ...changed]))
       : prev.filter((k) => !changed.includes(k));
-    onSetSelection({
+    setSelection({
       selectedRowKeys: next,
       lastSelectedIndex: sheet.selection.lastSelectedIndex,
     });
@@ -146,7 +145,7 @@ export default function DataTable({
     const oldIdx = order.indexOf(active.id);
     const newIdx = order.indexOf(over.id);
     if (oldIdx < 0 || newIdx < 0) return;
-    onReorderColumns(arrayMove(order, oldIdx, newIdx));
+    reorderColumns(arrayMove(order, oldIdx, newIdx));
   }
 
   if (!sheet) return null;
@@ -162,7 +161,7 @@ export default function DataTable({
       label: (
         <Checkbox
           checked={sheet.columnVisibility?.[h] !== false}
-          onChange={(e) => onSetColumnVisibility({ [h]: e.target.checked })}
+          onChange={(e) => setColumnVisibility({ [h]: e.target.checked })}
         >
           {h}
         </Checkbox>

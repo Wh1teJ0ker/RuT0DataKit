@@ -1,6 +1,7 @@
 import { useState, useMemo } from "react";
 import { Tabs, Input } from "antd";
 import { PlusOutlined } from "@ant-design/icons";
+import { useAppContext } from "../state";
 
 // Sheet/Tab 多页组件（T3）。
 // - 新建：+ 按钮 → 产生新 mock Sheet（dispatch ADD_SHEET）
@@ -8,16 +9,13 @@ import { PlusOutlined } from "@ant-design/icons";
 // - 关闭：Tab 上的 × → dispatch CLOSE_SHEET（reducer 内自动激活相邻 Tab）
 // - 重命名：双击 Tab 标题进入 Input 编辑，回车确认（dispatch RENAME_SHEET），Esc/失焦取消
 //
-// mock Sheet 由 state.createMockSheet 在 ADD_SHEET 内生成（默认 50 行假数据）。
+// T13：sheets / activeSheetId / dispatcher 经 useAppContext 取，消除 prop drilling。
 // TODO(T5): replace mock with real import —— 新建 Tab 行为在 T5 接管后改为触发导入对话框。
-export default function SheetTabs({
-  sheets,
-  activeSheetId,
-  onAdd,
-  onActive,
-  onClose,
-  onRename,
-}) {
+export default function SheetTabs() {
+  const { state, addSheet, setActiveSheet, closeSheet, renameSheet } =
+    useAppContext();
+  const { sheets, activeSheetId } = state;
+
   // 正在编辑的 Tab：{ id, value }
   const [editing, setEditing] = useState(null);
 
@@ -66,7 +64,7 @@ export default function SheetTabs({
     const next = (value || "").trim();
     setEditing(null);
     if (next && next !== fallback) {
-      onRename({ id, name: next });
+      renameSheet({ id, name: next });
     }
   }
 
@@ -75,10 +73,10 @@ export default function SheetTabs({
       type="editable-card"
       activeKey={activeSheetId || undefined}
       items={items}
-      onChange={(key) => onActive(key)}
+      onChange={(key) => setActiveSheet(key)}
       onEdit={(targetKey, action) => {
-        if (action === "add") onAdd();
-        else if (action === "remove") onClose(targetKey);
+        if (action === "add") addSheet();
+        else if (action === "remove") closeSheet(targetKey);
       }}
       addIcon={
         <span>
