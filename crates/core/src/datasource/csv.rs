@@ -1,0 +1,116 @@
+//! CSV 读取器。首行作为表头；其余行按表头映射为 `Record.fields`。
+
+use csv::ReaderBuilder;
+
+use crate::error::{CoreError, CoreResult};
+use crate::model::Record;
+
+use super::Reader;
+
+/// CSV 读取器。首行作为表头；其余行按表头映射为 `Record.fields`。
+pub struct CsvReader {
+    path: String,
+}
+
+impl CsvReader {
+    pub fn new(path: impl Into<String>) -> Self {
+        Self { path: path.into() }
+    }
+}
+
+impl Reader for CsvReader {
+    fn read_all(&self) -> CoreResult<Vec<Record>> {
+        let mut rdr = ReaderBuilder::new()
+            .has_headers(false)
+            .flexible(true)
+            .from_path(&self.path)
+            .map_err(|e| CoreError::DataSource(format!("csv open: {e}")))?;
+
+        let mut iter = rdr.records();
+        let mut records: Vec<Record> = Vec::new();
+        let mut headers: Option<Vec<String>> = None;
+
+        // 第一行作表头，同时作为 row_idx=0 的 Record 写回（保留首行）。
+        if let Some(header_result) = iter.next() {
+            let header = header_result.map_err(|e| {
+                CoreError::DataSource(format!("csv header read: {e}"))
+            })?;
+            let header_vec: Vec<String> =
+                header.iter().map(|s| s.to_string()).collect();
+            let mut fields = std::collections::HashMap::new();
+            for h in &header_vec {
+                fields.insert(h.clone(), h.clone());
+            }
+            records.push(Record { fields });
+            headers = Some(header_vec);
+        }
+
+        let header_ref = headers.as_deref();
+        for record_result in iter {
+            let row = record_result
+                .map_err(|e| CoreError::DataSource(format!("csv row read: {e}")))?;
+            let mut fields = std::collections::HashMap::new();
+            for (i, v) in row.iter().enumerate() {
+                let key = header_ref
+                    .and_then(|h| h.get(i))
+                    .cloned()
+                    .unwrap_or_else(|| format!("col{}", i));
+                fields.insert(key, v.to_string());
+            }
+            records.push(Record { fields });
+        }
+
+        Ok(records)
+    }
+
+    fn headers(&self) -> CoreResult<Vec<String>> {
+        let mut rdr = ReaderBuilder::new()
+            .has_headers(false)
+            .flexible(true)
+            .from_path(&self.path)
+            .map_err(|e| CoreError::DataSource(format!("csv open: {e}")))?;
+        let mut iter = rdr.records();
+        let header = iter
+            .next()
+            .ok_or_else(|| CoreError::DataSource("csv empty file".into()))?
+            .map_err(|e| CoreError::DataSource(format!("csv header read: {e}")))?;
+        Ok(header.iter().map(|s| s.to_string()).collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn tmp_csv(content: &str) -> tempfile::NamedTempFile {
+        let mut f = tempfile::Builder::new()
+            .suffix(".csv")
+            .tempfile()
+            .unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+        f
+    }
+
+    #[test]
+    fn csv_reader_headers_and_rows() {
+        let f = tmp_csv("a,b\n1,2\n3,4\n");
+        let reader = CsvReader::new(f.path().to_str().unwrap());
+        assert_eq!(reader.headers().unwrap(), vec!["a".to_string(), "b".into()]);
+        let recs = reader.read_all().unwrap();
+        // 表头作为首行 record 也包含在内（与 import_file 行为对齐）。
+        assert_eq!(recs.len(), 3);
+        assert_eq!(recs[1].fields.get("a").map(|s| s.as_str()), Some("1"));
+    }
+
+    #[test]
+    fn csv_reader_flexible_columns() {
+        let f = tmp_csv("a,b\n1\n3,4,5\n");
+        let reader = CsvReader::new(f.path().to_str().unwrap());
+        let recs = reader.read_all().unwrap();
+        assert_eq!(recs[1].fields.get("a").map(|s| s.as_str()), Some("1"));
+        assert_eq!(recs[2].fields.get("b").map(|s| s.as_str()), Some("4"));
+        // 第三列无表头时回退 col2
+        assert_eq!(recs[2].fields.get("col2").map(|s| s.as_str()), Some("5"));
+    }
+}
