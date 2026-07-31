@@ -6,6 +6,8 @@
   "permissions": [
     "core:default",
     "dialog:default",
+    "fs:default",
+    "fs:allow-write-text-file",
     "updater:default"
   ]
 }

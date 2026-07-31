@@ -1,6 +1,6 @@
 [package]
 name = "ruT0-data-kit"
-version = "1.0.0"
+version.workspace = true
 description = "RuT0DataKit desktop app (Tauri v2)"
 authors = ["RuT0DataKit Team"]
 license = "MIT"
@@ -17,6 +17,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
 tauri-plugin-updater = "2"
 rusqlite = { version = "0.31", features = ["bundled"] }
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }

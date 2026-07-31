@@ -29,6 +29,8 @@ pub struct Cell {
 }
 
 /// `sessions` 摘要（列表用）。
+// v1.1+ IPC 将调用；单测已覆盖。
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionSummary {
@@ -40,6 +42,8 @@ pub struct SessionSummary {
 }
 
 /// `sheets` 摘要（`SessionDetail` 嵌套用）。
+// v1.1+ IPC 将调用；单测已覆盖。
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SheetSummary {
@@ -51,6 +55,8 @@ pub struct SheetSummary {
 }
 
 /// 会话详情：摘要 + 关联 sheets。
+// v1.1+ IPC 将调用；单测已覆盖。
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionDetail {
@@ -72,6 +78,8 @@ pub struct DbManager {
     conn: Mutex<Connection>,
 }
 
+// v1.1+ IPC 将调用；单测已覆盖。
+#[allow(dead_code)]
 impl DbManager {
     /// 在 `app_config_dir` 下打开（或创建）`ruT0datakit.db` 并执行初始化迁移。
     pub fn new(app_config_dir: &Path) -> Result<Self, DbError> {
