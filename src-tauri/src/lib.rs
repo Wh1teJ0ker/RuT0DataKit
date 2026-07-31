@@ -37,7 +37,7 @@ pub fn run() {
             let db_manager = DbManager::new(&dir)?;
             app.manage(db_manager);
             // 启动时加载 tshark 路径并注入 core 运行时（同步执行）。
-            let settings = commands::read_settings(&app.handle());
+            let settings = commands::read_settings(app.handle());
             ruT0_data_kit_core::pcap::set_tshark_path(settings.tshark_path.clone());
             Ok(())
         })

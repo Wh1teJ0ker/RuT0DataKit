@@ -10,17 +10,9 @@ use tauri::AppHandle;
 use ruT0_data_kit_core::pcap;
 
 /// settings.json 结构：`{ "tshark_path": "<path>" | null }`。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct TsharkSettings {
     pub(crate) tshark_path: Option<String>,
-}
-
-impl Default for TsharkSettings {
-    fn default() -> Self {
-        Self {
-            tshark_path: None,
-        }
-    }
 }
 
 /// 读取 app_config_dir 下的 settings.json，缺失返回默认。
