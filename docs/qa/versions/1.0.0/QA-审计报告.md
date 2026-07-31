@@ -91,3 +91,86 @@
 **门禁裁决**：无 critical/major 问题。GUI 交互项为「需人工目视/点击」性质，代码静态核验（组件存在 + 注册命令 + 单测）均通过，且 app 启动稳定；在用户手动验收 GUI 项回填前，结论暂为 `conditional_pass`。用户确认 GUI 项后，可推进至 `qa_passed` 并进入 finalize。
 
 **发布前置门禁**（[`04-版本标准.md`](../../../04-版本标准.md) §4）全部满足前，禁止 finalize。当前阻塞项：GUI 交互验收 + 四目标矩阵构建。
+
+---
+
+## 9. 架构重构轮次审计（T10~T14）
+
+> 本章节为 v1.0.0 架构模块化重构轮次的追加审计，覆盖 T10~T14 五任务。轮次目标：把散落的 god module / prop-drilling / 死代码 / IPC 旁路重构为模块化、独立化结构。**纯重构，不改外部行为。** 版本号仍为 1.0.0（patch 轮次，不升 minor）。
+
+### 9.1 任务状态
+
+| 任务 | 标题 | depends_on | 状态 | reviewer | commit |
+|---|---|---|---|---|---|
+| T10 | datasource mod 拆分（731 行 → per-format 子模块） | — | verified_complete | review_passed | 85d86d7 |
+| T11 | commands.rs 拆分（374 行 → concern 子模块） | — | verified_complete | review_rejected→主会话推翻 | f1744f2/24c8043 |
+| T12 | Rust 死代码清理 | T10, T11 | verified_complete | review_passed | 238aade |
+| T13 | 前端 state 模块化 + Context | — | verified_complete | review_rejected→主会话修复后通过 | e0f4e3f/8afda20 |
+| T14 | 前端配置集中 + IPC 收口 + docs 同步 | T13 | verified_complete | review_passed | d3706ff |
+
+### 9.2 端到端验证（Phase 7 复核）
+
+| 验收项 | 状态 | 证据 |
+|---|---|---|
+| E1：`cargo check --workspace` + `cargo test --workspace` 全绿 | `pass` | check 零错误零警告；test 20 passed / 0 failed / 2 ignored（tshark 本机探测 CI 跳过），db 模块 9 测试全过无回归 |
+| E2：`pnpm --prefix frontend install --frozen-lockfile && pnpm --prefix frontend build` 通过 | `pass` | 3078 modules transformed，✓ built in 2.4s（chunk >500kB 为 antd 既有警告，非本轮引入） |
+| E3：`cargo tauri dev` 启动，四区布局可见，行为不变 | `pending_e2e` | 非交互环境，待用户手动核验；纯重构无行为变更，静态核验通过 |
+| E4：v1.0.0 既有功能行为不变 | `pending_e2e` | 纯重构，无行为变更；静态核验（公共 API 经 pub use 保持、#[tauri::command] 签名不变、reducer 分支逻辑不变）通过 |
+| E5：审计报告列出的 modularity 问题被实际解决 | `pass` | 见下 §9.3 |
+
+### 9.3 代码质量（modularity 解决项）
+
+| 问题 | 解决前 | 解决后 | 状态 |
+|---|---|---|---|
+| datasource god module | `datasource/mod.rs` 731 行单文件 | `mod.rs` 96 行 + 7 格式子模块（csv/xlsx/json/txt/sql/pcap/util），公共 API 经 `pub use` 保持 | `pass` |
+| commands god module | `commands.rs` 374 行单文件 | `commands/{mod,data,settings,update}.rs` 4 文件，按 concern 拆分，invoke_handler 按 `commands::{data,settings,update}` 路径注册 | `pass` |
+| 前端 state monolith | `state.js` 314 行单文件 | `state.js` 25 行薄 barrel + `state/{constants,factory,reducer,AppContext}.jsx` 4 子模块，引入 React Context 消除 prop drilling | `pass` |
+| ExportModal 列选择重复 | — | 审计确认非重复（前序会话单一实现），保留 | `pass` |
+| IPC raw invoke 旁路 | `UpdateCard.jsx` 直接 `invoke("check_update")` / `invoke("install_update")` | 收口到 `tauri.js` 的 `checkUpdate()` / `installUpdate()`，components/ 内零 raw invoke import（grep 验证） | `pass` |
+| Rust 死代码 | `processor/` 5 个空骨架 + `model.rs` Sheet/Operation/Column 零引用 | 删除 processor/ 模块 + 删 3 个未用 struct（保留 Record）；db/mod.rs 4 处 dead_code 标注改 reason 可追溯 | `pass` |
+| PAGE_SIZE 硬编码散落 | 4 处硬编码 `50`（App.jsx/factory.js×2/DataTable.jsx） | 集中到 `constants.js`，各处 `import { PAGE_SIZE }`（grep 验证仅 constants.js 一处定义） | `pass` |
+| docs/02 state 描述过时 | `state.js` 描述为 monolith useReducer | 同步为 barrel + state/ 子模块 + AppProvider + visible=false | `pass` |
+
+### 9.4 安全与隐私复核
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| 数据不外发 | `pass` | 重构未引入新网络调用；datasource/commands 拆分为纯结构调整，IPC 契约不变 |
+| updater 签名链不破坏 | `pass` | `commands/update.rs` 的 check_update/install_update 逻辑字节级不变（T11 纯搬运），Ed25519 验签链未触碰 |
+| 私钥不入库 | `pass` | `.gitignore` 含 `*.key`，重构未触碰密钥配置 |
+
+### 9.5 数据与迁移复核
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| schema 不变 | `pass` | db/mod.rs 仅改 dead_code 标注，未改 struct 字段/方法/DDL；db 9 测试全过无回归 |
+| DB 行为不变 | `pass` | write_cells/query_cells/list_sessions/get_session 逻辑未触碰 |
+
+### 9.6 依赖与配置复核
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| 版本号仍 1.0.0 | `pass` | Cargo.toml(1.0.0) / src-tauri/Cargo.toml(workspace=true) / tauri.conf.json(1.0.0) / frontend/package.json(1.0.0) 四处一致 |
+| 无新运行时依赖 | `pass` | T12 删除代码不增依赖；T14 仅新增前端常量+封装函数，无新 npm/cargo 依赖 |
+
+### 9.7 文档一致性复核
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| 更新日志与 TASK-BOARD 一致 | `pass` | 两份均 T10~T14 verified_complete，架构轮 done_e2e |
+| docs/02 与代码结构一致 | `pass` | T14 已同步 state.js→barrel+子模块描述、useReducer 所在、aiPanel.visible |
+| docs/02 commands 描述 | `partial` | §4 IPC 契约清单仍列 v1.0.0 未落地的完整契约蓝图（list_sessions/open_session 等），属已知边界（见 §7 info 记录），非本轮引入 |
+
+### 9.8 已知遗留（非本轮阻塞）
+
+| 严重度 | 项 | 处置 |
+|---|---|---|
+| `info` | `CoreError::Processor(String)` 变体在 T12 删 processor 模块后成零引用死代码 | 属 out_of_scope（不改 error.rs），留给 v1.1+ processor 实现任务一并处理 |
+| `info` | `clippy::iter_kv_map` × 2（datasource/json.rs:109、sql.rs:243）baseline 预存在 | 属 out_of_scope（不改 datasource），非本轮引入 |
+| `info` | T10~T13 中间 commit（85d86d7~24c8043）单独不可编译 | 跨会话工作树时序遗留；自 26b79d8 起 HEAD 自洽可编译，T12/T14 commit 各自独立可编译 |
+
+### 9.9 架构轮结论
+
+`conditional_pass` — 架构重构轮 T10~T14 全部 verified_complete，Phase 7 静态项（E1 cargo check/test + E2 pnpm build + E5 modularity）全 pass，安全/数据/依赖/文档维度全 pass。GUI 交互项（E3/E4）因纯重构无行为变更，静态核验已充分，标 pending_e2e 待用户手动确认。无 critical/major 问题。
+
+**架构轮门禁裁决**：`conditional_pass`（GUI 项待用户确认后可推进 `qa_passed`）。与 shell 轮结论一致，合并版本级结论仍为 `conditional_pass`。
