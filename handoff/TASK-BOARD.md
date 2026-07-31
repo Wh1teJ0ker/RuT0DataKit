@@ -24,22 +24,24 @@ T13 前端 state 模块化+Context  ─→ T14 前端组件抽取+配置集中+I
 |---|---|---|---|---|---|---|
 | T10 | datasource mod 拆分（731 行 → per-format 子模块） | — | verified_complete | handoff/TASK-T10-HANDOFF.md | handoff/TASK-T10-REPORT.md | handoff/TASK-T10-REVIEW.md |
 | T11 | commands.rs 拆分（374 行 → concern 子模块） | — | verified_complete | handoff/TASK-T11-HANDOFF.md | handoff/TASK-T11-REPORT.md | handoff/TASK-T11-REVIEW.md |
-| T12 | Rust 死代码清理（placeholder/未用 model/未用 state 字段） | T10, T11 | planned | — | — | — |
+| T12 | Rust 死代码清理（placeholder/未用 model/未用 state 字段） | T10, T11 | verified_complete | handoff/TASK-T12-HANDOFF.md | handoff/TASK-T12-REPORT.md | handoff/TASK-T12-REVIEW.md |
 | T13 | 前端 state 模块化 + Context | — | verified_complete | handoff/TASK-T13-HANDOFF.md | handoff/TASK-T13-REPORT.md | handoff/TASK-T13-REVIEW.md |
-| T14 | 前端组件抽取 + 配置集中 + IPC 收口 | T13 | planned | — | — | — |
+| T14 | 前端组件抽取 + 配置集中 + IPC 收口 | T13 | verified_complete | handoff/TASK-T14-HANDOFF.md | handoff/TASK-T14-REPORT.md | handoff/TASK-T14-REVIEW.md |
 
-### T10~T13 主会话裁定说明（2026-07-31）
+### T10~T14 主会话裁定说明
 
 - **T10 `verified_complete`**：reviewer `review_passed`。datasource/mod.rs 731→96 行，7 个格式独立子模块，公共 API 经 `pub use` 保持不变，3 个既有测试断言通过。reviewer 指出的「测试断言被加强」「commit 85d86d7 因工作树时序夹带 commands.rs 删除导致单独不可编译」均不阻塞：前者是更严格且通过，后者是跨会话工作树未及时提交的时序问题，已通过后续 commit（b531aea 补 core pcap、26b79d8 补 tauri config、2e84533 收尾）使 HEAD 自洽可编译。
 - **T11 `verified_complete`**：reviewer `review_rejected`，主会话**推翻其 critical 判定**。reviewer 指出的「settings 命令/setup 注入/AI 错误字符串/fs::init 越界」经主会话核实，**实为前序会话已做但未提交的功能改动**（tshark 多平台检测、导出根因修复等），并非 T11 借拆分新增功能——baseline 119120b commands.rs 284 行确实无这些命令，但它们是前序会话在工作树里完成的功能（非 T11 任务范围），只是 T11 coder 在拆分时把它们一并落库。主会话已把这些前置功能拆为独立 commit（b531aea/26b79d8/294e815），使 T11 拆分 commit 与功能 commit 解耦。reviewer 指出的**真实缺陷**（mod.rs 陈旧文档、2 处 clippy 警告、AI 字符串属前序会话改动未同步文档）主会话已修复（24c8043）。AI 错误字符串变更属前序会话有意改动（与 CoreError::NotImplemented 文案统一为「capability under development」），保留不回退。**裁定：T11 拆分目标达成，verified_complete。**
 - **T13 `verified_complete`**：reviewer `review_rejected`（2 critical + 3 major + 1 minor），主会话已修复全部阻塞性缺陷后裁定通过：
   - critical 1（Workbench.jsx 缺 `useAppContext` import，运行时 ReferenceError）→ 已修（8afda20）
   - critical 2（reducer.js 引用未导出的 factory.js 私有 `sheetSeq`，新建 Sheet 运行时崩溃）→ 已修：factory.js 新增 `defaultSheetName()` 导出，reducer 改用之（8afda20）
-  - major 3（aiPanel.visible 默认 false）→ **主会话裁定为前序会话有意改动**（设置页全屏化 + AI 面板精简需求，见 `.zcode/plans/plan-sess_ee807486`），不回退；docs/02 同步留给 T14。
+  - major 3（aiPanel.visible 默认 false）→ **主会话裁定为前序会话有意改动**（设置页全屏化 + AI 面板精简需求，见 `.zcode/plans/plan-sess_ee807486`），不回退；docs/02 同步留给 T14（已落地）。
   - major 4/5（TopToolbar 导出功能 / 引用未跟踪 ExportModal+constants）→ **主会话裁定为前序会话已做但未提交的功能**，已拆为独立 commit（294e815）入库，T13 commit 不再依赖未跟踪文件。
   - minor 6（App.jsx 设置页路由迁移）→ **主会话裁定为前序会话有意改动**（设置页全屏化需求），保留。
-  - docs_check（state.js 文档描述过时）→ 留给 T14。
-- **bisect 友好性**：T10~T13 中间若干 commit 单独不可编译（85d86d7~24c8043 依赖未入库前置改动），属跨会话工作树时序遗留；自 b531aea 起 HEAD 自洽可编译。后续若需 bisect，从 26b79d8 起向前排查。
+  - docs_check（state.js 文档描述过时）→ T14 已同步（d3706ff）。
+- **T12 `verified_complete`**（2026-07-30）：reviewer `review_passed`。删 `crates/core/src/processor/` 5 个空骨架文件 + `lib.rs` mod 声明；`model.rs` 删 Sheet/Operation/Column 三个零引用 struct（保留 Record）；`db/mod.rs` 4 处 `#[allow(dead_code)]` 改 `reason=` 标注。cargo check + cargo test workspace 全绿（20 passed/2 ignored）。reviewer 确认 `CoreError::Processor(String)` 变体成零引用死代码但属 out_of_scope（不改 error.rs），留给 v1.1+ processor 实现任务一并处理；2 条 `clippy::iter_kv_map` baseline 预存在且属 out_of_scope（datasource/），T12 零新增警告。commit 238aade。
+- **T14 `verified_complete`**（2026-07-30）：reviewer `review_passed`。`constants.js` 集中 `PAGE_SIZE=50`，`App.jsx`/`factory.js`/`DataTable.jsx` 改 import 引用；`tauri.js` 新增 `checkUpdate()`/`installUpdate()` 封装，`UpdateCard.jsx` 删 raw `invoke()` import 改用封装函数；`docs/02` 三处描述同步（state.js→barrel+state/ 子模块、useReducer 所在、aiPanel.visible=false）。pnpm build 通过（3078 modules）。grep 验收：PAGE_SIZE=50 仅命中 constants.js；components/ 内零 raw invoke import。commit d3706ff。
+- **bisect 友好性**：T10~T13 中间若干 commit 单独不可编译（85d86d7~24c8043 依赖未入库前置改动），属跨会话工作树时序遗留；自 b531aea 起 HEAD 自洽可编译，T12/T14 commit（238aade/d3706ff）各自独立可编译。后续若需 bisect，从 26b79d8 起向前排查。
 
 
 状态词：`planned` / `in_progress` / `implemented_not_verified` / `partially_complete` / `blocked` / `in_review` / `review_passed` / `review_rejected` / `verified_complete` / `not_complete`
@@ -89,7 +91,7 @@ cargo tauri dev  # 手动核验 E3~E4
 | 端到端通过 | T10~T14 全 `verified_complete` + E1~E5 全过 | `done_e2e`（架构轮） |
 | 版本 QA 通过 | Release QA 审计落盘且结论通过 | `qa_passed` |
 
-当前版本状态：`done_e2e`（shell 轮）；架构重构轮 `in_progress`（T10/T11/T13 verified_complete，T12/T14 待启动）。
+当前版本状态：`done_e2e`（shell 轮）；架构重构轮 `done_e2e`（T10~T14 全 verified_complete + E1~E2 全过，E3~E5 待手动核验）。
 
 ## 7. 进度同步约定
 
