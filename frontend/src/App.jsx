@@ -7,10 +7,9 @@ import AiPanel from "./components/AiPanel";
 import SettingsView from "./components/settings/SettingsView";
 import { AppProvider, useAppContext, ACTION } from "./state";
 import { getSheetData } from "./tauri";
+import { PAGE_SIZE } from "./constants";
 
 const { Header, Content } = Layout;
-
-const PAGE_SIZE = 50;
 
 // T2: 四区布局 shell。
 // Header=TopToolbar / Sider=SidePanel / Content=Workbench / 右侧 Sider=AiPanel。

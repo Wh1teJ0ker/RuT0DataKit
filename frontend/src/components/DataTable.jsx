@@ -16,6 +16,7 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { useAppContext } from "../state";
+import { PAGE_SIZE } from "../constants";
 import "./DataTable.css";
 
 // 可拖拽列头单元格（@dnd-kit/sortable）。
@@ -62,7 +63,7 @@ function HeaderCell({ "data-colkey": colkey, ...rest }) {
 // - 列 checkbox 显隐：Dropdown + Checkbox 切换 columnVisibility
 // - 列拖拽排序：@dnd-kit/sortable（硬需求，不允许降级为仅列宽）
 // - 状态高亮：rowClassName 注入 default/invalid/masked/hit；v1.0.0 mock 全 default
-// - 分页：Table.pagination，pageSize=50
+// - 分页：Table.pagination，pageSize=PAGE_SIZE
 //
 // TODO(T5): replace mock with real import —— mock 数据由 state 注入，T5 接管后由真实导入流填充。
 // T13：selection / columnVisibility / columnOrder 等 dispatcher 经 useAppContext 取；
@@ -205,7 +206,7 @@ export default function DataTable({ sheet, onSetPage }) {
             dataSource={sheet.rows}
             pagination={{
               current: sheet.page,
-              pageSize: sheet.pageSize || 50,
+              pageSize: sheet.pageSize || PAGE_SIZE,
               total: sheet.total ?? sheet.rows.length,
               onChange: (page) => onSetPage(page),
               showSizeChanger: false,

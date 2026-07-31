@@ -4,6 +4,8 @@
 // v1.0.0（T5）：真实导入流接管。「新建」Tab 产生空表（无列、无行），由用户
 // 在导入或后续列编辑流程中填充；IMPORT_SUCCESS action 用 ImportResult 填充真实 Sheet。
 
+import { PAGE_SIZE } from "../constants";
+
 let sheetSeq = 0;
 
 /// 默认 Sheet 名（递增序号，与 createEmptySheet 共享计数器）。
@@ -25,7 +27,7 @@ function createEmptySheet(name) {
     rows: [],
     total: 0,
     page: 1,
-    pageSize: 50,
+    pageSize: PAGE_SIZE,
     columnOrder: [],
     columnVisibility: {},
     selection: { selectedRowKeys: [], lastSelectedIndex: null },
@@ -45,7 +47,7 @@ export function createSheetFromImport(result) {
     rows: [], // 由 SET_SHEET_DATA 填充首页
     total: result.rowCount, // DB cell 行数（含表头行；前端展示去掉表头行）
     page: 1,
-    pageSize: 50,
+    pageSize: PAGE_SIZE,
     columnOrder: [...headers],
     columnVisibility: headers.reduce((acc, h) => ({ ...acc, [h]: true }), {}),
     selection: { selectedRowKeys: [], lastSelectedIndex: null },

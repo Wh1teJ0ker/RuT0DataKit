@@ -1,19 +1,19 @@
 import { useState } from "react";
 import { Button, Card, Space, Typography, message } from "antd";
 import { SyncOutlined, DownloadOutlined } from "@ant-design/icons";
-import { invoke } from "@tauri-apps/api/core";
+import { checkUpdate, installUpdate } from "../../../tauri";
 
 const { Text, Paragraph } = Typography;
 
 // 设置页 - 更新检查卡片。
-// 直接内联 invoke('check_update') / invoke('install_update')，不依赖 frontend/src/tauri.js，
-// 避免与 T7 的 aiSuggest/invokeAiOp 封装产生文件覆盖（见 TASK-T8-HANDOFF §risks）。
+// T14：raw invoke('check_update') / invoke('install_update') 已收口到 tauri.js 的
+// checkUpdate() / installUpdate()，前端唯一 IPC 出口保持集中（见 docs/02 §4）。
 // check_update 永不抛错给前端（无网络 / 无新版本 / 接口异常统一降级 available=false），
 // 但前端仍兜底 try/catch，避免 invoke 本身异常导致崩溃。
 export default function UpdateCard() {
   const [loading, setLoading] = useState(false);
   const [installing, setInstalling] = useState(false);
-  // status 形如 { available, version, notes }（camelCase，见 src-tauri/src/commands.rs UpdateStatus）
+  // status 形如 { available, version, notes }（camelCase，见 src-tauri/src/commands/update.rs UpdateStatus）
   const [status, setStatus] = useState(null);
   const [error, setError] = useState(null);
 
@@ -21,7 +21,7 @@ export default function UpdateCard() {
     setLoading(true);
     setError(null);
     try {
-      const res = await invoke("check_update");
+      const res = await checkUpdate();
       setStatus(res);
     } catch (e) {
       // 前端兜底：invoke 层异常也不崩溃，降级为不可用。
@@ -35,7 +35,7 @@ export default function UpdateCard() {
   async function handleInstall() {
     setInstalling(true);
     try {
-      await invoke("install_update");
+      await installUpdate();
       message.success("更新已安装，重启后生效");
     } catch (e) {
       message.error(`安装失败：${String(e)}`);

@@ -9,3 +9,11 @@ export const APP_VERSION = "v1.0.0";
 
 // 后续版本业务能力的统一占位状态文案。
 export const DEV_STATUS = "开发中";
+
+/**
+ * 表格默认每页行数（不含表头行）。
+ *
+ * 集中定义以避免 App.jsx / state/factory.js / DataTable.jsx 等多处硬编码 50。
+ * 各消费方一律 `import { PAGE_SIZE } from "../constants"`，不在本地重复声明。
+ */
+export const PAGE_SIZE = 50;

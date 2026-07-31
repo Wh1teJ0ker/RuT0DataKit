@@ -4,6 +4,7 @@
 // v1.0.0（T5）：导入流 `importFile` / `getSheetData`。
 // v1.0.0（全格式扩展）：tshark 设置 `detectTshark` / `loadTsharkPath` /
 // `saveTsharkPath`，导出工具 `exportSheetToCsv`。
+// v1.0.0（T14）：更新检查 `checkUpdate` / `installUpdate`（收口 UpdateCard 的 raw invoke）。
 
 import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
@@ -70,6 +71,22 @@ export function loadTsharkPath() {
  */
 export function saveTsharkPath(path) {
   return invoke("save_tshark_path", { path });
+}
+
+/**
+ * 调用 `check_update` IPC：检查应用更新（无网络/无新版本统一降级 available=false）。
+ * @returns {Promise<{available: boolean, version: string|null, notes: string|null}>} UpdateStatus（camelCase）
+ */
+export function checkUpdate() {
+  return invoke("check_update");
+}
+
+/**
+ * 调用 `install_update` IPC：安装已下载的更新（重启后生效）。
+ * @returns {Promise<void>}
+ */
+export function installUpdate() {
+  return invoke("install_update");
 }
 
 /**
