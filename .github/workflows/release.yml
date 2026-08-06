@@ -31,6 +31,10 @@ jobs:
           - target: x86_64-pc-windows-msvc
             runs-on: windows-latest
     runs-on: ${{ matrix.runs-on }}
+    timeout-minutes: 90
+    env:
+      CARGO_NET_RETRY: "5"
+      RUSTUP_MAX_RETRIES: "5"
     steps:
       - uses: actions/checkout@v4
 
@@ -56,6 +60,11 @@ jobs:
 
       - name: Install frontend deps
         run: pnpm --prefix frontend install --frozen-lockfile
+
+      # 显式预构建前端：在 tauri-action 之前跑一次，提前暴露 vite 构建错误；
+      # tauri-action 内部的 beforeBuildCommand 会再跑一次（幂等，dist 已存在时秒级完成）。
+      - name: Pre-build frontend (safety net)
+        run: pnpm --prefix frontend run build
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
