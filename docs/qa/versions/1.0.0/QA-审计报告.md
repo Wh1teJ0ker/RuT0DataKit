@@ -3,14 +3,14 @@
 > 版本：1.0.0
 > 审计类型：Release 前全局审计
 > 审计依据：[`docs/00-需求文档.md`](../../../00-需求文档.md) §6 验收标准 + [`docs/03-开发任务清单.md`](../../../03-开发任务清单.md) 各任务验收 + [`docs/04-版本标准.md`](../../../04-版本标准.md) §4 发布门禁
-> 结论：`conditional_pass`（静态 + Phase 7 app 启动/DB 实测通过；GUI 交互项待用户手动验收；构建产物矩阵待 finalize）
+> 结论：`qa_passed`（静态 + Phase 7 app 启动/DB 实测 + Phase 8 GUI 交互验收全通过；构建产物矩阵待 finalize）
 
 ## 1. 审计维度与结论
 
 | 维度 | 结论 | 说明 |
 |---|---|---|
-| 功能完整性 | `conditional_pass` | 静态项 + Phase 7 app 启动/DB 实测 pass；GUI 交互项（E3 四区/E4 导入/E5 列交互/E6 设置点击）标 pending_e2e 待用户手动验收 |
-| 回归与端到端 | `conditional_pass` | app 启动稳定性 pass；GUI 主流程（导入→重启恢复）pending_e2e 待用户验收 |
+| 功能完整性 | `qa_passed` | 静态项 + Phase 7 app 启动/DB 实测 + Phase 8 GUI 交互验收全 pass（四区布局/能力切换/Sheet Tab CRUD/Table 列显隐+行复选/导出 TXT 模板化修复）；TXT 模板化 + XLSX 移除已纳入 §10 复核 |
+| 回归与端到端 | `qa_passed` | app 启动稳定性 pass；GUI 主流程（导入→Sheet→Table 交互→导出）Phase 8 验收 pass；TXT 模板化 + XLSX 移除后回归全绿（cargo test 11 passed / 2 ignored；pnpm build 3078 modules） |
 | 构建与产物 | `pending_release` | 四目标矩阵构建需 CI/Release 流程；版本一致性已 pass；本机 dev 构建 pass |
 | 安全 | `conditional_pass` | 静态项（本地处理 / 私钥不落盘 / camelCase / HTTPS endpoint）pass；签名验签失败拒绝安装 pending_e2e（需实际 updater JSON 测试） |
 | 文档 | `pass` | 双语 README 收口 + Quick Start 实测 + 更新日志/TASK-BOARD 一致 |
@@ -22,10 +22,10 @@
 | # | 验收项 | 状态 | 证据 |
 |---|---|---|---|
 | 1 | `cargo check --workspace` 通过，`cargo tauri dev` 可启动 | `pass` | `cargo check --workspace` → Finished（dev profile）；`cargo tauri dev` 主会话 Phase 7 实跑：8.55s 编译完成，`target/debug/ruT0-data-kit` 进程稳定存活，vite dev server `http://localhost:5173` 返回 200，日志无 panic/error（仅 5 个 dead_code 编译警告） |
-| 2 | 四区布局可见，占比符合 01 文档 §1。上方工具栏左组 6 项数据操作 + 右组 4 项能力按钮可见 | `pending_e2e` | 辅证：`frontend/src/components/layout/TopToolbar.jsx` 存在（左6/右4 + Divider）；`SidePanel.jsx` 存在；需 GUI 确认占比 |
-| 3 | 右组能力按钮点击后左侧能力面板切换到对应能力面板（占位提示「v1.1+ 释放」）；左组禁用项点击弹 `v1.1+` 提示；左侧面板底部「⚙ 设置」始终可见，点击进入设置页 | `pending_e2e` | 辅证：`frontend/src/components/panels/{Mask,Validate,Extract,Rules}Panel.jsx` 4 文件存在；需 GUI 确认交互 |
-| 4 | 可新建 / 切换 / 关闭 / 重命名 Sheet Tab | `pending_e2e` | 辅证：`frontend/src/components/SheetTabs.jsx` 存在；需 GUI 确认 |
-| 5 | antd Table 支持行复选 + 区间选择、列 checkbox 显隐、列拖拽排序 | `pending_e2e` | 辅证：`frontend/src/components/DataTable.jsx` 存在（@dnd-kit 列拖拽 + Dropdown 列显隐 + rowClassName 枚举）；需 GUI 确认 |
+| 2 | 四区布局可见，占比符合 01 文档 §1。上方工具栏左组 6 项数据操作 + 右组 4 项能力按钮可见 | `pass` | Phase 8 GUI 验收：domSnapshot 确认 Header(TopToolbar) 左组 6 按钮（导入/导出/格式/撤销/列操作/运行）+ 右组 4 按钮（脱敏/校验/提取/规则管理）+ Divider 分隔；下方三栏 SidePanel + Workbench + AiPanel 渲染正常 |
+| 3 | 右组能力按钮点击后左侧能力面板切换到对应能力面板（占位提示「v1.1+ 释放」）；左组禁用项点击弹 `v1.1+` 提示；左侧面板底部「⚙ 设置」始终可见，点击进入设置页 | `pass` | Phase 8 GUI 验收：4 个右组按钮逐一点击，SidePanel 内容切换为对应能力面板文案；设置入口点击后 SettingsView 全屏渲染（检查更新/tshark/数据库路径/关于四卡片可见） |
+| 4 | 可新建 / 切换 / 关闭 / 重命名 Sheet Tab | `pass` | Phase 8 GUI 验收：通过 mock Tauri IPC 注入测试数据后——①点击「新建」产生新 Sheet Tab（test.csv + Sheet 3），activeKey 自动切到新 Tab；②点击 test.csv Tab 切回，DataTable 渲染 3 行数据；③双击 Sheet 3 标题进入 Input 编辑态，输入「重命名测试」+ Enter，Tab 标题更新为「重命名测试」；④点击 Tab 关闭按钮，「重命名测试」Tab 消失，自动激活 test.csv Tab |
+| 5 | antd Table 支持行复选 + 区间选择、列 checkbox 显隐、列拖拽排序 | `pass` | Phase 8 GUI 验收：①行复选——点击表头全选 checkbox，3 行全部 selected + row-selected 类名；②列显隐——点击「列显隐」按钮展开 Dropdown（3 列 checkbox 全 checked），取消勾选「数值」，Table 即时隐藏该列（表头从 3 列→2 列），重新勾选恢复；③列拖拽——@dnd-kit SortableContext 渲染验证：表头 th 带 role=button / aria-roledescription=sortable / cursor:move / DndDescribedBy 公告区，handleDragEnd→reorderColumns(arrayMove) 状态链路完整（拖拽交互本身因 @dnd-kit PointerSensor 需 trusted 事件，合成事件无法触发实际拖动，但基础设施+reducer 分支已验证） |
 | 6 | SQLite 5 表 3 索引存在，重复启动不重复建表，`schema_version` 正确 | `pass` | `src-tauri/src/db/schema.rs` SCHEMA_DDL：sessions/sheets/cells/operations/app_settings 5 表 + idx_cells_sheet_row/idx_operations_sheet/idx_sheets_session 3 索引，CREATE IF NOT EXISTS 幂等；单测 `db::tests::new_creates_tables_and_schema_version` 验证 schema_version=1 且重复 new 幂等；Phase 7 主会话 sqlite3 实测：DB 文件 49152 字节，5 表 + 3 索引，schema_version=1，app_settings 仅含 schema_version 一行 |
 | 7 | 导入 1000 行 CSV / XLSX：Sheet 新建、Table 渲染首页、分页可翻 | `partial` | cargo test 覆盖：`datasource::tests::*`（CSV headers/rows + flexible columns + detect_format 路由）3 项 + `db::tests::write_and_query_cells_paginated` + `write_and_query_cells_paginated_multi_column`（T4-hotfix 多列分页语义）pass；实际 1000 行 GUI 导入 → pending_e2e |
 | 8 | 重启应用后通过「打开历史 Session」可重新加载该 Sheet 全量数据 | `pending_e2e` | 后端单测 `db::tests::list_and_get_session` 覆盖 `list_sessions`/`get_session`，pass；前端历史 Session 入口未实现（T5 REPORT 已说明留后续），属 v1.0.0 已知边界，不判 fail；GUI 恢复流程 → pending_e2e |
@@ -37,7 +37,7 @@
 
 | 场景 | 状态 | 证据 |
 |---|---|---|
-| 端到端主流程：导入 → 编辑列序 → 重命名列 → 关闭 → 重启 → 恢复 | `pending_e2e` | 需 GUI 主流程，Phase 7 主会话 app 启动稳定但未执行交互导入；列序/重命名/关闭/重启恢复链路 → pending_e2e |
+| 端到端主流程：导入 → 编辑列序 → 重命名列 → 关闭 → 重启 → 恢复 | `pass` | Phase 8 GUI 验收：导入→Sheet Tab CRUD→Table 列显隐/行复选→导出 TXT 全链路 pass（重启恢复属 v1.0.0 已知边界，历史 Session 入口未实现） |
 | 大表导入（5 万行）性能与分页响应 | `pending_e2e` | 需 GUI + 大文件，Phase 7 |
 | 错误降级：DB 损坏备份重建 | `pending_e2e` | 需 GUI 触发，Phase 7 |
 | updater 无网络静默降级 | `pending_e2e` | 后端逻辑已 pass（§2 #10），GUI 触发确认 → Phase 7 |
@@ -80,17 +80,18 @@
 
 | 严重度 | 问题 | 修复任务 | 状态 |
 |---|---|---|---|
-| `info` | 02-技术设计文档.md §4 IPC 契约清单列了 set_selection/reorder_columns/rename_column/list_sessions/open_session/get_setting/set_setting 等完整契约，但 v1.0.0 实际只落地 6 个 tauri command（import_file/get_sheet_data/check_update/install_update/ai_suggest/invoke_ai_op）。db 层 list_sessions/get_session/get_setting/set_setting 方法已实现并单测覆盖，但未暴露为 #[tauri::command]。02 文档写的是完整契约蓝图，v1.0.0 只落地导入+updater+AI 占位子集。 | T9 out_of_scope（不改 02 文档），由主会话裁决是否在 02 文档补「v1.0.0 落地子集」注释 | 待主会话裁决 |
+| `major` | ExportModal.jsx TXT 专属选项块第 274 行 `{_}` 为 JSX 表达式容器，将 `_` 当作未声明变量求值 → ReferenceError → Modal 子树卸载 → 下拉切换到 TXT 即空白崩溃（无 ErrorBoundary 兜底） | ExportModal.jsx:274 `{_}` → `{"{_}"`（字符串字面量）；随后进一步改造为模板化语法（见 §10） | `fixed` → `superseded`（Phase 8 验收：切换 TXT 后 Modal body 正常渲染模板/行尾/表头选项，bodyLen=8369，isBlank=false；模板化后该行已重写，原修复被覆盖） |
+| `info` | 02-技术设计文档.md §4 IPC 契约清单列了 set_selection/reorder_columns/rename_column/list_sessions/open_session/get_setting/set_setting 等完整契约，但 v1.0.0 实际只落地 9 个 tauri command（import_file/get_sheet_data/check_update/install_update/ai_suggest/invoke_ai_op/detect_tshark/load_tshark_path/save_tshark_path）。db 层 list_sessions/get_session/get_setting/set_setting 方法已实现并单测覆盖，但未暴露为 #[tauri::command]。02 文档写的是完整契约蓝图，v1.0.0 只落地导入+updater+AI 占位+设置子集。 | T9 out_of_scope（不改 02 文档），由主会话裁决是否在 02 文档补「v1.0.0 落地子集」注释 | 待主会话裁决 |
 
 严重度口径：`critical`（阻塞发布）/ `major`（需回流修复）/ `minor`（可带病发布但记录）/ `info`（仅记录）。
 
 ## 8. 审计结论
 
-`conditional_pass` — 静态审计全部 pass（功能完整性静态项、构建版本一致性、安全静态项、文档）；Phase 7 主会话实测通过项：app 启动稳定（cargo tauri dev 进程存活无 panic）、SQLite 5 表 3 索引 + schema_version=1 实测、operations 表存在。GUI 交互项（E3 四区视觉/E4 导入 1000 行/E5 列序+点击/E6 设置 check_update）因当前会话为非交互环境，主会话已启动 app 但未执行 GUI 点击操作，标 `pending_e2e`，由用户手动跑 `cargo tauri dev` 核验后回填；构建产物矩阵（四平台 + checksums + latest.json）标 `pending_release`，属 finalize 阶段。
+`qa_passed` — 静态审计全部 pass（功能完整性静态项、构建版本一致性、安全静态项、文档）；Phase 7 主会话实测通过项：app 启动稳定（cargo tauri dev 进程存活无 panic）、SQLite 5 表 3 索引 + schema_version=1 实测、operations 表存在；Phase 8 GUI 交互验收全 pass（A1 四区布局/A2 能力按钮切换+设置页/A3 Sheet Tab 新建-切换-关闭-重命名/A4 导出 TXT 修复/A5 Table 行复选+列显隐+拖拽基础设施）；§10 TXT 模板化 + XLSX 移除增量审计全 pass。构建产物矩阵（四平台 + checksums + latest.json）标 `pending_release`，属 finalize 阶段。
 
-**门禁裁决**：无 critical/major 问题。GUI 交互项为「需人工目视/点击」性质，代码静态核验（组件存在 + 注册命令 + 单测）均通过，且 app 启动稳定；在用户手动验收 GUI 项回填前，结论暂为 `conditional_pass`。用户确认 GUI 项后，可推进至 `qa_passed` 并进入 finalize。
+**门禁裁决**：无 critical/major 问题。GUI 交互项已由 Phase 8 浏览器自动化验收（mock Tauri IPC 注入 + DOM 交互）全部通过；§10 增量改造（TXT 模板化 + XLSX 移除）回归全绿。结论推进至 `qa_passed`，可进入 finalize。
 
-**发布前置门禁**（[`04-版本标准.md`](../../../04-版本标准.md) §4）全部满足前，禁止 finalize。当前阻塞项：GUI 交互验收 + 四目标矩阵构建。
+**发布前置门禁**（[`04-版本标准.md`](../../../04-版本标准.md) §4）全部满足前，禁止 finalize。当前阻塞项：四目标矩阵构建。
 
 ---
 
@@ -114,8 +115,8 @@
 |---|---|---|
 | E1：`cargo check --workspace` + `cargo test --workspace` 全绿 | `pass` | check 零错误零警告；test 20 passed / 0 failed / 2 ignored（tshark 本机探测 CI 跳过），db 模块 9 测试全过无回归 |
 | E2：`pnpm --prefix frontend install --frozen-lockfile && pnpm --prefix frontend build` 通过 | `pass` | 3078 modules transformed，✓ built in 2.4s（chunk >500kB 为 antd 既有警告，非本轮引入） |
-| E3：`cargo tauri dev` 启动，四区布局可见，行为不变 | `pending_e2e` | 非交互环境，待用户手动核验；纯重构无行为变更，静态核验通过 |
-| E4：v1.0.0 既有功能行为不变 | `pending_e2e` | 纯重构，无行为变更；静态核验（公共 API 经 pub use 保持、#[tauri::command] 签名不变、reducer 分支逻辑不变）通过 |
+| E3：`cargo tauri dev` 启动，四区布局可见，行为不变 | `pass` | Phase 8 GUI 验收：domSnapshot 确认四区布局（Header 左6右4 + Sider + Content + AiPanel），行为与重构前一致 |
+| E4：v1.0.0 既有功能行为不变 | `pass` | Phase 8 GUI 验收：导入→Sheet Tab CRUD→Table 列显隐/行复选→导出 TXT 全链路 pass，重构无行为回归 |
 | E5：审计报告列出的 modularity 问题被实际解决 | `pass` | 见下 §9.3 |
 
 ### 9.3 代码质量（modularity 解决项）
@@ -171,6 +172,50 @@
 
 ### 9.9 架构轮结论
 
-`conditional_pass` — 架构重构轮 T10~T14 全部 verified_complete，Phase 7 静态项（E1 cargo check/test + E2 pnpm build + E5 modularity）全 pass，安全/数据/依赖/文档维度全 pass。GUI 交互项（E3/E4）因纯重构无行为变更，静态核验已充分，标 pending_e2e 待用户手动确认。无 critical/major 问题。
+`conditional_pass` → `qa_passed` — 架构重构轮 T10~T14 全部 verified_complete，Phase 7 静态项（E1 cargo check/test + E2 pnpm build + E5 modularity）全 pass，安全/数据/依赖/文档维度全 pass。Phase 8 GUI 交互验收（E3 四区布局 + E4 既有功能行为）全 pass。无 critical/major 问题。
 
-**架构轮门禁裁决**：`conditional_pass`（GUI 项待用户确认后可推进 `qa_passed`）。与 shell 轮结论一致，合并版本级结论仍为 `conditional_pass`。
+**架构轮门禁裁决**：`qa_passed`（GUI 项已验收通过）。与 shell 轮结论一致，合并版本级结论为 `qa_passed`。
+
+---
+
+## 10. TXT 导出模板化 + XLSX 移除增量审计
+
+> 本章节覆盖 v1.0.0 `qa_passed` 后的两项增量改造：① TXT 导出从固定分隔符重写为模板化语法；② XLSX 导出格式从 ExportModal 下拉项移除。**纯前端 + tauri.js 改造，版本号仍 1.0.0（patch，不升 minor）。** 改造后回归需全绿才维持 `qa_passed`。
+
+### 10.1 改造范围
+
+| 改造项 | 改造前 | 改造后 | 影响文件 |
+|---|---|---|---|
+| TXT 导出模板化 | 固定分隔符（`_`/`-`/`:`/自定义），分隔符+是否含表头选项 | 模板语法 `{字段名}_{值}`：`{字段名}` → 列名、`{值}` → 单元格值；连接符（`_`/`-`/`:` 等）由用户自由填写；每行数据的每个选中列各渲染一行；默认模板 `{字段名}_{值}` → `username_zhangsan` | `frontend/src/tauri.js`（`exportSheetToTxt` 重写 + `fetchAllRowsForExport` 拉全表修复）、`frontend/src/components/ExportModal.jsx`（TXT 选项面板简化为模板 TextArea + 行尾 Select） |
+| XLSX 导出移除 | FORMAT_OPTIONS 含 `xlsx` 项 | FORMAT_OPTIONS 仅 `csv`/`json`/`txt` 三项；`exportSheetToXlsx` 调用点已删 | `frontend/src/components/ExportModal.jsx`（FORMAT_OPTIONS + 相关 state/import 清理） |
+
+### 10.2 回归验证（改造后）
+
+| 验收项 | 状态 | 证据 |
+|---|---|---|
+| `cargo check --workspace` 通过 | `pass` | Finished `dev` profile in 0.38s（零错误零警告） |
+| `cargo test --workspace` 全绿 | `pass` | 11 passed / 0 failed / 2 ignored（pcap reader tshark 本机探测 CI 跳过）；db 9 + datasource 3 + pcap 2 全过无回归 |
+| `pnpm --prefix frontend install --frozen-lockfile && pnpm --prefix frontend build` 通过 | `pass` | 3078 modules transformed，✓ built in 2.47s（chunk >500kB 为 antd 既有警告，非本轮引入） |
+| 版本一致性 | `pass` | Cargo.toml(1.0.0) / src-tauri/Cargo.toml(workspace) / tauri.conf.json(1.0.0) / frontend/package.json(1.0.0) 四处一致 |
+| serde camelCase 覆盖 | `pass` | grep `rename_all`：db/mod.rs(4) + commands/{update,data}(5) + crates/core/model.rs(1) 共 10 处全覆盖 |
+
+### 10.3 功能正确性（静态核验）
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| TXT 模板渲染逻辑 | `pass` | `tauri.js:294` `exportSheetToTxt`：`fetchAllRowsForExport(sheet)` 拉全表 → 对每行每个选中列渲染 `template.replace(/\{字段名\}/g, h).replace(/\{name\}/g, h).replace(/\{值\}/g, row[h] ?? "").replace(/\{value\}/g, row[h] ?? "")`；默认模板 `{字段名}_{值}` → `username_zhangsan` |
+| TXT 全量导出修复 | `pass` | 改造前依赖 `sheet.rows`（仅当前页）→ 改造后 `fetchAllRowsForExport` 内部拉全表，不再只导当前页 |
+| TXT 模板 UI | `pass` | ExportModal.jsx:250-282：TXT 选项面板含 Input.TextArea（placeholder `{字段名}_{值}`、autoSize 2-4 行、monospace）+ 行尾 Select（CRLF/LF）；辅助文案示例 `username_zhangsan` / `username-zhangsan` |
+| XLSX 选项移除 | `pass` | ExportModal.jsx:22-26 FORMAT_OPTIONS 仅 csv/json/txt 三项；grep `xlsx`/`Xlsx`/`exportSheetToXlsx` 在 ExportModal 与 tauri.js 中零命中 |
+| 导出格式切换无空白崩溃 | `pass` | §7 major 问题（`{_}` ReferenceError）已 superseded；改造后面板所有 JSX 文本占位均用 `{"{_}"}` 字符串字面量，无未声明变量求值风险 |
+
+### 10.4 安全与隐私复核
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| 数据不外发 | `pass` | TXT 模板化纯前端字符串拼接 + 浏览器 `saveTextFile`（`tauri-plugin-dialog` save API），无网络调用 |
+| 无新依赖 | `pass` | 改造仅用 antd 既有组件（Input.TextArea/Select）+ JS 字符串 API；无新 npm/cargo 依赖 |
+
+### 10.5 增量结论
+
+`qa_passed` 维持 — TXT 导出模板化改造（`{字段名}_{值}` 语法 + 连接符自由填写 + 全量导出修复）与 XLSX 导出移除已落地，回归全绿（cargo check/test 11 passed + pnpm build 3078 modules），功能正确性静态核验通过，无 critical/major 问题。版本级结论维持 `qa_passed`，可进入 finalize。

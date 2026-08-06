@@ -1,12 +1,15 @@
 import { useState, useMemo, useEffect } from "react";
 import {
   Modal,
-  Radio,
+  Select,
   Space,
   Typography,
   Checkbox,
   Divider,
   Input,
+  Switch,
+  Row,
+  Col,
   message,
 } from "antd";
 import {
@@ -14,16 +17,40 @@ import {
   exportSheetToJson,
   exportSheetToTxt,
 } from "../tauri";
-import { DEV_STATUS } from "../constants";
 
-// 导出格式弹窗：选择目标格式 + 选择导出列后调用对应导出函数。
-// v1.0.0 实现 CSV / JSON / TXT；XLSX 暂示「开发中」。
-// TXT 支持模板：`{字段名}` 引用字段值，其它字符按字面输出，一行一条记录。
-const FORMATS = [
-  { value: "csv", label: "CSV (.csv)", disabled: false },
-  { value: "json", label: "JSON (.json)", disabled: false },
-  { value: "txt", label: "TXT (模板，一行一条)", disabled: false },
-  { value: "xlsx", label: `XLSX (.xlsx) ${DEV_STATUS}`, disabled: true },
+// 导出格式下拉项。CSV/JSON/TXT 可用；XLSX 已移除。
+const FORMAT_OPTIONS = [
+  { value: "csv", label: "CSV (.csv)" },
+  { value: "json", label: "JSON (.json)" },
+  { value: "txt", label: "TXT (.txt)" },
+];
+
+// 列分隔符下拉项（CSV / TXT 共用）。
+const SEPARATOR_OPTIONS = [
+  { value: "comma", label: '逗号 ","' },
+  { value: "semicolon", label: '分号 ";"' },
+  { value: "tab", label: "Tab" },
+  { value: "pipe", label: '竖线 "|"' },
+  { value: "custom", label: "自定义" },
+];
+
+// JSON 缩进下拉项。
+const INDENT_OPTIONS = [
+  { value: 2, label: "2 空格" },
+  { value: 4, label: "4 空格" },
+  { value: 0, label: "紧凑（单行）" },
+];
+
+// 行尾下拉项（TXT）。
+const LINE_ENDING_OPTIONS = [
+  { value: "crlf", label: "CRLF (Windows)" },
+  { value: "lf", label: "LF (Unix)" },
+];
+
+// JSON 结构下拉项。
+const JSON_FORMAT_OPTIONS = [
+  { value: "array", label: "数组 [{},{}]" },
+  { value: "ndjson", label: "NDJSON（每行一对象）" },
 ];
 
 export default function ExportModal({ open, sheet, onClose }) {
@@ -31,8 +58,18 @@ export default function ExportModal({ open, sheet, onClose }) {
   const [exporting, setExporting] = useState(false);
   // 选中的导出列（header 名数组，顺序遵循 sheet.columnOrder || headers）。
   const [selectedCols, setSelectedCols] = useState([]);
-  // TXT 模板：`{字段名}` 引用字段值，其它字符按字面输出。留空 → Tab 分隔全列。
-  const [txtTemplate, setTxtTemplate] = useState("");
+
+  // ---- 各格式独立选项 ----
+  // CSV
+  const [csvSeparator, setCsvSeparator] = useState("comma");
+  const [csvCustomSeparator, setCsvCustomSeparator] = useState("");
+  const [csvWithHeader, setCsvWithHeader] = useState(true);
+  // JSON
+  const [jsonIndent, setJsonIndent] = useState(2);
+  const [jsonFormat, setJsonFormat] = useState("array");
+  // TXT
+  const [txtTemplate, setTxtTemplate] = useState("{字段名}_{值}");
+  const [txtLineEnding, setTxtLineEnding] = useState("crlf");
 
   // 列顺序：遵循 columnOrder，否则用 headers。
   const orderedHeaders = useMemo(() => {
@@ -40,17 +77,23 @@ export default function ExportModal({ open, sheet, onClose }) {
     return sheet.columnOrder?.length ? sheet.columnOrder : sheet.headers || [];
   }, [sheet]);
 
-  // 默认模板：把所有列用 {col}_{col2} 串起来，便于用户直接编辑。
+  // TXT 默认模板：{字段名}_{值}（字段名与值之间用下划线连接）。
   const defaultTemplate = useMemo(
-    () => orderedHeaders.map((h) => `{${h}}`).join("_"),
-    [orderedHeaders]
+    () => "{字段名}_{值}",
+    []
   );
 
-  // 每次打开 / 切换 sheet 时重置：列全选 + 模板回到默认。
+  // 每次打开 / 切换 sheet 时重置：列全选 + 各选项回到默认。
   useEffect(() => {
     if (open) {
       setSelectedCols(orderedHeaders);
-      setTxtTemplate(defaultTemplate);
+      setCsvSeparator("comma");
+      setCsvCustomSeparator("");
+      setCsvWithHeader(true);
+      setJsonIndent(2);
+      setJsonFormat("array");
+      setTxtTemplate("{字段名}_{值}");
+      setTxtLineEnding("crlf");
     }
   }, [open, orderedHeaders, defaultTemplate]);
 
@@ -75,24 +118,32 @@ export default function ExportModal({ open, sheet, onClose }) {
       message.warning("请至少选择一列");
       return;
     }
-    // 只把选中列透传给导出函数：rows 保持原对象，函数按 headers 取值。
-    const exportSheet = { ...sheet, headers: selectedCols };
     setExporting(true);
     try {
       let ok = false;
       switch (format) {
         case "csv":
-          ok = await exportSheetToCsv(exportSheet);
+          ok = await exportSheetToCsv(sheet, {
+            separator: csvSeparator,
+            customSeparator: csvCustomSeparator,
+            withHeader: csvWithHeader,
+            headers: selectedCols,
+          });
           break;
         case "json":
-          ok = await exportSheetToJson(exportSheet);
+          ok = await exportSheetToJson(sheet, {
+            indent: jsonIndent,
+            ndjson: jsonFormat === "ndjson",
+            headers: selectedCols,
+          });
           break;
         case "txt":
-          // 空模板 → Tab 分隔全列；非空 → 按模板渲染。
-          ok = await exportSheetToTxt(
-            exportSheet,
-            txtTemplate.trim() ? txtTemplate : undefined
-          );
+          // 模板模式：{字段名}_{值} → username_zhangsan
+          ok = await exportSheetToTxt(sheet, {
+            template: txtTemplate.trim() ? txtTemplate : null,
+            lineEnding: txtLineEnding,
+            headers: selectedCols,
+          });
           break;
         default:
           break;
@@ -109,6 +160,8 @@ export default function ExportModal({ open, sheet, onClose }) {
   };
 
   const isTxt = format === "txt";
+  const isCsv = format === "csv";
+  const isJson = format === "json";
 
   return (
     <Modal
@@ -119,47 +172,119 @@ export default function ExportModal({ open, sheet, onClose }) {
       okText="导出"
       cancelText="取消"
       confirmLoading={exporting}
+      width={520}
       okButtonProps={{ disabled: !sheet || orderedHeaders.length === 0 }}
     >
-      <Space direction="vertical" style={{ width: "100%" }}>
-        <Typography.Text>选择导出格式：</Typography.Text>
-        <Radio.Group
-          value={format}
-          onChange={(e) => setFormat(e.target.value)}
-        >
-          <Space direction="vertical">
-            {FORMATS.map((f) => (
-              <Radio key={f.value} value={f.value} disabled={f.disabled}>
-                {f.label}
-              </Radio>
-            ))}
-          </Space>
-        </Radio.Group>
+      <Space direction="vertical" style={{ width: "100%" }} size="middle">
+        {/* 格式选择：下拉列表 */}
+        <div>
+          <Typography.Text strong>导出格式：</Typography.Text>
+          <Select
+            value={format}
+            onChange={setFormat}
+            style={{ width: "100%", marginTop: 6 }}
+            options={FORMAT_OPTIONS}
+          />
+        </div>
 
-        {isTxt && orderedHeaders.length > 0 && (
+        {/* CSV 专属选项 */}
+        {isCsv && orderedHeaders.length > 0 && (
           <>
-            <Divider style={{ margin: "8px 0" }} />
-            <Typography.Text>TXT 模板：</Typography.Text>
-            <Input.TextArea
-              value={txtTemplate}
-              onChange={(e) => setTxtTemplate(e.target.value)}
-              placeholder={`如：{${orderedHeaders[0]}}_{${orderedHeaders[orderedHeaders.length - 1]}}`}
-              autoSize={{ minRows: 2, maxRows: 4 }}
-              style={{ fontFamily: "monospace" }}
-            />
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              字段名用 `{"{字段名}"}` 引用，其它字符（{_}、- 等）按字面输出；
-              留空则按 Tab 分隔全列导出。每行数据按模板渲染为一行。
-            </Typography.Text>
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              可用字段：{orderedHeaders.map((h) => `{${h}}`).join("  ")}
-            </Typography.Text>
+            <Divider style={{ margin: 0 }} />
+            <Row gutter={[8, 8]}>
+              <Col span={12}>
+                <Typography.Text>列分隔符：</Typography.Text>
+                <Select
+                  value={csvSeparator}
+                  onChange={setCsvSeparator}
+                  style={{ width: "100%", marginTop: 4 }}
+                  options={SEPARATOR_OPTIONS}
+                />
+              </Col>
+              <Col span={12}>
+                <Typography.Text>含表头行：</Typography.Text>
+                <div style={{ marginTop: 4 }}>
+                  <Switch checked={csvWithHeader} onChange={setCsvWithHeader} />
+                </div>
+              </Col>
+            </Row>
+            {csvSeparator === "custom" && (
+              <Input
+                value={csvCustomSeparator}
+                onChange={(e) => setCsvCustomSeparator(e.target.value)}
+                placeholder="自定义分隔符，如 | 或 #"
+                style={{ marginTop: 4 }}
+              />
+            )}
           </>
         )}
 
-        {!isTxt && orderedHeaders.length > 0 && (
+        {/* JSON 专属选项 */}
+        {isJson && orderedHeaders.length > 0 && (
           <>
-            <Divider style={{ margin: "8px 0" }} />
+            <Divider style={{ margin: 0 }} />
+            <Row gutter={[8, 8]}>
+              <Col span={12}>
+                <Typography.Text>缩进：</Typography.Text>
+                <Select
+                  value={jsonIndent}
+                  onChange={setJsonIndent}
+                  style={{ width: "100%", marginTop: 4 }}
+                  options={INDENT_OPTIONS}
+                />
+              </Col>
+              <Col span={12}>
+                <Typography.Text>结构：</Typography.Text>
+                <Select
+                  value={jsonFormat}
+                  onChange={setJsonFormat}
+                  style={{ width: "100%", marginTop: 4 }}
+                  options={JSON_FORMAT_OPTIONS}
+                />
+              </Col>
+            </Row>
+          </>
+        )}
+
+        {/* TXT 专属选项：模板 + 行尾 */}
+        {isTxt && orderedHeaders.length > 0 && (
+          <>
+            <Divider style={{ margin: 0 }} />
+            <div>
+              <Typography.Text>TXT 模板：</Typography.Text>
+              <Input.TextArea
+                value={txtTemplate}
+                onChange={(e) => setTxtTemplate(e.target.value)}
+                placeholder="{字段名}_{值}"
+                autoSize={{ minRows: 2, maxRows: 4 }}
+                style={{ fontFamily: "monospace", marginTop: 4 }}
+              />
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                用 `{"{字段名}"}` 引用列名、`{"{值}"}` 引用单元格值；连接符（
+                {"_"}、-、: 等）可自由填写。每行数据的每个选中列各渲染一行。
+              </Typography.Text>
+              <Typography.Text type="secondary" style={{ fontSize: 12, display: "block" }}>
+                示例：`{"{字段名}_{值}"}` → username_zhangsan；`{"{字段名}-{值}"}` → username-zhangsan
+              </Typography.Text>
+            </div>
+            <Row gutter={[8, 8]}>
+              <Col span={12}>
+                <Typography.Text>行尾：</Typography.Text>
+                <Select
+                  value={txtLineEnding}
+                  onChange={setTxtLineEnding}
+                  style={{ width: "100%", marginTop: 4 }}
+                  options={LINE_ENDING_OPTIONS}
+                />
+              </Col>
+            </Row>
+          </>
+        )}
+
+        {/* 通用：列选择（所有格式共用，替代原两个重复块） */}
+        {orderedHeaders.length > 0 && (
+          <>
+            <Divider style={{ margin: 0 }} />
             <div
               style={{
                 display: "flex",
@@ -176,58 +301,10 @@ export default function ExportModal({ open, sheet, onClose }) {
                 全选
               </Checkbox>
             </div>
-            <Checkbox.Group
-              value={selectedCols}
-              style={{ width: "100%" }}
-            >
-              <div
-                style={{
-                  maxHeight: 160,
-                  overflow: "auto",
-                  border: "1px solid #f0f0f0",
-                  borderRadius: 4,
-                  padding: "8px 12px",
-                }}
-              >
-                {orderedHeaders.map((h) => (
-                  <div key={h} style={{ lineHeight: "28px" }}>
-                    <Checkbox
-                      value={h}
-                      checked={selectedCols.includes(h)}
-                      onChange={(e) => toggleCol(h, e.target.checked)}
-                    >
-                      {h}
-                    </Checkbox>
-                  </div>
-                ))}
-              </div>
-            </Checkbox.Group>
-          </>
-        )}
-
-        {isTxt && orderedHeaders.length > 0 && (
-          <>
-            <Divider style={{ margin: "8px 0" }} />
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-              }}
-            >
-              <Typography.Text>模板可用列：</Typography.Text>
-              <Checkbox
-                checked={allChecked}
-                indeterminate={indeterminate}
-                onChange={(e) => toggleAll(e.target.checked)}
-              >
-                全选
-              </Checkbox>
-            </div>
             <Checkbox.Group value={selectedCols} style={{ width: "100%" }}>
               <div
                 style={{
-                  maxHeight: 120,
+                  maxHeight: 140,
                   overflow: "auto",
                   border: "1px solid #f0f0f0",
                   borderRadius: 4,
@@ -247,9 +324,11 @@ export default function ExportModal({ open, sheet, onClose }) {
                 ))}
               </div>
             </Checkbox.Group>
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              仅选中列的值会在模板中渲染；未选中列视为空。
-            </Typography.Text>
+            {isTxt && (
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                模板对每个选中列各渲染一行；未选中列不导出。
+              </Typography.Text>
+            )}
           </>
         )}
       </Space>

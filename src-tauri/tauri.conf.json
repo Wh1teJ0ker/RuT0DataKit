@@ -50,7 +50,7 @@
       "endpoints": [
         "https://github.com/Wh1teJ0ker/RuT0DataKit/releases/latest/download/latest.json"
       ],
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDc0QUNEODA3MDlDODEzRTIKUldUaUU4Z0pCOWlzZEc5OWpnYlI3ZVd6TUswODlERlhhcEo5UEZ6ZTVrdWxqdkR0ZEwvdHlnekEK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1lbmlzaWduIHB1YmxpYyBrZXk6IDlBRUIzMzA4QTIxNDk4QjAKUldTd21CU2lDRFBybXVUWE8rT1U3U0doQjg3YmxCMWVDay9NOGlJKzlZa3I1U1RXWEZvMWtROHIK",
       "dialog": false,
       "windows": {
         "installMode": "passive"

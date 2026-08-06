@@ -15,7 +15,7 @@ RuT0DataKit v1.0.0 集成 `tauri-plugin-updater`，通过 GitHub Release 托管 
 ## pubkey（已填入 tauri.conf.json）
 
 ```
-dW50cnVzdGVkIGNvbW1lbnQ6IG1lbmlzaWduIHB1YmxpYyBrZXk6IDc0QUNEODA3MDlDODEzRTIKUldUaUU4Z0pCOWlzZEc5OWpnYlI3ZVd6TUswODlERlhhcEo5UEZ6ZTVrdWxqdkR0ZEwvdHlnekEK
+dW50cnVzdGVkIGNvbW1lbnQ6IG1lbmlzaWduIHB1YmxpYyBrZXk6IDlBRUIzMzA4QTIxNDk4QjAKUldTd21CU2lDRFBybXVUWE8rT1U3U0doQjg3YmxCMWVDay9NOGlJKzlZa3I1U1RXWEZvMWtROHIK
 ```
 
 `src-tauri/tauri.conf.json` 对应配置：

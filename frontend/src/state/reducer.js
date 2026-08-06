@@ -4,6 +4,7 @@
 // 以免无引用 import 报 ESLint no-unused-vars。本文件只导出 reducer / patchActiveSheet。
 import { ACTION } from "./constants";
 import { createEmptySheet, createSheetFromImport, defaultSheetName } from "./factory";
+import { toRowObjects } from "../tauri";
 
 export function patchActiveSheet(state, patch) {
   if (!state.activeSheetId) return state;
@@ -108,16 +109,15 @@ export function reducer(state, action) {
         ...state,
         sheets: state.sheets.map((s) => {
           if (s.id !== action.payload.sheetId) return s;
-          // PageData.rows 为 Vec<Vec<Option<String>>>；转为 antd 行对象。
+          // PageData.rows 为 Vec<Vec<Option<String>>>；复用 tauri.js 的
+          // toRowObjects 纯函数转成 antd 行对象（与导出共用，避免重复实现）。
           const headers = action.payload.headers || s.headers;
-          const rows = action.payload.rows.map((row, i) => {
-            const obj = { key: `${action.payload.sheetId}-${action.payload.page}-${i}` };
-            headers.forEach((h, col) => {
-              obj[h] = row[col] ?? null;
-            });
-            obj.status = "default";
-            return obj;
-          });
+          const rows = toRowObjects(
+            action.payload.rows,
+            headers,
+            action.payload.sheetId,
+            action.payload.page
+          );
           return {
             ...s,
             headers,

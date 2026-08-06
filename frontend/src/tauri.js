@@ -3,8 +3,11 @@
 // v1.0.0（T7）：AI 占位契约 `aiSuggest` / `invokeAiOp`。
 // v1.0.0（T5）：导入流 `importFile` / `getSheetData`。
 // v1.0.0（全格式扩展）：tshark 设置 `detectTshark` / `loadTsharkPath` /
-// `saveTsharkPath`，导出工具 `exportSheetToCsv`。
+// `saveTsharkPath`。
 // v1.0.0（T14）：更新检查 `checkUpdate` / `installUpdate`（收口 UpdateCard 的 raw invoke）。
+// v1.0.0（导出面板重构）：`toRowObjects` 纯函数 + `fetchAllRowsForExport`
+// 全表拉取（修复只导当前页的 BUG），CSV/JSON/TXT 导出函数接收 options
+// （分隔符/表头/模板/行尾/NDJSON 等）+ 内部拉全表。
 
 import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
@@ -108,8 +111,11 @@ export async function saveTextFile(filename, content, mimeType, filters) {
     const { writeTextFile } = await import("@tauri-apps/plugin-fs");
     await writeTextFile(target, content);
     return true;
-  } catch {
-    // 回退：浏览器 Blob 下载（开发态或 Tauri 不可用）。
+  } catch (e) {
+    // writeTextFile 失败（常见于 fs scope 未授权该路径）→ 回退浏览器 Blob 下载。
+    // 保留日志便于诊断 scope 缺失，避免静默吞错。
+    // eslint-disable-next-line no-console
+    console.error("[export] saveTextFile writeTextFile failed, fallback to Blob:", e);
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -123,26 +129,113 @@ export async function saveTextFile(filename, content, mimeType, filters) {
 }
 
 /**
+ * 把后端 PageData.rows（`Array<Array<string|null>>`）转成 antd 行对象。
+ * 与 state/reducer.js 的 SET_SHEET_DATA 构造一致：{ key, [header]: value|null, status }。
+ * 抽成纯函数供 reducer 与导出共用，避免重复实现。
+ * @param {Array<Array<string|null>>} rawRows  后端 PageData.rows
+ * @param {string[]} headers  字段名顺序
+ * @param {number} sheetId  用于生成稳定 key
+ * @param {number} [page=1]  当前页码（仅用于 key 区分）
+ * @returns {Array<object>} antd 行对象数组
+ */
+export function toRowObjects(rawRows, headers, sheetId, page = 1) {
+  return rawRows.map((row, i) => {
+    const obj = { key: `${sheetId}-${page}-${i}` };
+    headers.forEach((h, col) => {
+      obj[h] = row[col] ?? null;
+    });
+    obj.status = "default";
+    return obj;
+  });
+}
+
+/**
+ * 导出前一次性拉取 Sheet 全表数据（不依赖当前页 sheet.rows）。
+ *
+ * 修复 BUG：原导出只读 sheet.rows（仅当前页 ≤50 行），>50 行数据缺失表现为空白。
+ * 后端 get_sheet_data 的 SQL `LIMIT page_size OFFSET offset` 接受任意 page_size，
+ * 传 page_size = sheet.total（含表头行）即可一次取回所有数据行（后端 data.rs 跳过
+ * row_idx=0 表头行）。无需新增 IPC 或改 DB schema。
+ *
+ * @param {{id: number, total?: number, rows?: Array<object>}} sheet
+ * @returns {Promise<{headers: string[], rows: Array<object>}>} 全表 antd 行对象
+ */
+async function fetchAllRowsForExport(sheet) {
+  const total = sheet.total ?? (sheet.rows ? sheet.rows.length : 0) ?? 0;
+  // total 为 0（空表）直接返回空，避免传 page_size=0 触发后端分页边界。
+  if (total <= 0) {
+    return { headers: [], rows: [] };
+  }
+  const data = await getSheetData(sheet.id, 1, total);
+  return {
+    headers: data.headers || [],
+    rows: toRowObjects(data.rows, data.headers || [], sheet.id, 1),
+  };
+}
+
+/**
+ * 解析用户分隔符选项为实际字符。Tab/逗号/分号/竖线 选项 → 对应字符；
+ * "custom" → 用 custom 值；custom 为空回退 Tab。
+ * @param {string} sep  "tab" | "comma" | "semicolon" | "pipe" | "custom"
+ * @param {string} [custom]  自定义分隔符原始字符串
+ * @returns {string}
+ */
+function resolveSeparator(sep, custom) {
+  switch (sep) {
+    case "comma":
+      return ",";
+    case "semicolon":
+      return ";";
+    case "pipe":
+      return "|";
+    case "custom":
+      return custom && custom.length > 0 ? custom : "\t";
+    case "tab":
+    default:
+      return "\t";
+  }
+}
+
+function resolveLineEnding(le) {
+  return le === "lf" ? "\n" : "\r\n";
+}
+
+/**
  * 把当前 Sheet 导出为 CSV。
- * @param {{name: string, headers: string[], rows: Array<object>}} sheet
+ *
+ * 修复 BUG：内部 fetchAllRowsForExport 拉全表，不再依赖 sheet.rows（当前页）。
+ *
+ * @param {{id: number, name?: string}} sheet
+ * @param {{separator?: string, customSeparator?: string, withHeader?: boolean, headers?: string[]}} [opts]
+ *   - separator: "comma"|"semicolon"|"tab"|"custom"（默认 comma）
+ *   - customSeparator: separator==="custom" 时的自定义字符
+ *   - withHeader: 是否写表头行（默认 true）
+ *   - headers: 选中导出的列名数组（默认全列）
  * @returns {Promise<boolean>}
  */
-export async function exportSheetToCsv(sheet) {
-  const { headers, rows, name } = sheet;
+export async function exportSheetToCsv(sheet, opts = {}) {
+  const { headers: allHeaders, rows } = await fetchAllRowsForExport(sheet);
+  const selHeaders = opts.headers && opts.headers.length ? opts.headers : allHeaders;
+  const sep = resolveSeparator(opts.separator ?? "comma", opts.customSeparator);
+  const withHeader = opts.withHeader !== false;
+  // CSV 转义：含 " / 换行 / 分隔符 时加引号并把 " 双写。
   const esc = (v) => {
     const s = v == null ? "" : String(v);
-    if (/[",\n\r]/.test(s)) {
+    if (s.includes('"') || s.includes('\n') || s.includes('\r') || s.includes(sep)) {
       return `"${s.replace(/"/g, '""')}"`;
     }
     return s;
   };
-  const lines = [headers.map(esc).join(",")];
+  const lines = [];
+  if (withHeader) {
+    lines.push(selHeaders.map(esc).join(sep));
+  }
   for (const row of rows) {
-    lines.push(headers.map((h) => esc(row[h])).join(","));
+    lines.push(selHeaders.map((h) => esc(row[h])).join(sep));
   }
   const csv = "\uFEFF" + lines.join("\r\n");
   return saveTextFile(
-    `${name || "export"}.csv`,
+    `${sheet.name || "export"}.csv`,
     csv,
     "text/csv;charset=utf-8;",
     [{ name: "CSV", extensions: ["csv"] }]
@@ -151,19 +244,32 @@ export async function exportSheetToCsv(sheet) {
 
 /**
  * 把当前 Sheet 导出为 JSON。
- * @param {{name: string, headers: string[], rows: Array<object>}} sheet
+ *
+ * 修复 BUG：内部 fetchAllRowsForExport 拉全表。
+ *
+ * @param {{id: number, name?: string}} sheet
+ * @param {{indent?: number, ndjson?: boolean, headers?: string[]}} [opts]
+ *   - indent: 缩进空格数，0 = 紧凑单行（默认 2）
+ *   - ndjson: true → 每行一对象（NDJSON）；false → 标准数组（默认 false）
+ *   - headers: 选中导出的列名数组
  * @returns {Promise<boolean>}
  */
-export async function exportSheetToJson(sheet) {
-  const { headers, rows, name } = sheet;
+export async function exportSheetToJson(sheet, opts = {}) {
+  const { headers: allHeaders, rows } = await fetchAllRowsForExport(sheet);
+  const selHeaders = opts.headers && opts.headers.length ? opts.headers : allHeaders;
+  const indent = opts.indent ?? 2;
+  const ndjson = opts.ndjson === true;
   const data = rows.map((row) => {
     const obj = {};
-    for (const h of headers) obj[h] = row[h] ?? "";
+    for (const h of selHeaders) obj[h] = row[h] ?? "";
     return obj;
   });
-  const json = JSON.stringify(data, null, 2);
+  const json =
+    ndjson
+      ? data.map((o) => JSON.stringify(o)).join("\n")
+      : JSON.stringify(data, null, indent);
   return saveTextFile(
-    `${name || "export"}.json`,
+    `${sheet.name || "export"}.json`,
     json,
     "application/json;charset=utf-8;",
     [{ name: "JSON", extensions: ["json"] }]
@@ -171,29 +277,40 @@ export async function exportSheetToJson(sheet) {
 }
 
 /**
- * 把当前 Sheet 按模板导出为 TXT（一行一条记录）。
+ * 把当前 Sheet 按模板导出为 TXT（每行一条）。
  *
- * 模板语法：`{字段名}` → 该字段值；`{其它}` → 原样输出其内容
- * （如 `{_}` → `_`、`{-}` → `-`、`{}` → 空）。模板中不在 `{}` 内的字符
- * 也按字面量输出。无模板时回退为 Tab 分隔全列。
+ * 模板语法：`{字段名}` → 该列名；`{值}` → 该单元格值。
+ * 其余字符（_、-、: 等）按字面输出，可自由填写作为连接符。
  *
- * @param {{name: string, headers: string[], rows: Array<object>}} sheet
- * @param {string} [template]  模板字符串，如 `{phone}_{name}`
+ * 渲染规则：对每行数据的每个选中列各渲染一行。
+ * 默认模板 `{字段名}_{值}` → 形如 `username_zhangsan`。
+ *
+ * 修复 BUG：内部 fetchAllRowsForExport 拉全表，不再只导当前页。
+ *
+ * @param {{id: number, name?: string}} sheet
+ * @param {{template?: string, lineEnding?: "crlf"|"lf", headers?: string[]}} [opts]
  * @returns {Promise<boolean>}
  */
-export async function exportSheetToTxt(sheet, template) {
-  const { headers, rows, name } = sheet;
-  const renderRow = (row) => {
-    if (!template) return headers.map((h) => row[h] ?? "").join("\t");
-    return template.replace(/\{([^{}]*)\}/g, (_m, key) => {
-      // 字段名命中 → 取该行对应字段值；否则把括号内字面量原样输出。
-      return headers.includes(key) ? row[key] ?? "" : key;
-    });
-  };
-  const lines = rows.map(renderRow);
-  const txt = "\uFEFF" + lines.join("\r\n");
+export async function exportSheetToTxt(sheet, opts = {}) {
+  const { headers: allHeaders, rows } = await fetchAllRowsForExport(sheet);
+  const selHeaders = opts.headers && opts.headers.length ? opts.headers : allHeaders;
+  const eol = resolveLineEnding(opts.lineEnding ?? "crlf");
+  const template = opts.template && opts.template.trim() ? opts.template : "{字段名}_{值}";
+  const lines = [];
+  for (const row of rows) {
+    for (const h of selHeaders) {
+      lines.push(
+        template
+          .replace(/\{字段名\}/g, h)
+          .replace(/\{name\}/g, h)
+          .replace(/\{值\}/g, row[h] ?? "")
+          .replace(/\{value\}/g, row[h] ?? "")
+      );
+    }
+  }
+  const txt = "\uFEFF" + lines.join(eol);
   return saveTextFile(
-    `${name || "export"}.txt`,
+    `${sheet.name || "export"}.txt`,
     txt,
     "text/plain;charset=utf-8;",
     [{ name: "TXT", extensions: ["txt"] }]
