@@ -39,8 +39,8 @@ fn write_settings(app: &AppHandle, settings: &TsharkSettings) -> Result<(), Stri
         .map_err(|e| format!("app_config_dir: {e}"))?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("create config dir: {e}"))?;
     let path = dir.join("settings.json");
-    let json = serde_json::to_string_pretty(settings)
-        .map_err(|e| format!("serialize settings: {e}"))?;
+    let json =
+        serde_json::to_string_pretty(settings).map_err(|e| format!("serialize settings: {e}"))?;
     std::fs::write(&path, json).map_err(|e| format!("write settings: {e}"))?;
     Ok(())
 }
@@ -74,10 +74,7 @@ pub async fn load_tshark_path(app: AppHandle) -> Result<Value, String> {
 /// `path` 为 `Some(non_empty)` 时设置覆盖；`None` 或空串时清除覆盖，
 /// 回退到 PATH 中的 `tshark`。
 #[tauri::command]
-pub async fn save_tshark_path(
-    app: AppHandle,
-    path: Option<String>,
-) -> Result<(), String> {
+pub async fn save_tshark_path(app: AppHandle, path: Option<String>) -> Result<(), String> {
     let mut settings = read_settings(&app);
     settings.tshark_path = path.clone();
     write_settings(&app, &settings)?;

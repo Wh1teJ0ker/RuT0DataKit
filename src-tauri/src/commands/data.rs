@@ -85,8 +85,7 @@ pub async fn import_file(
     db: tauri::State<'_, crate::db::DbManager>,
 ) -> Result<ImportResult, String> {
     // 1. 探测格式 + 读取全部记录（含表头行作为 row_idx=0）。
-    let reader = datasource::detect_format(&path)
-        .map_err(|e| e.to_string())?;
+    let reader = datasource::detect_format(&path).map_err(|e| e.to_string())?;
     let headers = reader.headers().map_err(|e| e.to_string())?;
     let records = reader.read_all().map_err(|e| e.to_string())?;
 
@@ -129,7 +128,8 @@ pub async fn import_file(
             }
             row_idx = row_idx.saturating_add(1);
         }
-        db.write_cells(sheet_id, &cells).map_err(|e| e.to_string())?;
+        db.write_cells(sheet_id, &cells)
+            .map_err(|e| e.to_string())?;
     }
 
     // 5. 操作日志。

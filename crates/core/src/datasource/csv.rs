@@ -32,11 +32,9 @@ impl Reader for CsvReader {
 
         // 第一行作表头，同时作为 row_idx=0 的 Record 写回（保留首行）。
         if let Some(header_result) = iter.next() {
-            let header = header_result.map_err(|e| {
-                CoreError::DataSource(format!("csv header read: {e}"))
-            })?;
-            let header_vec: Vec<String> =
-                header.iter().map(|s| s.to_string()).collect();
+            let header = header_result
+                .map_err(|e| CoreError::DataSource(format!("csv header read: {e}")))?;
+            let header_vec: Vec<String> = header.iter().map(|s| s.to_string()).collect();
             let mut fields = std::collections::HashMap::new();
             for h in &header_vec {
                 fields.insert(h.clone(), h.clone());
@@ -47,8 +45,8 @@ impl Reader for CsvReader {
 
         let header_ref = headers.as_deref();
         for record_result in iter {
-            let row = record_result
-                .map_err(|e| CoreError::DataSource(format!("csv row read: {e}")))?;
+            let row =
+                record_result.map_err(|e| CoreError::DataSource(format!("csv row read: {e}")))?;
             let mut fields = std::collections::HashMap::new();
             for (i, v) in row.iter().enumerate() {
                 let key = header_ref
@@ -84,10 +82,7 @@ mod tests {
     use std::io::Write;
 
     fn tmp_csv(content: &str) -> tempfile::NamedTempFile {
-        let mut f = tempfile::Builder::new()
-            .suffix(".csv")
-            .tempfile()
-            .unwrap();
+        let mut f = tempfile::Builder::new().suffix(".csv").tempfile().unwrap();
         f.write_all(content.as_bytes()).unwrap();
         f
     }

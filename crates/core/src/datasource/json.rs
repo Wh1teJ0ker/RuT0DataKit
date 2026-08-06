@@ -87,10 +87,7 @@ impl Reader for JsonReader {
         for obj in &objects {
             let mut fields = std::collections::HashMap::new();
             for h in &headers {
-                let v = obj
-                    .get(h)
-                    .map(value_to_string)
-                    .unwrap_or_default();
+                let v = obj.get(h).map(value_to_string).unwrap_or_default();
                 fields.insert(h.clone(), v);
             }
             records.push(Record { fields });
@@ -106,7 +103,7 @@ impl Reader for JsonReader {
             .map(|r| {
                 // 表头行 fields 的 key 即列名；按首次插入顺序（HashMap 无序），
                 // 这里直接返回 keys。前端实际从首行 record 取值即可。
-                r.fields.into_iter().map(|(k, _)| k).collect()
+                r.fields.into_keys().collect()
             })
             .unwrap_or_default())
     }

@@ -21,10 +21,8 @@ impl XlsxReader {
 
 impl Reader for XlsxReader {
     fn read_all(&self) -> CoreResult<Vec<Record>> {
-        let mut workbook =
-            open_workbook_auto(&self.path).map_err(|e| {
-                CoreError::DataSource(format!("xlsx open: {e}"))
-            })?;
+        let mut workbook = open_workbook_auto(&self.path)
+            .map_err(|e| CoreError::DataSource(format!("xlsx open: {e}")))?;
         let sheet_name = workbook
             .sheet_names()
             .first()
@@ -38,12 +36,9 @@ impl Reader for XlsxReader {
         let mut rows = range.rows();
         let mut records: Vec<Record> = Vec::new();
 
-        let headers: Option<Vec<String>> = rows.next().map(|header_row| {
-            header_row
-                .iter()
-                .map(cell_to_string)
-                .collect()
-        });
+        let headers: Option<Vec<String>> = rows
+            .next()
+            .map(|header_row| header_row.iter().map(cell_to_string).collect());
 
         // 首行作为表头同时也是 row_idx=0 的 Record。
         if let Some(h) = headers.as_ref() {
@@ -72,10 +67,8 @@ impl Reader for XlsxReader {
     }
 
     fn headers(&self) -> CoreResult<Vec<String>> {
-        let mut workbook =
-            open_workbook_auto(&self.path).map_err(|e| {
-                CoreError::DataSource(format!("xlsx open: {e}"))
-            })?;
+        let mut workbook = open_workbook_auto(&self.path)
+            .map_err(|e| CoreError::DataSource(format!("xlsx open: {e}")))?;
         let sheet_name = workbook
             .sheet_names()
             .first()

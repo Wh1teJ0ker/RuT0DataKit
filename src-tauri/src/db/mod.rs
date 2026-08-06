@@ -30,7 +30,10 @@ pub struct Cell {
 
 /// `sessions` 摘要（列表用）。
 // v1.1+ IPC 将调用；单测已覆盖。
-#[allow(dead_code, reason = "v1.1+ IPC 将接入（list_sessions/get_session 等）；单测已覆盖")]
+#[allow(
+    dead_code,
+    reason = "v1.1+ IPC 将接入（list_sessions/get_session 等）；单测已覆盖"
+)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionSummary {
@@ -43,7 +46,10 @@ pub struct SessionSummary {
 
 /// `sheets` 摘要（`SessionDetail` 嵌套用）。
 // v1.1+ IPC 将调用；单测已覆盖。
-#[allow(dead_code, reason = "v1.1+ IPC 将接入（list_sessions/get_session 等）；单测已覆盖")]
+#[allow(
+    dead_code,
+    reason = "v1.1+ IPC 将接入（list_sessions/get_session 等）；单测已覆盖"
+)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SheetSummary {
@@ -56,7 +62,10 @@ pub struct SheetSummary {
 
 /// 会话详情：摘要 + 关联 sheets。
 // v1.1+ IPC 将调用；单测已覆盖。
-#[allow(dead_code, reason = "v1.1+ IPC 将接入（list_sessions/get_session 等）；单测已覆盖")]
+#[allow(
+    dead_code,
+    reason = "v1.1+ IPC 将接入（list_sessions/get_session 等）；单测已覆盖"
+)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionDetail {
@@ -79,7 +88,10 @@ pub struct DbManager {
 }
 
 // v1.1+ IPC 将调用；单测已覆盖。
-#[allow(dead_code, reason = "v1.1+ IPC 将接入（list_sessions/get_session 等）；单测已覆盖")]
+#[allow(
+    dead_code,
+    reason = "v1.1+ IPC 将接入（list_sessions/get_session 等）；单测已覆盖"
+)]
 impl DbManager {
     /// 在 `app_config_dir` 下打开（或创建）`ruT0datakit.db` 并执行初始化迁移。
     pub fn new(app_config_dir: &Path) -> Result<Self, DbError> {
@@ -144,12 +156,12 @@ impl DbManager {
                  ON CONFLICT(sheet_id, row_idx, col_idx) DO UPDATE SET value=excluded.value",
             )?;
             for c in cells {
-            stmt.execute(params![
-                sheet_id,
-                c.row_idx as i64,
-                c.col_idx as i64,
-                c.value,
-            ])?;
+                stmt.execute(params![
+                    sheet_id,
+                    c.row_idx as i64,
+                    c.col_idx as i64,
+                    c.value,
+                ])?;
             }
         }
         tx.commit()?;
@@ -186,12 +198,7 @@ impl DbManager {
     }
 
     /// 创建 sheet，返回 `id`。
-    pub fn create_sheet(
-        &self,
-        session_id: i64,
-        name: &str,
-        position: i32,
-    ) -> Result<i64, DbError> {
+    pub fn create_sheet(&self, session_id: i64, name: &str, position: i32) -> Result<i64, DbError> {
         let conn = self.conn.lock().expect("db mutex poisoned");
         let now = now_rfc3339();
         conn.execute(
@@ -325,7 +332,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mgr = DbManager::new(dir.path()).unwrap();
         // schema_version 应为 1
-        assert_eq!(mgr.get_setting("schema_version").unwrap().as_deref(), Some("1"));
+        assert_eq!(
+            mgr.get_setting("schema_version").unwrap().as_deref(),
+            Some("1")
+        );
         // DB 文件已生成
         assert!(dir.path().join("ruT0datakit.db").exists());
         // 重复 new 幂等
@@ -410,7 +420,7 @@ mod tests {
             col_idx: 0,
             value: Some("a".into()),
         };
-        mgr.write_cells(shid, &[c.clone()]).unwrap();
+        mgr.write_cells(shid, std::slice::from_ref(&c)).unwrap();
         // 覆盖同一主键
         let c2 = Cell {
             sheet_id: shid,
@@ -429,9 +439,7 @@ mod tests {
         let (_dir, mgr) = open();
         let sid = mgr.create_session("s", None, "csv", 0).unwrap();
         let shid = mgr.create_sheet(sid, "Sheet1", 0).unwrap();
-        let id = mgr
-            .log_operation(Some(shid), "import", "{}", "{}")
-            .unwrap();
+        let id = mgr.log_operation(Some(shid), "import", "{}", "{}").unwrap();
         assert!(id > 0);
     }
 

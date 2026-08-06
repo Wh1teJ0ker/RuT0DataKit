@@ -88,9 +88,7 @@ impl PcapReader {
             }
             let parts: Vec<&str> = line.split('\t').collect();
             // 7 个字段；缺失的用空串补齐（tshark 对空字段可能输出连续分隔符）。
-            let get = |idx: usize| -> String {
-                parts.get(idx).unwrap_or(&"").to_string()
-            };
+            let get = |idx: usize| -> String { parts.get(idx).unwrap_or(&"").to_string() };
             let body_raw = get(6);
             let body = if body_raw.is_empty() {
                 String::new()

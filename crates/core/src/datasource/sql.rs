@@ -139,9 +139,8 @@ impl Reader for SqlReader {
 
         // 执行非 SELECT 语句。
         for stmt in &non_select {
-            conn.execute_batch(stmt).map_err(|e| {
-                CoreError::DataSource(format!("sqlite execute `{stmt}`: {e}"))
-            })?;
+            conn.execute_batch(stmt)
+                .map_err(|e| CoreError::DataSource(format!("sqlite execute `{stmt}`: {e}")))?;
         }
 
         // 若无 SELECT，自动 SELECT * FROM 最后创建的表。
@@ -160,17 +159,13 @@ impl Reader for SqlReader {
         let mut all_rows: Vec<(Vec<String>, Vec<String>)> = Vec::new();
 
         for sql in &selects {
-            let mut stmt = conn.prepare(sql).map_err(|e| {
-                CoreError::DataSource(format!("sqlite prepare `{sql}`: {e}"))
-            })?;
+            let mut stmt = conn
+                .prepare(sql)
+                .map_err(|e| CoreError::DataSource(format!("sqlite prepare `{sql}`: {e}")))?;
             let col_count = stmt.column_count();
             // 收集本组列名。
             let local_headers: Vec<String> = (0..col_count)
-                .map(|i| {
-                    stmt.column_name(i)
-                        .unwrap_or("col")
-                        .to_string()
-                })
+                .map(|i| stmt.column_name(i).unwrap_or("col").to_string())
                 .collect();
             // 扩展 union_headers。
             for h in &local_headers {
@@ -187,23 +182,17 @@ impl Reader for SqlReader {
                             ValueRef::Null => String::new(),
                             ValueRef::Integer(n) => n.to_string(),
                             ValueRef::Real(f) => format!("{}", f),
-                            ValueRef::Text(t) => {
-                                String::from_utf8_lossy(t).to_string()
-                            }
-                            ValueRef::Blob(b) => {
-                                String::from_utf8_lossy(b).to_string()
-                            }
+                            ValueRef::Text(t) => String::from_utf8_lossy(t).to_string(),
+                            ValueRef::Blob(b) => String::from_utf8_lossy(b).to_string(),
                         };
                         cells.push(cell);
                     }
                     Ok(cells)
                 })
-                .map_err(|e| {
-                    CoreError::DataSource(format!("sqlite query `{sql}`: {e}"))
-                })?;
+                .map_err(|e| CoreError::DataSource(format!("sqlite query `{sql}`: {e}")))?;
             for row_result in rows_iter {
-                let cells = row_result
-                    .map_err(|e| CoreError::DataSource(format!("sqlite row: {e}")))?;
+                let cells =
+                    row_result.map_err(|e| CoreError::DataSource(format!("sqlite row: {e}")))?;
                 all_rows.push((cells, local_headers.clone()));
             }
         }
@@ -240,7 +229,7 @@ impl Reader for SqlReader {
         Ok(recs
             .into_iter()
             .next()
-            .map(|r| r.fields.into_iter().map(|(k, _)| k).collect())
+            .map(|r| r.fields.into_keys().collect())
             .unwrap_or_default())
     }
 }

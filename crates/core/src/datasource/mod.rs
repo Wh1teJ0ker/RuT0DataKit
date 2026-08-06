@@ -86,10 +86,7 @@ mod tests {
 
     fn tmp_csv(content: &str) -> tempfile::NamedTempFile {
         use std::io::Write;
-        let mut f = tempfile::Builder::new()
-            .suffix(".csv")
-            .tempfile()
-            .unwrap();
+        let mut f = tempfile::Builder::new().suffix(".csv").tempfile().unwrap();
         f.write_all(content.as_bytes()).unwrap();
         f
     }

@@ -39,8 +39,7 @@ pub fn read_schema_version(conn: &Connection) -> Result<Option<i64>, DbError> {
 /// 执行首次/幂等建表 + 建索引，写 `schema_version`。
 /// 幂等：`IF NOT EXISTS` 保证重复调用安全。
 pub fn bootstrap(conn: &Connection) -> Result<(), DbError> {
-    conn.execute_batch(SCHEMA_DDL)
-        .map_err(DbError::Sqlite)?;
+    conn.execute_batch(SCHEMA_DDL).map_err(DbError::Sqlite)?;
     conn.execute(
         "INSERT INTO app_settings(key, value) VALUES('schema_version', ?1)
          ON CONFLICT(key) DO UPDATE SET value=excluded.value",

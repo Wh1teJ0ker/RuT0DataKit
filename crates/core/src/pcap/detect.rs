@@ -93,12 +93,7 @@ fn probe_tshark(path: &str) -> Option<TsharkInfo> {
         return None;
     }
     let stdout = String::from_utf8_lossy(&out.stdout);
-    let version = stdout
-        .lines()
-        .next()
-        .unwrap_or("")
-        .trim()
-        .to_string();
+    let version = stdout.lines().next().unwrap_or("").trim().to_string();
     if version.is_empty() {
         return None;
     }
@@ -119,7 +114,7 @@ mod tests {
         assert!(paths.iter().any(|p| p.contains("homebrew")));
         assert!(paths.iter().any(|p| p.contains("Wireshark.app")));
         // Linux
-        assert!(paths.iter().any(|p| *p == "/usr/bin/tshark"));
+        assert!(paths.contains(&"/usr/bin/tshark"));
         // Windows
         assert!(paths.iter().any(|p| p.contains(r"Program Files")));
         assert!(paths.iter().any(|p| p.contains(r"Program Files (x86)")));
@@ -166,9 +161,7 @@ mod tests {
     fn detect_tshark_local() {
         if let Some(info) = detect_tshark() {
             assert!(!info.path.is_empty());
-            assert!(
-                info.version.starts_with("TShark") || info.version.contains("TShark")
-            );
+            assert!(info.version.starts_with("TShark") || info.version.contains("TShark"));
         }
     }
 }

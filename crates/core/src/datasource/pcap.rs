@@ -42,8 +42,7 @@ impl PcapReader {
 impl Reader for PcapReader {
     fn read_all(&self) -> CoreResult<Vec<Record>> {
         let requests = self.read_requests()?;
-        let headers: Vec<String> =
-            Self::HEADERS.iter().map(|s| s.to_string()).collect();
+        let headers: Vec<String> = Self::HEADERS.iter().map(|s| s.to_string()).collect();
 
         let mut records: Vec<Record> = Vec::new();
         // 表头行。
