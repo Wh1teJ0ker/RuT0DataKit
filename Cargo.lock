@@ -2688,7 +2688,7 @@ dependencies = [
 
 [[package]]
 name = "ruT0-data-kit"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "chrono",
  "regex",
@@ -2707,7 +2707,7 @@ dependencies = [
 
 [[package]]
 name = "ruT0-data-kit-core"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "calamine",
  "csv",

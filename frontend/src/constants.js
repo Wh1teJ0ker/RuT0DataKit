@@ -4,7 +4,7 @@
 //   - Cargo.toml                  workspace.package.version          （Rust crates 真相源）
 //   - src-tauri/tauri.conf.json   version                            （打包元信息）
 //   - frontend/package.json       version                            （npm 元信息）
-export const APP_VERSION = "v1.1.0";
+export const APP_VERSION = "v1.1.1";
 
 export const DEV_STATUS = "开发中";
 
