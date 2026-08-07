@@ -36,7 +36,7 @@ T29 DB schema v2→v3 (before_snapshot + 搜索索引 + 列操作辅助方法)
 | T33 | 前端 IPC + state 扩展（7 IPC + 5 ACTION + factory searchHits） | T30, T31, T32 | verified_complete | handoff/TASK-T33-HANDOFF.md（已清理） | handoff/TASK-T33-REPORT.md（已清理） | handoff/TASK-T33-REVIEW.md (review_passed, 已清理) |
 | T34 | 前端 UI（撤销工具栏 + 搜索栏 + 列操作面板 + 单元格高亮） | T33 | verified_complete | handoff/TASK-T34-HANDOFF.md（已清理） | handoff/TASK-T34-REPORT.md（已清理） | handoff/TASK-T34-REVIEW.md (review_passed, 3 minor, 已清理) |
 | T35 | 版本号升级 1.1.0→1.1.1（6 处一致） | T34 | verified_complete | —（主会话直接实施，4 文件改动 + core/src-tauri workspace=true 继承） | — | — |
-| T36 | 文档收口 + 全量验证 + Release QA | T35 | planned | — | — | — |
+| T36 | 文档收口 + 全量验证 + Release QA | T35 | verified_complete | —（主会话直接实施：三件套 + QA-审计报告 qa_passed + 02/03/04 文档同步） | — | — |
 
 状态词：`planned` / `in_progress` / `implemented_not_verified` / `partially_complete` / `blocked` / `in_review` / `review_passed` / `review_rejected` / `verified_complete` / `not_complete`
 
@@ -84,7 +84,7 @@ cargo tauri dev  # 手动核验 E3~E6
 | 端到端通过 | T29~T36 全 `verified_complete` + E1~E8 全过 | `done_e2e` |
 | 版本 QA 通过 | Release QA 审计落盘且结论通过 | `qa_passed` |
 
-当前版本状态：`in_progress`（T29~T35 verified_complete；T36 待启动）。
+当前版本状态：`qa_passed`（T29~T36 全 verified_complete；E1~E8 通过；Release QA 审计通过，docs/qa/versions/1.1.1/QA-审计报告.md 结论 qa_passed）。
 
 ## 7. 进度同步约定
 
