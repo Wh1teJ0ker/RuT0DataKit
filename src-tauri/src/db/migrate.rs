@@ -1,6 +1,6 @@
 //! 数据库迁移逻辑。
 //!
-//! v1.2.0: `schema_version=3`，`operations` 表新增 `before_snapshot_json` 列
+//! v1.1.1: `schema_version=3`，`operations` 表新增 `before_snapshot_json` 列
 //! 存撤销前置快照；新增 `idx_cells_sheet_col` 复合索引（v2→v3 增量迁移）。
 //! v1.1.0: `schema_version=2`，新增 `rules` 表（v1→v2 增量迁移）。
 //! v1.0.0: `schema_version=1`，无真实历史版本迁移。
@@ -223,7 +223,7 @@ mod tests {
 
     #[test]
     fn migrate_v1_to_v2_adds_rules_table() {
-        // v1.2.0 起 SCHEMA_VERSION=3：v1→v2 增量迁移已被 v1→v3 全量重建取代。
+        // v1.1.1 起 SCHEMA_VERSION=3：v1→v2 增量迁移已被 v1→v3 全量重建取代。
         // 此测试用 v1.1.0 时代的固定 v1→v2 路径验证（直接调用 migrate_v1_to_v2）。
         let dir = tempfile::tempdir().unwrap();
         let conn = Connection::open(dir.path().join("ruT0datakit.db")).unwrap();
@@ -251,7 +251,7 @@ mod tests {
 
     #[test]
     fn migrate_v1_to_v2_preserves_existing_data() {
-        // 同上：v1.2.0 起 v1 DB 走重建路径，此测试改用直接 migrate_v1_to_v2
+        // 同上：v1.1.1 起 v1 DB 走重建路径，此测试改用直接 migrate_v1_to_v2
         // 验证「增量迁移不破坏历史数据」这一原语义。
         let dir = tempfile::tempdir().unwrap();
         let conn = Connection::open(dir.path().join("ruT0datakit.db")).unwrap();

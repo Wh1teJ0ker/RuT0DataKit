@@ -1,12 +1,12 @@
 //! SQLite schema DDL。
 //!
-//! v1.2.0: 6 表 + 5 索引（`operations` 表新增 `before_snapshot_json` 列存撤销前置快照，
+//! v1.1.1: 6 表 + 5 索引（`operations` 表新增 `before_snapshot_json` 列存撤销前置快照，
 //! 新增 `idx_cells_sheet_col` 复合索引供搜索加速），`SCHEMA_VERSION=3`。
 //! v1.1.0: 6 表 + 4 索引（新增 `rules` 表 + `idx_rules_kind` 索引）。
 //! v1.0.0: 5 表 + 3 索引，严格对齐 `docs/02-技术设计文档.md` §3。
 //! 全部用 `IF NOT EXISTS`，保证重复启动幂等。
 
-/// 当前 schema 版本。v1.2.0 起为 `3`（`operations` 表加 `before_snapshot_json`
+/// 当前 schema 版本。v1.1.1 起为 `3`（`operations` 表加 `before_snapshot_json`
 /// 列 + `idx_cells_sheet_col` 复合索引）。
 pub const SCHEMA_VERSION: i64 = 3;
 

@@ -1,6 +1,6 @@
 //! SQLite 持久层入口。
 //!
-//! v1.2.0: `SCHEMA_VERSION=3`，`operations` 表新增 `before_snapshot_json` 列
+//! v1.1.1: `SCHEMA_VERSION=3`，`operations` 表新增 `before_snapshot_json` 列
 //! 存撤销前置快照；新增 `idx_cells_sheet_col` 复合索引供搜索加速；`DbManager`
 //! 新增 7 个方法（列范围查询 / 关键字搜索 / 正则搜索 / 计数 / 列内替换 /
 //! 全表替换 / 按 id 查 operation），全部参数化 SQL，供 T30/T31/T32 命令层调用。
@@ -563,7 +563,7 @@ impl DbManager {
         Ok(())
     }
 
-    // ---- 搜索 / 替换 / 操作日志查询（v1.2.0）----
+    // ---- 搜索 / 替换 / 操作日志查询（v1.1.1）----
 
     /// 查询某列指定 row_idx 范围的 cells（搜索分页用，排除 `row_idx=0` 表头）。
     ///
@@ -980,7 +980,7 @@ mod tests {
     fn new_creates_tables_and_schema_version() {
         let dir = tempfile::tempdir().unwrap();
         let mgr = DbManager::new(dir.path()).unwrap();
-        // v1.2.0: schema_version=3
+        // v1.1.1: schema_version=3
         assert_eq!(
             mgr.get_setting("schema_version").unwrap().as_deref(),
             Some("3")
@@ -1305,7 +1305,7 @@ mod tests {
         }
     }
 
-    // ---- 搜索 / 替换 / 操作日志查询（v1.2.0）----
+    // ---- 搜索 / 替换 / 操作日志查询（v1.1.1）----
 
     /// 构造一个 3 列 × 4 行的 sheet（row_idx=0 表头）。
     /// col0=name, col1=phone, col2=memo。

@@ -1,4 +1,4 @@
-//! v1.2.0 搜索 / 全表替换 IPC 命令。
+//! v1.1.1 搜索 / 全表替换 IPC 命令。
 //!
 //! - `search_cells`：关键字（`LIKE '%kw%'` + `ESCAPE '\'`）/ 正则
 //!   （`LIKE` 预筛 + Rust `regex` 精确匹配）搜索，分页返回命中 cells + 匹配区间。
