@@ -13,6 +13,9 @@ export const initialState = {
   tsharkPath: null, // string | null：用户覆盖路径
   tsharkDetected: null, // { path, version } | null
   tsharkLoading: false,
+  // v1.1.1 state（撤销 / 搜索 / 列操作）
+  undoStack: [], // Array<{ id: number, kind: string, createdAt: string }>，撤销工具栏数据源
+  searchState: { query: "", useRegex: false, colIdx: null, page: 1 }, // 搜索框受控状态（colIdx: null = 全表）
 };
 
 export const ACTION = {
@@ -38,6 +41,12 @@ export const ACTION = {
   SET_TSHARK_LOADING: "SET_TSHARK_LOADING",
   // v1.1.0 action（脱敏/校验/提取 → 行高亮）
   APPLY_ROW_STATUSES: "APPLY_ROW_STATUSES",
+  // v1.1.1 action（撤销 / 搜索 / 列操作）
+  SET_SEARCH_STATE: "SET_SEARCH_STATE", // 搜索框状态（query/useRegex/colIdx/page）
+  APPLY_SEARCH_HITS: "APPLY_SEARCH_HITS", // 命中写入 sheet.searchHits 供 DataTable 高亮
+  CLEAR_SEARCH: "CLEAR_SEARCH", // 清空搜索状态 + 高亮
+  ADD_SHEET_FROM_PARSE: "ADD_SHEET_FROM_PARSE", // parse_column_as_json 返回的新 Sheet 加入 sheets
+  SET_UNDO_STACK: "SET_UNDO_STACK", // 可撤销操作列表（撤销工具栏用）
 };
 
 // 初始空态：无 Sheet。导入前显示 Workbench 空态文案。

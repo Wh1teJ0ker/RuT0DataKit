@@ -3,7 +3,12 @@
 // 注：initialState 仅由 AppContext.js 用于 useReducer 初始化；这里不引入
 // 以免无引用 import 报 ESLint no-unused-vars。本文件只导出 reducer / patchActiveSheet。
 import { ACTION } from "./constants";
-import { createEmptySheet, createSheetFromImport, defaultSheetName } from "./factory";
+import {
+  createEmptySheet,
+  createSheetFromImport,
+  createSheetFromParse,
+  defaultSheetName,
+} from "./factory";
 import { toRowObjects } from "../tauri";
 
 export function patchActiveSheet(state, patch) {
@@ -160,6 +165,66 @@ export function reducer(state, action) {
         }),
       };
     }
+
+    // ---- v1.1.1 撤销 / 搜索 / 列操作 ----
+    case ACTION.SET_SEARCH_STATE:
+      // payload = { query?, useRegex?, colIdx?, page? }（部分更新）
+      return {
+        ...state,
+        searchState: { ...state.searchState, ...action.payload },
+      };
+    case ACTION.APPLY_SEARCH_HITS: {
+      // payload = { sheetId, hits: Array<{ rowIdx, colIdx, value, matches: Array<{start, end}> }> }
+      // 把后端 rowIdx（DB 绝对行号，row_idx=0 是表头行，数据从 1 开始）转成当前页行 key：
+      //   pageBase = (sheet.page - 1) * sheet.pageSize
+      //   pageInnerIdx = rowIdx - 1 - pageBase（减 1 跳过表头行）
+      //   rowKey = `${sheetId}-${sheet.page}-${pageInnerIdx}`
+      // 越界（不在当前页 / 列号超长）跳过该 hit。
+      const { sheetId, hits } = action.payload;
+      return {
+        ...state,
+        sheets: state.sheets.map((s) => {
+          if (s.id !== sheetId) return s;
+          const pageBase = (s.page - 1) * s.pageSize;
+          const pageLen = Array.isArray(s.rows) ? s.rows.length : 0;
+          const searchHits = { ...(s.searchHits || {}) };
+          for (const hit of hits || []) {
+            const pageInnerIdx = hit.rowIdx - 1 - pageBase;
+            if (pageInnerIdx < 0 || pageInnerIdx >= pageLen) continue; // 不在当前页
+            const colHeader = s.headers[hit.colIdx];
+            if (colHeader === undefined) continue; // 列号越界
+            const rowKey = `${sheetId}-${s.page}-${pageInnerIdx}`;
+            if (!searchHits[rowKey]) searchHits[rowKey] = {};
+            searchHits[rowKey][colHeader] = (hit.matches || []).map((m) => [
+              m.start,
+              m.end,
+            ]);
+          }
+          return { ...s, searchHits };
+        }),
+      };
+    }
+    case ACTION.CLEAR_SEARCH: {
+      // 清空当前 Sheet 高亮 + 重置顶层搜索状态。
+      const cleared = patchActiveSheet(state, (s) => ({ searchHits: {} }));
+      return {
+        ...cleared,
+        searchState: { query: "", useRegex: false, colIdx: null, page: 1 },
+      };
+    }
+    case ACTION.ADD_SHEET_FROM_PARSE: {
+      // payload = ParseResult（含 newSheetId/headers/rowCount/skipped + sessionId/name?/column?）
+      // 新 Sheet 必然新 id，不替换同名；追加并激活。
+      const sheet = createSheetFromParse(action.payload);
+      return {
+        ...state,
+        sheets: [...state.sheets, sheet],
+        activeSheetId: sheet.id,
+      };
+    }
+    case ACTION.SET_UNDO_STACK:
+      // payload = Array<{ id, kind, createdAt }>
+      return { ...state, undoStack: action.payload };
 
     default:
       return state;

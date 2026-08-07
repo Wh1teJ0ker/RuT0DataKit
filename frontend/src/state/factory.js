@@ -1,8 +1,9 @@
 // Sheet 工厂。
 // Sheet 对象结构：{ id, sessionId, name, headers, rows, total, page, pageSize,
-//                  columnOrder, columnVisibility, selection, statusHighlights }
+//                  columnOrder, columnVisibility, selection, statusHighlights, searchHits }
 // 「新建」Tab 产生空表（无列、无行），由用户在导入或后续列编辑流程中填充；
 // IMPORT_SUCCESS action 用 ImportResult 填充真实 Sheet。
+// ADD_SHEET_FROM_PARSE action 用 ParseResult（parse_column_as_json 返回）填充新 Sheet。
 // sessionId 由真实导入流填充（importFile → ImportResult.sessionId）。
 
 import { PAGE_SIZE } from "../constants";
@@ -33,6 +34,7 @@ function createEmptySheet(name) {
     columnVisibility: {},
     selection: { selectedRowKeys: [], lastSelectedIndex: null },
     statusHighlights: {}, // v1.1.0 ValidatePanel/MaskPanel/ExtractPanel 触发行高亮
+    searchHits: {}, // v1.1.1 搜索命中高亮：{ [rowKey]: { [colHeader]: [[start, end], ...] } }
   };
 }
 
@@ -53,6 +55,30 @@ export function createSheetFromImport(result) {
     columnVisibility: headers.reduce((acc, h) => ({ ...acc, [h]: true }), {}),
     selection: { selectedRowKeys: [], lastSelectedIndex: null },
     statusHighlights: {},
+    searchHits: {}, // v1.1.1 搜索命中高亮（默认空）
+  };
+}
+
+// 由 ParseResult（parse_column_as_json 返回，camelCase）构造新 Sheet。
+// 与 createSheetFromImport 几乎一致，但 id 取 newSheetId（而非 sheetId），
+// sessionId / name / column 由调用方在 payload 传入。rows 初始为空，
+// 由 SET_SHEET_DATA action 在 ADD_SHEET_FROM_PARSE 后填充。
+export function createSheetFromParse(result) {
+  const headers = result.headers || [];
+  return {
+    id: result.newSheetId,
+    sessionId: result.sessionId,
+    name: result.name || (result.column ? `${result.column}_json` : `Sheet ${result.newSheetId}`),
+    headers,
+    rows: [], // 由 SET_SHEET_DATA 填充首页
+    total: result.rowCount,
+    page: 1,
+    pageSize: PAGE_SIZE,
+    columnOrder: [...headers],
+    columnVisibility: headers.reduce((acc, h) => ({ ...acc, [h]: true }), {}),
+    selection: { selectedRowKeys: [], lastSelectedIndex: null },
+    statusHighlights: {},
+    searchHits: {},
   };
 }
 
