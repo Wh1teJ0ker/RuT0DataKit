@@ -1,47 +1,55 @@
-# TASK-BOARD — v1.1.0 能力阶段（脱敏/校验/提取 + 规则管理）
+# TASK-BOARD — v1.1.1 能力阶段（撤销 + 列操作 + 搜索 + 测试优化）
 
-> v1.0.0「纯框架 shell + 架构重构轮」已 `qa_passed`（旧看板归档于 `handoff/archive/`）。
-> 本看板为 v1.1.0 能力阶段：在 v1.0.0 shell 之上落地数据处理三件套（脱敏/校验/提取）+ 规则管理基础结构（3 条姓名规则 + DB 持久化）。
-> 版本号 1.1.0。版本级状态以 `docs/qa/versions/1.1.0/QA-审计报告.md` 为准。
+> v1.1.0 已 `qa_passed` 并发布 tag `v1.1.0`（旧看板归档于 `handoff/archive/TASK-BOARD-v1.1.0.md`）。
+> 本看板为 v1.1.1：在 v1.1.0 之上落地四大功能。
+> 版本号 1.1.1。版本级状态以 `docs/qa/versions/1.1.1/QA-审计报告.md` 为准。
 
 ## 1. 任务 DAG
 
 ```
-T15 core processor 模块 ──┐
-T16 DB 扩展 (rules 表)  ──┼─→ T17 Tauri commands (6 IPC) ─→ T19 前端 state + IPC ─→ T20 前端面板
-T18 版本号升级           │                                                      │
-                          └──────────────────────────────────────────────────────┴─→ T21 文档收口
+T29 DB schema v2→v3 (before_snapshot + 搜索索引 + 列操作辅助方法)
+   ├─→ T30 undo/redo 后端命令
+   ├─→ T31 搜索后端命令 (search_cells + replace_all)
+   ├─→ T32 列操作后端命令 (parse_column_as_json + replace_in_column)
+   │       (T30/T31/T32 三者无文件重叠，可并行分派)
+   └─→ T33 前端 IPC + state 扩展（依赖 T30/T31/T32 全部）
+            └─→ T34 前端 UI（撤销工具栏 + 搜索栏 + 列操作面板）
+                     └─→ T35 版本号升级 1.1.0→1.1.1（6 处）
+                              └─→ T36 文档收口 + 全量验证 + Release QA
 ```
 
 依赖说明：
-- T15 / T16 / T18 互不依赖 → 可并行。
-- T17 依赖 T15（core processor trait）+ T16（DB Rule CRUD）。
-- T19 依赖 T17（IPC 命令）。
-- T20 依赖 T19（state + IPC 封装）+ T3（DataTable 行高亮）。
-- T21 依赖 T15~T20 全部 `verified_complete` 后做文档收口。
+- T29 是地基（schema 迁移 + 新方法），T30/T31/T32 都依赖它。
+- T30/T31/T32 互不依赖（不同命令文件 / 不同 DB 方法），可并行分派 coder。
+- T33 汇聚三个后端命令的 IPC 封装 + state action。
+- T34 依赖 T33 的 IPC + state。
+- T35/T36 收尾。
 
 ## 2. 任务状态总表
 
 | ID | 标题 | depends_on | 状态 | handoff | report | review |
 |---|---|---|---|---|---|---|
-| T15 | core processor 模块（rules/validator/masker/extractor + 3 条姓名规则） | — | verified_complete | — | — | — |
-| T16 | DB 扩展（SCHEMA_VERSION=2 + rules 表 + Rule CRUD + seed） | T15 | verified_complete | — | — | — |
-| T17 | Tauri commands（6 IPC，DB 单一真源，删 RuleState） | T15, T16 | verified_complete | — | — | — |
-| T18 | 版本号升级（6 处一致 1.1.0） | — | verified_complete | — | — | — |
-| T19 | 前端 state + IPC 封装（APPLY_ROW_STATUSES + 6 invoke） | T17 | verified_complete | — | — | — |
-| T20 | 前端面板（4 面板真实 UI + RulesPanel 两栏 + 无新增规则） | T19 | verified_complete | — | — | — |
-| T21 | 文档收口（docs/versions/1.1.0/ 三件套 + 02 设计文档） | T15~T20 | verified_complete | — | — | — |
-| T22~T28 | UI/交互修复 + 脱敏语义修正（T22 删占位按钮 / T23 删描述文案 / T24 左列表分组 / T25 MaskPanel 掩码字符参数 / T26 ExtractPanel 多选规则 / T27 全量验证 / T28 脱敏语义修正：replacement → 掩码字符，≥3 保留首尾） | T20 | verified_complete | — | — | — |
+| T29 | DB schema v2→v3（before_snapshot + idx_cells_sheet_col + 7+1 个新方法） | — | verified_complete | handoff/TASK-T29-HANDOFF.md（已清理） | handoff/TASK-T29-REPORT.md（已清理） | handoff/TASK-T29-REVIEW.md (review_passed, 已清理) |
+| T30 | undo/redo 后端命令（undo_operation / redo_operation / list_undoable_operations + mask_column 改造） | T29 | verified_complete | handoff/TASK-T30-HANDOFF.md（已清理） | handoff/TASK-T30-REPORT.md（已清理） | handoff/TASK-T30-REVIEW.md (review_passed, 已清理) |
+| T31 | 搜索后端命令（search_cells + replace_all） | T29 | verified_complete | handoff/TASK-T31-HANDOFF.md（已清理） | handoff/TASK-T31-REPORT.md（已清理） | handoff/TASK-T31-REVIEW.md (review_rejected→fix→review_passed, 已清理) |
+| T32 | 列操作后端命令（parse_column_as_json + replace_in_column） | T29 | verified_complete | handoff/TASK-T32-HANDOFF.md（已清理） | handoff/TASK-T32-REPORT.md（已清理） | handoff/TASK-T32-REVIEW.md (review_passed, 已清理) |
+| T33 | 前端 IPC + state 扩展（7 IPC + 5 ACTION + factory searchHits） | T30, T31, T32 | planned | — | — | — |
+| T34 | 前端 UI（撤销工具栏 + 搜索栏 + 列操作面板 + 单元格高亮） | T33 | planned | — | — | — |
+| T35 | 版本号升级 1.1.0→1.1.1（6 处一致） | T34 | planned | — | — | — |
+| T36 | 文档收口 + 全量验证 + Release QA | T35 | planned | — | — | — |
 
 状态词：`planned` / `in_progress` / `implemented_not_verified` / `partially_complete` / `blocked` / `in_review` / `review_passed` / `review_rejected` / `verified_complete` / `not_complete`
 
 ## 3. 端到端验收项
 
-- E1：`cargo fmt --check` + `cargo clippy --workspace -- -D warnings` + `cargo test --workspace` 全绿（40 passed / 2 ignored）。`pass`
-- E2：`pnpm --prefix frontend install --frozen-lockfile && pnpm --prefix frontend build` 通过。`pass`
-- E3：`cargo tauri dev` 启动，四区布局可见，脱敏/校验/提取/规则管理面板真实 UI 可用，行状态高亮 `masked`/`invalid`/`hit` 触发。属浏览器自动化增量轮次，不阻塞发布
-- E4：规则持久化——重启应用后 `rules` 表保留用户调整的 `pattern`/`replacement` 参数。属浏览器自动化增量轮次，不阻塞发布
-- E5：RulesPanel 两栏布局 + 无新增规则入口。属浏览器自动化增量轮次，不阻塞发布
+- E1：`cargo fmt --check` + `cargo clippy --workspace -- -D warnings` + `cargo test --workspace` 全绿（含 commands 层新增测试）。
+- E2：`pnpm --prefix frontend install --frozen-lockfile && pnpm --prefix frontend build` 通过。
+- E3：`cargo tauri dev` 启动 → 导入 CSV → 脱敏 → 点撤销 → cells 恢复 → 点重做 → cells 重新脱敏。
+- E4：搜索框输入关键字 → 命中单元格高亮；正则模式可用；大文件（>1万行）搜索无明显卡顿。
+- E5：列操作面板 → 选 JSON 列 → 解析为新 Tab → 新 Tab 含展开列；列内替换 → 该列命中值替换。
+- E6：全局替换 Modal → from/to → 全表命中替换 → 撤销可恢复。
+- E7：版本号 6 处一致 1.1.1。
+- E8：重启应用后 schema 从 v2 迁移到 v3，历史数据保留。
 
 ## 4. 端到端验证命令
 
@@ -50,43 +58,42 @@ cargo fmt --check
 cargo clippy --workspace -- -D warnings
 cargo test --workspace
 pnpm --prefix frontend install --frozen-lockfile && pnpm --prefix frontend build
-cargo tauri dev  # 手动核验 E3~E5
+cargo tauri dev  # 手动核验 E3~E6
 ```
 
 ## 5. Release QA 门禁
 
 - required: true
-- report: `docs/qa/versions/1.1.0/QA-审计报告.md`
+- report: `docs/qa/versions/1.1.1/QA-审计报告.md`
 - audit_scope:
-  - 需求覆盖（3 条姓名规则 + DB 持久化 + RulesPanel 两栏 + 无新增规则能力）
-  - 端到端流程（E1~E5 是否全过）
-  - 构建与测试（workspace + frontend build + cargo test 全绿）
-  - 代码质量（core 纯逻辑 + DB 单一真源 + IPC 收口 + 前端组件复用）
-  - 安全与隐私（CSP 策略 + fs 权限最小化 + updater 签名链 + 数据不外发）
-  - 数据与迁移（SCHEMA_VERSION 1→2 增量迁移幂等 + rules 表 + seed）
-  - 依赖与配置（版本号 6 处一致 1.1.0 + regex 纯 Rust 依赖）
-  - 文档一致性（docs / 更新日志 / QA 报告互不冲突 + 行高亮颜色三处一致）
+  - 需求覆盖（撤销 mask/replace + 列操作 JSON/replace + 搜索 keyword/regex + 全局替换 + 测试优化）
+  - 端到端流程（E1~E8 是否全过）
+  - 构建与测试（workspace + frontend build + cargo test 全绿 + commands 层测试新增）
+  - 代码质量（schema 迁移幂等 + DB 单一真源 + IPC 收口 + 前端组件复用）
+  - 安全与隐私（SQL 参数绑定 + LIKE 转义 + 正则编译失败处理 + 快照仅存变更列）
+  - 数据与迁移（SCHEMA_VERSION 2→3 增量迁移幂等 + before_snapshot 列 + idx_cells_sheet_col）
+  - 依赖与配置（版本号 6 处一致 1.1.1 + regex 已有依赖）
+  - 文档一致性（docs / 更新日志 / QA 报告互不冲突）
 - 门禁：全部维度通过且无 major/critical 问题 → `qa_passed`；否则 `qa_failed` 回流修复。
 
 ## 6. 版本状态机
 
 | 阶段 | 触发条件 | 目标状态 |
 |---|---|---|
-| 单任务通过 | reviewer `review_passed` + 主会话确认下游未破坏 | `verified_complete`（T15~T21） |
-| 端到端通过 | T15~T21 全 `verified_complete` + E1~E5 全过 | `done_e2e` |
+| 单任务通过 | reviewer `review_passed` + 主会话确认下游未破坏 | `verified_complete`（T29~T36） |
+| 端到端通过 | T29~T36 全 `verified_complete` + E1~E8 全过 | `done_e2e` |
 | 版本 QA 通过 | Release QA 审计落盘且结论通过 | `qa_passed` |
 
-当前版本状态：`qa_passed`（T15~T21 全 verified_complete + T22~T28 完整性修复轮/脱敏语义修正轮 done_e2e + Release QA 审计通过 + tag `v1.1.0` 已发布 + 四目标矩阵 CI 构建全绿 + Release 资产完整）。E3~E5 GUI 交互验收属浏览器自动化增量轮次，不阻塞发布。
+当前版本状态：`in_progress`（T29~T32 verified_complete；T33~T36 待启动）。
 
 ## 7. 进度同步约定
 
-- 每个单任务 `verified_complete` 后：同步 `docs/versions/1.1.0/更新日志.md` 追加对应行。
+- 每个单任务 `verified_complete` 后：同步 `docs/versions/1.1.1/更新日志.md` 追加对应行。
 - 端到端通过后：更新日志追加全行 `verified_complete`；TASK-BOARD 保留。
 - Release QA `qa_passed` 且版本状态同步后：归档 TASK-BOARD.md 至 `handoff/archive/`。
 
-## 8. 发布状态
+## 8. 关键设计决策（用户确认）
 
-- tag `v1.1.0` 已推送，GitHub Action run 全绿（Linux x64 / macOS arm64 / Windows x64 三目标矩阵）。
-- Release 资产完整：7 安装包 + 6 `.sig` 签名 + `latest.json` 自动更新清单。
-- 自动更新签名链路已修复（`bundle.createUpdaterArtifacts: true`）。
-- GitHub Release：https://github.com/Wh1teJ0ker/RuT0DataKit/releases/tag/v1.1.0
+- 搜索索引：LIKE + 复合索引 + 分页（不引入 FTS5）。
+- 撤销范围：仅就地变更操作（mask / replace_in_column / replace_all）；import / parse_json / validate / extract 不入撤销栈。
+- 安全约束：所有 SQL 用 `?N` + `params![]` 参数绑定；LIKE 转义 `%`/`_`/`\`；正则编译失败返回错误不 panic；快照仅存变更列 cells。
