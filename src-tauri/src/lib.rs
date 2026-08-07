@@ -8,6 +8,10 @@
 //! v1.1.1: 新增 3 个撤销/重做 IPC（`undo_operation` / `redo_operation`
 //! / `list_undoable_operations`）；`mask_column` 改用
 //! `log_operation_with_snapshot` 存 before/after 快照。
+//! v1.1.1: 新增 2 个搜索 IPC（`search_cells` 关键字/正则分页搜索，
+//! `replace_all` 全表搜索替换 + before/after 快照撤销）。
+//! v1.1.1: 新增 2 个列操作 IPC（`parse_column_as_json` JSON 列展开为新 sheet，
+//! `replace_in_column` 列内批量替换 + before/after 快照撤销）。
 
 // crate 名 `ruT0-data-kit` 为品牌命名（非 snake_case），有意保留；
 // 改名将牵动 workspace dep / Cargo.toml `[lib].name` / main.rs 调用，得不偿失。
@@ -44,6 +48,10 @@ pub fn run() {
             commands::processor::undo_operation,
             commands::processor::redo_operation,
             commands::processor::list_undoable_operations,
+            commands::search::search_cells,
+            commands::search::replace_all,
+            commands::columns::parse_column_as_json,
+            commands::columns::replace_in_column,
         ])
         .setup(|app| {
             let dir = app.path().app_config_dir()?;
