@@ -5,7 +5,7 @@ import { createContext, useContext, useMemo, useReducer, useCallback } from "rea
 import { ACTION, initialState } from "./constants";
 import { reducer } from "./reducer";
 
-// Context 值：{ state, dispatch, ...14 个 dispatcher }
+// Context 值：{ state, dispatch, ...19 个 dispatcher }
 export const AppContext = createContext(null);
 
 export function AppProvider({ children }) {
@@ -76,6 +76,28 @@ export function AppProvider({ children }) {
     []
   );
 
+  // ---- v1.1.1 撤销 / 搜索 / 列操作 ----
+  const setSearchState = useCallback(
+    (payload) => dispatch({ type: ACTION.SET_SEARCH_STATE, payload }),
+    []
+  );
+  const applySearchHits = useCallback(
+    (payload) => dispatch({ type: ACTION.APPLY_SEARCH_HITS, payload }),
+    []
+  );
+  const clearSearch = useCallback(
+    () => dispatch({ type: ACTION.CLEAR_SEARCH }),
+    []
+  );
+  const addSheetFromParse = useCallback(
+    (payload) => dispatch({ type: ACTION.ADD_SHEET_FROM_PARSE, payload }),
+    []
+  );
+  const setUndoStack = useCallback(
+    (payload) => dispatch({ type: ACTION.SET_UNDO_STACK, payload }),
+    []
+  );
+
   const value = useMemo(
     () => ({
       state,
@@ -94,6 +116,11 @@ export function AppProvider({ children }) {
       importSuccess,
       setSheetData,
       applyRowStatuses,
+      setSearchState,
+      applySearchHits,
+      clearSearch,
+      addSheetFromParse,
+      setUndoStack,
     }),
     [
       state,
@@ -112,6 +139,11 @@ export function AppProvider({ children }) {
       importSuccess,
       setSheetData,
       applyRowStatuses,
+      setSearchState,
+      applySearchHits,
+      clearSearch,
+      addSheetFromParse,
+      setUndoStack,
     ]
   );
 

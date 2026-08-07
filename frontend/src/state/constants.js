@@ -4,7 +4,7 @@
 export const initialState = {
   // T2 字段（保留，禁止覆盖）
   currentView: "workbench", // 'workbench' | 'settings'
-  activeCapability: null, // null | 'mask' | 'validate' | 'extract' | 'rules'
+  activeCapability: null, // null | 'mask' | 'validate' | 'extract' | 'rules' | 'columnOps'
   aiPanel: { visible: false }, // 默认折叠为图标条
   // T3 字段
   sheets: [], // Sheet[]

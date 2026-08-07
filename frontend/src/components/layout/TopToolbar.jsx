@@ -7,6 +7,7 @@ import {
   CheckCircleOutlined,
   FileSearchOutlined,
   ControlOutlined,
+  ColumnHeightOutlined,
 } from "@ant-design/icons";
 import { open } from "@tauri-apps/plugin-dialog";
 import { importFile } from "../../tauri";
@@ -18,6 +19,7 @@ const CAPABILITIES = [
   { id: "mask", label: "脱敏", icon: <SafetyCertificateOutlined /> },
   { id: "validate", label: "校验", icon: <CheckCircleOutlined /> },
   { id: "extract", label: "提取", icon: <FileSearchOutlined /> },
+  { id: "columnOps", label: "列操作", icon: <ColumnHeightOutlined /> },
   { id: "rules", label: "规则管理", icon: <ControlOutlined /> },
 ];
 

@@ -1,6 +1,19 @@
 import { useMemo, useState } from "react";
-import { Table, Checkbox, Dropdown, Button, Space } from "antd";
-import { SettingOutlined } from "@ant-design/icons";
+import {
+  Table,
+  Checkbox,
+  Dropdown,
+  Button,
+  Space,
+  Input,
+  Switch,
+  Select,
+  Modal,
+  Form,
+  Typography,
+  message,
+} from "antd";
+import { SettingOutlined, SwapOutlined } from "@ant-design/icons";
 import {
   DndContext,
   PointerSensor,
@@ -16,8 +29,11 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { useAppContext } from "../state";
+import { searchCells, replaceAll, getSheetData } from "../tauri";
 import { PAGE_SIZE } from "../constants";
 import "./DataTable.css";
+
+const { Text } = Typography;
 
 // 可拖拽列头单元格（@dnd-kit/sortable）。
 // antd Table 通过 components.header.cell 注入；列 key 经 onHeaderCell 以 data-colkey 传入。
@@ -58,20 +74,62 @@ function HeaderCell({ "data-colkey": colkey, ...rest }) {
   return <th {...rest} />;
 }
 
+// v1.1.1 单元格高亮渲染：
+// 取 sheet.searchHits?.[record.key]?.[header]，命中区间用 <mark> 包裹。
+// start/end 为字节偏移；这里按字符串索引直接 slice，对纯 ASCII 安全，
+// 多字节字符（中文）边界可能错位 —— T34 简化实现，后续优化。
+function highlightCell(value, hitRanges) {
+  if (value == null) return value;
+  const text = String(value);
+  if (!hitRanges || hitRanges.length === 0) return text;
+  const sorted = [...hitRanges].sort((a, b) => a[0] - b[0]);
+  const parts = [];
+  let cursor = 0;
+  for (const [start, end] of sorted) {
+    if (start < cursor) continue; // 越界/重叠，跳过
+    if (start > text.length || end > text.length) break;
+    if (start > cursor) parts.push(text.slice(cursor, start));
+    parts.push(
+      <mark key={`${start}-${end}`} style={{ background: "#fff48f" }}>
+        {text.slice(start, end)}
+      </mark>
+    );
+    cursor = end;
+  }
+  if (cursor < text.length) parts.push(text.slice(cursor));
+  return <span>{parts}</span>;
+}
+
 // antd Table 封装。
 // - 行复选 + Shift 区间选择：onSelect 自记 lastSelectedIndex，Shift 时选 [last,current] 区间
 // - 列 checkbox 显隐：Dropdown + Checkbox 切换 columnVisibility
 // - 列拖拽排序：@dnd-kit/sortable（硬需求，不允许降级为仅列宽）
 // - 状态高亮：rowClassName 注入 default/invalid/masked/hit；v1.1.0 ValidatePanel/MaskPanel/ExtractPanel 触发
 // - 分页：Table.pagination，pageSize=PAGE_SIZE
+// - v1.1.1 搜索栏（关键字/正则切换 + 列选择）+ 单元格 <mark> 高亮 + 全局替换 Modal
 //
 // mock 数据由 state 注入；真实导入流由 importFile → getSheetData 填充（reducer SET_SHEET_DATA）。
 // selection / columnVisibility / columnOrder 等 dispatcher 经 useAppContext 取；
 // sheet 仍由 Workbench 通过 props 注入（当前激活 Sheet 对象）。
 export default function DataTable({ sheet, onSetPage }) {
-  const { setSelection, reorderColumns, setColumnVisibility } = useAppContext();
+  const {
+    state,
+    dispatch,
+    setSelection,
+    reorderColumns,
+    setColumnVisibility,
+    setSearchState,
+    applySearchHits,
+    clearSearch,
+  } = useAppContext();
 
   const [colMenuOpen, setColMenuOpen] = useState(false);
+  const [replaceOpen, setReplaceOpen] = useState(false);
+  const [searching, setSearching] = useState(false);
+  const [replacing, setReplacing] = useState(false);
+  const [replaceForm] = Form.useForm();
+  // 当前搜索命中总数（来自后端 searchCells 返回的 total）
+  const [searchTotal, setSearchTotal] = useState(0);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } })
@@ -89,6 +147,9 @@ export default function DataTable({ sheet, onSetPage }) {
         key: h,
         // 通过 onHeaderCell 把列 key 透传给 header cell 组件
         onHeaderCell: () => ({ "data-colkey": h }),
+        // v1.1.1 搜索命中高亮：取 sheet.searchHits?.[record.key]?.[h]
+        render: (text, record) =>
+          highlightCell(text, sheet.searchHits?.[record.key]?.[h]),
       }));
   }, [sheet]);
 
@@ -149,6 +210,71 @@ export default function DataTable({ sheet, onSetPage }) {
     reorderColumns(arrayMove(order, oldIdx, newIdx));
   }
 
+  // 搜索：调 searchCells 取首页 50 条 → dispatch APPLY_SEARCH_HITS → 记录 total
+  async function handleSearch() {
+    if (!sheet) return;
+    const { query, useRegex, colIdx } = state.searchState;
+    if (!query) {
+      message.warning("请输入搜索关键字");
+      return;
+    }
+    setSearching(true);
+    try {
+      const res = await searchCells(
+        sheet.id,
+        query,
+        useRegex,
+        colIdx,
+        1,
+        PAGE_SIZE
+      );
+      applySearchHits({ sheetId: sheet.id, hits: res.rows || [] });
+      setSearchState({ page: 1 });
+      setSearchTotal(res.total ?? (res.rows || []).length);
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error("search_cells failed:", e);
+      message.error(`搜索失败：${e}`);
+    } finally {
+      setSearching(false);
+    }
+  }
+
+  // 全局替换：replaceAll → 刷新当前页 + 清空搜索高亮（数据已变）
+  async function handleReplace() {
+    if (!sheet) return;
+    try {
+      const values = await replaceForm.validateFields();
+      const { from, to, useRegex } = values;
+      if (!from) {
+        message.warning("请输入查找内容");
+        return;
+      }
+      setReplacing(true);
+      const res = await replaceAll(sheet.id, from, to || "", useRegex);
+      message.success(`替换 ${res.affected ?? 0} 处`);
+      setReplaceOpen(false);
+      replaceForm.resetFields();
+      // 刷新当前页
+      const page = sheet.page || 1;
+      const data = await getSheetData(sheet.id, page, sheet.pageSize || PAGE_SIZE);
+      dispatch({
+        type: "SET_SHEET_DATA",
+        payload: { ...data, sheetId: sheet.id },
+      });
+      // 数据已变 → 清空旧搜索高亮
+      clearSearch();
+      setSearchTotal(0);
+    } catch (e) {
+      if (e?.errorFields) return; // 表单校验失败，antd 自带提示
+      // eslint-disable-next-line no-console
+      console.error("replace_all failed:", e);
+      message.error(`替换失败：${e}`);
+    } finally {
+      setReplacing(false);
+    }
+  }
+
   if (!sheet) return null;
 
   const visibleHeaders = (sheet.columnOrder || sheet.headers).filter(
@@ -171,10 +297,15 @@ export default function DataTable({ sheet, onSetPage }) {
     onClick: (info) => info.domEvent?.stopPropagation(),
   };
 
+  const colSelectOptions = [
+    { label: "全部列", value: null },
+    ...sheet.headers.map((h, i) => ({ label: h, value: i })),
+  ];
+
   return (
     <div className="data-table-wrap">
       <div className="data-table-toolbar">
-        <Space>
+        <Space wrap>
           <Dropdown
             menu={colMenu}
             open={colMenuOpen}
@@ -183,6 +314,52 @@ export default function DataTable({ sheet, onSetPage }) {
           >
             <Button icon={<SettingOutlined />}>列显隐</Button>
           </Dropdown>
+          <Input.Search
+            placeholder="搜索内容"
+            value={state.searchState.query}
+            onChange={(e) => setSearchState({ query: e.target.value })}
+            onSearch={handleSearch}
+            loading={searching}
+            enterButton
+            style={{ width: 220 }}
+          />
+          <Space size={4}>
+            <Switch
+              checked={state.searchState.useRegex}
+              onChange={(v) => setSearchState({ useRegex: v })}
+              size="small"
+            />
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              正则
+            </Text>
+          </Space>
+          <Select
+            value={state.searchState.colIdx}
+            onChange={(v) => setSearchState({ colIdx: v })}
+            options={colSelectOptions}
+            style={{ width: 140 }}
+            size="small"
+          />
+          <Button size="small" onClick={clearSearch}>
+            清除
+          </Button>
+          <Button
+            size="small"
+            icon={<SwapOutlined />}
+            onClick={() => {
+              replaceForm.setFieldsValue({
+                useRegex: state.searchState.useRegex,
+              });
+              setReplaceOpen(true);
+            }}
+          >
+            全局替换
+          </Button>
+          {searchTotal > 0 && (
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              共 {searchTotal} 条命中，展示前 {PAGE_SIZE} 条
+            </Text>
+          )}
         </Space>
       </div>
       <DndContext
@@ -220,6 +397,29 @@ export default function DataTable({ sheet, onSetPage }) {
           />
         </SortableContext>
       </DndContext>
+
+      <Modal
+        title="全局替换"
+        open={replaceOpen}
+        onCancel={() => setReplaceOpen(false)}
+        onOk={handleReplace}
+        confirmLoading={replacing}
+        okText="替换"
+        cancelText="取消"
+        destroyOnClose
+      >
+        <Form form={replaceForm} layout="vertical" size="small">
+          <Form.Item label="查找" name="from" rules={[{ required: true }]}>
+            <Input allowClear />
+          </Form.Item>
+          <Form.Item label="替换为" name="to">
+            <Input allowClear />
+          </Form.Item>
+          <Form.Item label="正则" name="useRegex" valuePropName="checked">
+            <Switch />
+          </Form.Item>
+        </Form>
+      </Modal>
     </div>
   );
 }
