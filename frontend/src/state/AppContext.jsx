@@ -70,6 +70,12 @@ export function AppProvider({ children }) {
     []
   );
 
+  // ---- v1.1.0 行状态高亮（脱敏/校验/提取）----
+  const applyRowStatuses = useCallback(
+    (payload) => dispatch({ type: ACTION.APPLY_ROW_STATUSES, payload }),
+    []
+  );
+
   const value = useMemo(
     () => ({
       state,
@@ -87,6 +93,7 @@ export function AppProvider({ children }) {
       setPage,
       importSuccess,
       setSheetData,
+      applyRowStatuses,
     }),
     [
       state,
@@ -104,6 +111,7 @@ export function AppProvider({ children }) {
       setPage,
       importSuccess,
       setSheetData,
+      applyRowStatuses,
     ]
   );
 

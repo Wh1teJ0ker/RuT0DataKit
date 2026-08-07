@@ -5,19 +5,22 @@ import SidePanel from "./components/layout/SidePanel";
 import Workbench from "./components/Workbench";
 import AiPanel from "./components/AiPanel";
 import SettingsView from "./components/settings/SettingsView";
+import RulesPanel from "./components/panels/RulesPanel";
 import { AppProvider, useAppContext, ACTION } from "./state";
 import { getSheetData } from "./tauri";
 import { PAGE_SIZE } from "./constants";
 
 const { Header, Content } = Layout;
 
-// T2: 四区布局 shell。
+// T2：四区布局 shell。
 // Header=TopToolbar / Sider=SidePanel / Content=Workbench / 右侧 Sider=AiPanel。
 // 注意：antd Layout 默认 Header 在顶部，下方用 flex 容器横排 SidePanel + Content + AiPanel。
 // T5：TopToolbar 的「导入」按钮接入真实导入流（dialog.open → importFile →
 // IMPORT_SUCCESS → getSheetData 首页 → 渲染）；翻页时按需拉取对应页数据。
 // T13：顶层包裹 <AppProvider>，state/dispatch/dispatcher 经 Context 下发，
 // 子组件（TopToolbar / Workbench / AiPanel 等）改用 useAppContext 取数，消除 prop drilling。
+// v1.1.0：`activeCapability === "rules"` 时，规则管理面板占据 Workbench 主区，
+// 不再走 260px SidePanel（左侧列表 + 右侧详情两栏布局）。
 function AppShell() {
   const { state, dispatch, setView, setAiPanelVisible, setPage } =
     useAppContext();
@@ -86,6 +89,10 @@ function AppShell() {
       {state.currentView === "settings" ? (
         <Content style={{ background: "#fff", overflow: "auto" }}>
           <SettingsView onBack={() => setView("workbench")} />
+        </Content>
+      ) : state.activeCapability === "rules" ? (
+        <Content style={{ background: "#fff", overflow: "hidden" }}>
+          <RulesPanel />
         </Content>
       ) : (
         <Layout style={{ overflow: "hidden" }}>

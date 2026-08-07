@@ -1,16 +1,16 @@
 // Tauri v2 invoke 封装层。
 //
-// v1.0.0（T7）：AI 占位契约 `aiSuggest` / `invokeAiOp`。
-// v1.0.0（T5）：导入流 `importFile` / `getSheetData`。
-// v1.0.0（全格式扩展）：tshark 设置 `detectTshark` / `loadTsharkPath` /
-// `saveTsharkPath`。
-// v1.0.0（T14）：更新检查 `checkUpdate` / `installUpdate`（收口 UpdateCard 的 raw invoke）。
+// v1.0.0：AI 占位契约 `aiSuggest` / `invokeAiOp`；导入流 `importFile` /
+// `getSheetData`；tshark 设置 `detectTshark` / `loadTsharkPath` /
+// `saveTsharkPath`；更新检查 `checkUpdate` / `installUpdate`。
 // v1.0.0（导出面板重构）：`toRowObjects` 纯函数 + `fetchAllRowsForExport`
 // 全表拉取（修复只导当前页的 BUG），CSV/JSON/TXT 导出函数接收 options
 // （分隔符/表头/模板/行尾/NDJSON 等）+ 内部拉全表。
+// v1.1.0：新增数据处理原型 IPC（脱敏 / 校验 / 提取 / 规则管理）。
 
 import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
+import { PAGE_SIZE } from "./constants";
 
 /**
  * 调用 `ai_suggest` IPC（业务能力开发中，v1.0.0 占位）。
@@ -92,6 +92,72 @@ export function installUpdate() {
   return invoke("install_update");
 }
 
+// v1.1.0 数据处理原型 IPC 封装（脱敏 / 校验 / 提取 / 规则管理）。
+
+/**
+ * 调用 `mask_column` IPC：对指定列就地脱敏（保留首字符，其余用掩码字符替换）。
+ * @param {number} sheetId      Sheet ID
+ * @param {string} column       列名（headers 中的值）
+ * @param {string|null} [ruleId] 规则 ID（可选；指向 DB mask 规则）
+ * @param {string|null} [replacement] 掩码字符（取首个字符；空/null → 默认 `*`；不写回 DB）
+ * @returns {Promise<{affected: number}>} 受影响行数
+ */
+export function maskColumn(sheetId, column, ruleId, replacement) {
+  return invoke("mask_column", { sheetId, column, ruleId, replacement });
+}
+
+/**
+ * 调用 `validate_column` IPC：按规则校验指定列。
+ * @param {number} sheetId  Sheet ID
+ * @param {string} column   列名
+ * @param {string} ruleId   规则 ID（RuleKind=Validate）
+ * @returns {Promise<{results: Array<{rowIdx: number, passed: boolean, message: string}>}>}
+ */
+export function validateColumn(sheetId, column, ruleId) {
+  return invoke("validate_column", { sheetId, column, ruleId });
+}
+
+/**
+ * 调用 `extract_column` IPC：从指定列提取 PII（手机/邮箱/身份证）。
+ * v1.1.0 保留命令；前端提取面板改走内部正则预览，不再调用本函数。
+ * @param {number} sheetId  Sheet ID
+ * @param {string} column   列名
+ * @returns {Promise<{results: Array<{rowIdx: number, hits: Array<{kind: string, value: string, start: number, end: number}>}>}>}
+ */
+export function extractColumn(sheetId, column) {
+  return invoke("extract_column", { sheetId, column });
+}
+
+/**
+ * 调用 `list_rules` IPC：列出全部规则（v1.1.0 三条姓名相关内置规则）。
+ * @returns {Promise<Array<{id: string, name: string, kind: string, field: string|null, pattern: string|null, replacement: string|null, enabled: boolean, description: string}>>}
+ */
+export function listRules() {
+  return invoke("list_rules");
+}
+
+/**
+ * 调用 `toggle_rule` IPC：启用/禁用规则。
+ * @param {string} ruleId   规则 ID
+ * @param {boolean} enabled 是否启用
+ * @returns {Promise<void>}
+ */
+export function toggleRule(ruleId, enabled) {
+  return invoke("toggle_rule", { ruleId, enabled });
+}
+
+/**
+ * 调用 `update_rule_params` IPC：更新规则可填参数（pattern / replacement）。
+ * v1.1.0：仅允许改参数，不可新增规则。`null` 字段表示不变。
+ * @param {string} ruleId      规则 ID
+ * @param {string|null} pattern       正则模式（null 不变）
+ * @param {string|null} replacement   脱敏替换模板（null 不变）
+ * @returns {Promise<void>}
+ */
+export function updateRuleParams(ruleId, pattern, replacement) {
+  return invoke("update_rule_params", { ruleId, pattern, replacement });
+}
+
 /**
  * 公共文件保存：优先 Tauri save 对话框 + writeTextFile；回退浏览器 Blob 下载。
  * @param {string} filename  建议文件名（含扩展名）
@@ -139,8 +205,9 @@ export async function saveTextFile(filename, content, mimeType, filters) {
  * @returns {Array<object>} antd 行对象数组
  */
 export function toRowObjects(rawRows, headers, sheetId, page = 1) {
+  const base = (page - 1) * PAGE_SIZE;
   return rawRows.map((row, i) => {
-    const obj = { key: `${sheetId}-${page}-${i}` };
+    const obj = { key: `${sheetId}-${page}-${i}`, _rowIdx: base + i + 1 };
     headers.forEach((h, col) => {
       obj[h] = row[col] ?? null;
     });

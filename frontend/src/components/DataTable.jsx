@@ -58,15 +58,15 @@ function HeaderCell({ "data-colkey": colkey, ...rest }) {
   return <th {...rest} />;
 }
 
-// antd Table 封装（T3）。
+// antd Table 封装。
 // - 行复选 + Shift 区间选择：onSelect 自记 lastSelectedIndex，Shift 时选 [last,current] 区间
 // - 列 checkbox 显隐：Dropdown + Checkbox 切换 columnVisibility
 // - 列拖拽排序：@dnd-kit/sortable（硬需求，不允许降级为仅列宽）
-// - 状态高亮：rowClassName 注入 default/invalid/masked/hit；v1.0.0 mock 全 default
+// - 状态高亮：rowClassName 注入 default/invalid/masked/hit；v1.1.0 ValidatePanel/MaskPanel/ExtractPanel 触发
 // - 分页：Table.pagination，pageSize=PAGE_SIZE
 //
-// TODO(T5): replace mock with real import —— mock 数据由 state 注入，T5 接管后由真实导入流填充。
-// T13：selection / columnVisibility / columnOrder 等 dispatcher 经 useAppContext 取；
+// mock 数据由 state 注入；真实导入流由 importFile → getSheetData 填充（reducer SET_SHEET_DATA）。
+// selection / columnVisibility / columnOrder 等 dispatcher 经 useAppContext 取；
 // sheet 仍由 Workbench 通过 props 注入（当前激活 Sheet 对象）。
 export default function DataTable({ sheet, onSetPage }) {
   const { setSelection, reorderColumns, setColumnVisibility } = useAppContext();

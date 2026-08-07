@@ -1,14 +1,15 @@
 # RuT0DataKit workspace
 #
 # v1.0.0 框架阶段：仅交付脚手架骨架，不实现业务能力。
-# 业务能力（脱敏/校验/提取/规则/搜索/Tools/PCAP）推迟 v1.1+。
+# v1.1.0 数据处理原型：脱敏 / 校验 / 提取雏形 + 规则管理基础结构（姓名校验示例）。
+# 其它业务能力（搜索/Tools/PCAP）推迟 v1.2+。
 
 [workspace]
 resolver = "2"
 members = ["crates/core", "src-tauri"]
 
 [workspace.package]
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
 authors = ["RuT0DataKit Team"]
 license = "MIT"

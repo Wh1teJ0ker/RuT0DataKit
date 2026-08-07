@@ -3,14 +3,14 @@ import { Tabs, Input } from "antd";
 import { PlusOutlined } from "@ant-design/icons";
 import { useAppContext } from "../state";
 
-// Sheet/Tab 多页组件（T3）。
-// - 新建：+ 按钮 → 产生新 mock Sheet（dispatch ADD_SHEET）
+// Sheet/Tab 多页组件。
+// - 新建：+ 按钮 → 产生新 Sheet（dispatch ADD_SHEET）
 // - 切换：点击 Tab → dispatch SET_ACTIVE_SHEET
 // - 关闭：Tab 上的 × → dispatch CLOSE_SHEET（reducer 内自动激活相邻 Tab）
 // - 重命名：双击 Tab 标题进入 Input 编辑，回车确认（dispatch RENAME_SHEET），Esc/失焦取消
 //
-// T13：sheets / activeSheetId / dispatcher 经 useAppContext 取，消除 prop drilling。
-// TODO(T5): replace mock with real import —— 新建 Tab 行为在 T5 接管后改为触发导入对话框。
+// sheets / activeSheetId / dispatcher 经 useAppContext 取，消除 prop drilling。
+// 真实导入流由 importFile → getSheetData 填充（reducer SET_SHEET_DATA）。
 export default function SheetTabs() {
   const { state, addSheet, setActiveSheet, closeSheet, renameSheet } =
     useAppContext();

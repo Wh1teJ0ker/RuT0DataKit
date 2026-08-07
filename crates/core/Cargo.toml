@@ -15,6 +15,7 @@ thiserror = { workspace = true }
 csv = "1"
 calamine = "0.26"
 rusqlite = { version = "0.31", features = ["bundled"] }
+regex = "1"
 
 [dev-dependencies]
 tempfile = "3"

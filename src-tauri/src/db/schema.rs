@@ -1,12 +1,13 @@
 //! SQLite schema DDL。
 //!
+//! v1.1.0: 6 表 + 4 索引（新增 `rules` 表 + `idx_rules_kind` 索引）。
 //! v1.0.0: 5 表 + 3 索引，严格对齐 `docs/02-技术设计文档.md` §3。
 //! 全部用 `IF NOT EXISTS`，保证重复启动幂等。
 
-/// 当前 schema 版本。v1.0.0 固定 `1`。
-pub const SCHEMA_VERSION: i64 = 1;
+/// 当前 schema 版本。v1.1.0 起为 `2`（新增 `rules` 表）。
+pub const SCHEMA_VERSION: i64 = 2;
 
-/// 5 表 + 3 索引 DDL。`CREATE ... IF NOT EXISTS` 幂等。
+/// 6 表 + 4 索引 DDL。`CREATE ... IF NOT EXISTS` 幂等。
 pub const SCHEMA_DDL: &str = r#"
 -- sessions：导入会话
 CREATE TABLE IF NOT EXISTS sessions (
@@ -55,8 +56,21 @@ CREATE TABLE IF NOT EXISTS app_settings (
     value TEXT
 );
 
+-- rules：规则定义（v1.1.0 新增，持久化脱敏/校验/提取规则）
+CREATE TABLE IF NOT EXISTS rules (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    kind        TEXT NOT NULL,
+    field       TEXT,
+    pattern     TEXT,
+    replacement TEXT,
+    enabled     INTEGER NOT NULL DEFAULT 1,
+    description TEXT NOT NULL DEFAULT ''
+);
+
 -- 索引
 CREATE INDEX IF NOT EXISTS idx_cells_sheet_row ON cells(sheet_id, row_idx);
 CREATE INDEX IF NOT EXISTS idx_operations_sheet ON operations(sheet_id);
 CREATE INDEX IF NOT EXISTS idx_sheets_session ON sheets(session_id);
+CREATE INDEX IF NOT EXISTS idx_rules_kind ON rules(kind);
 "#;

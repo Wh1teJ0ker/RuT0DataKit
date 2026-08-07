@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "RuT0DataKit",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "identifier": "com.rut0.datakit",
   "build": {
     "beforeDevCommand": "pnpm --prefix ../frontend run dev",
@@ -22,7 +22,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; img-src 'self' data: blob: asset: http://asset.localhost; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost https://api.github.com https://github.com https://objects.githubusercontent.com"
     }
   },
   "bundle": {
@@ -51,7 +51,7 @@
         "https://github.com/Wh1teJ0ker/RuT0DataKit/releases/latest/download/latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1lbmlzaWduIHB1YmxpYyBrZXk6IDlBRUIzMzA4QTIxNDk4QjAKUldTd21CU2lDRFBybXVUWE8rT1U3U0doQjg3YmxCMWVDay9NOGlJKzlZa3I1U1RXWEZvMWtROHIK",
-      "dialog": false,
+      "dialog": true,
       "windows": {
         "installMode": "passive"
       }

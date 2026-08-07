@@ -3,10 +3,6 @@ import { Button, Divider, Space, message } from "antd";
 import {
   ImportOutlined,
   ExportOutlined,
-  FormatPainterOutlined,
-  UndoOutlined,
-  ColumnHeightOutlined,
-  PlayCircleOutlined,
   SafetyCertificateOutlined,
   CheckCircleOutlined,
   FileSearchOutlined,
@@ -14,7 +10,6 @@ import {
 } from "@ant-design/icons";
 import { open } from "@tauri-apps/plugin-dialog";
 import { importFile } from "../../tauri";
-import { DEV_STATUS } from "../../constants";
 import { useAppContext } from "../../state";
 import ExportModal from "../ExportModal";
 
@@ -26,17 +21,6 @@ const CAPABILITIES = [
   { id: "rules", label: "规则管理", icon: <ControlOutlined /> },
 ];
 
-// 左组数据操作：v1.0.0「导入 + 导出」可用，其余点击提示「开发中」。
-// 「导入」真实导入流（文件选择 → 写 DB → 渲染 Table）由 T5 接入。
-// 「导出」v1.0.0 客户端 CSV 导出（Blob 下载），不新增 IPC。
-const LEFT_OPS_DISABLED = [
-  { key: "format", label: "格式", tip: `格式能力 ${DEV_STATUS}` },
-  { key: "undo", label: "撤销", tip: `撤销能力 ${DEV_STATUS}` },
-  { key: "column", label: "列操作", tip: `列操作能力 ${DEV_STATUS}` },
-  { key: "run", label: "运行", tip: `运行能力 ${DEV_STATUS}` },
-];
-
-// T13：state/dispatch/setter 经 useAppContext 取，仅保留 onImport 跨组件回调。
 export default function TopToolbar({ onImport }) {
   const { state, setActiveCapability } = useAppContext();
   const { activeCapability } = state;
@@ -123,15 +107,6 @@ export default function TopToolbar({ onImport }) {
         >
           导出
         </Button>
-        {LEFT_OPS_DISABLED.map((op) => (
-          <Button
-            key={op.key}
-            icon={iconFor(op.key)}
-            onClick={() => message.info(op.tip)}
-          >
-            {op.label}
-          </Button>
-        ))}
       </Space>
 
       <Divider type="vertical" style={{ height: 24, margin: "0 4px" }} />
@@ -156,19 +131,4 @@ export default function TopToolbar({ onImport }) {
       />
     </div>
   );
-}
-
-function iconFor(key) {
-  switch (key) {
-    case "format":
-      return <FormatPainterOutlined />;
-    case "undo":
-      return <UndoOutlined />;
-    case "column":
-      return <ColumnHeightOutlined />;
-    case "run":
-      return <PlayCircleOutlined />;
-    default:
-      return null;
-  }
 }

@@ -1,10 +1,14 @@
 //! SQLite 持久层入口。
 //!
+//! v1.1.0: 新增 `rules` 表 CRUD（`upsert_rule`/`list_rules`/`get_rule`/
+//! `set_rule_enabled`/`count_rules`/`update_rule_params`/`seed_builtin_rules`），
+//! 6 表 + 4 索引，`SCHEMA_VERSION=2`。
+//!
 //! v1.0.0: `DbManager` 持有 `Mutex<Connection>`，提供分页查询、批量写 cells、
 //! 操作日志记录、键值设置、会话读写等公共方法，供命令层（T5/T7）调用。
 //!
-//! DB 文件位于 `app_config_dir/ruT0datakit.db`，5 表 + 3 索引 schema 由
-//! `schema::SCHEMA_DDL` 定义，迁移由 `migrate::migrate` 处理。
+//! DB 文件位于 `app_config_dir/ruT0datakit.db`，schema 由 `schema::SCHEMA_DDL`
+//! 定义，迁移由 `migrate::migrate` 处理。
 
 pub mod error;
 pub mod migrate;
@@ -15,6 +19,7 @@ pub use error::DbError;
 use std::path::Path;
 use std::sync::Mutex;
 
+use ruT0_data_kit_core::processor::rules::{Rule, RuleKind, RuleRegistry};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
@@ -76,6 +81,32 @@ pub struct SessionDetail {
 /// 当前 ISO8601/RFC3339 时间戳（UTC）。
 fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339()
+}
+
+/// 把 DB 行（id/name/kind/field/pattern/replacement/enabled/description）映射为 `Rule`。
+fn row_to_rule(r: &rusqlite::Row<'_>) -> rusqlite::Result<Rule> {
+    let kind_str: String = r.get::<_, String>(2)?;
+    let kind = RuleKind::from_str_lowercase(&kind_str).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            2,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("unknown rule kind: {}", kind_str),
+            )),
+        )
+    })?;
+    let enabled: i64 = r.get::<_, i64>(6)?;
+    Ok(Rule {
+        id: r.get::<_, String>(0)?,
+        name: r.get::<_, String>(1)?,
+        kind,
+        field: r.get::<_, Option<String>>(3)?,
+        pattern: r.get::<_, Option<String>>(4)?,
+        replacement: r.get::<_, Option<String>>(5)?,
+        enabled: enabled != 0,
+        description: r.get::<_, String>(7)?,
+    })
 }
 
 /// SQLite 连接管理器。
@@ -315,6 +346,172 @@ impl DbManager {
         }
         Ok(SessionDetail { session, sheets })
     }
+
+    /// 查询某列全部数据行（排除 `row_idx=0` 表头行），按 `row_idx` 升序。
+    /// 返回 `(row_idx, value)` 列表，供 processor 命令读取列值。
+    pub fn query_column_cells(
+        &self,
+        sheet_id: i64,
+        col_idx: u32,
+    ) -> Result<Vec<(u32, Option<String>)>, DbError> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT row_idx, value FROM cells
+             WHERE sheet_id = ?1 AND col_idx = ?2 AND row_idx > 0
+             ORDER BY row_idx ASC",
+        )?;
+        let rows = stmt.query_map(params![sheet_id, col_idx as i64], |r| {
+            Ok((r.get::<_, i64>(0)? as u32, r.get::<_, Option<String>>(1)?))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    /// 按表头名查找 `col_idx`（查 `row_idx=0` 的 cell value）。
+    /// 不存在返回 `Ok(None)`。
+    pub fn find_col_idx(&self, sheet_id: i64, header_name: &str) -> Result<Option<u32>, DbError> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let col_idx: Option<i64> = conn
+            .query_row(
+                "SELECT col_idx FROM cells
+                 WHERE sheet_id = ?1 AND row_idx = 0 AND value = ?2",
+                params![sheet_id, header_name],
+                |r| r.get::<_, i64>(0),
+            )
+            .ok();
+        Ok(col_idx.map(|c| c as u32))
+    }
+
+    // ---- Rule CRUD（v1.1.0）----
+
+    /// upsert 一条规则（按 id 冲突覆盖）。
+    pub fn upsert_rule(&self, rule: &Rule) -> Result<(), DbError> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        conn.execute(
+            "INSERT INTO rules (id, name, kind, field, pattern, replacement, enabled, description)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(id) DO UPDATE SET
+                name=excluded.name,
+                kind=excluded.kind,
+                field=excluded.field,
+                pattern=excluded.pattern,
+                replacement=excluded.replacement,
+                enabled=excluded.enabled,
+                description=excluded.description",
+            params![
+                rule.id,
+                rule.name,
+                rule.kind.to_string(),
+                rule.field,
+                rule.pattern,
+                rule.replacement,
+                rule.enabled as i64,
+                rule.description,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// 列出全部规则（按 id 升序）。
+    pub fn list_rules(&self) -> Result<Vec<Rule>, DbError> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT id, name, kind, field, pattern, replacement, enabled, description
+             FROM rules
+             ORDER BY id ASC",
+        )?;
+        let rows = stmt.query_map([], row_to_rule)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    /// 按 id 查找规则。
+    pub fn get_rule(&self, id: &str) -> Result<Option<Rule>, DbError> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let rule = conn
+            .query_row(
+                "SELECT id, name, kind, field, pattern, replacement, enabled, description
+                 FROM rules
+                 WHERE id = ?1",
+                params![id],
+                row_to_rule,
+            )
+            .ok();
+        Ok(rule)
+    }
+
+    /// 切换规则启用状态。不存在返回 `Ok(false)`。
+    pub fn set_rule_enabled(&self, id: &str, enabled: bool) -> Result<bool, DbError> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let affected = conn.execute(
+            "UPDATE rules SET enabled = ?1 WHERE id = ?2",
+            params![enabled as i64, id],
+        )?;
+        Ok(affected > 0)
+    }
+
+    /// 统计规则数。
+    pub fn count_rules(&self) -> Result<i64, DbError> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM rules", [], |r| r.get(0))?;
+        Ok(count)
+    }
+
+    /// 更新规则可填参数（pattern / replacement）。`None` 表示该字段保持不变。
+    /// 返回是否命中（id 存在）。
+    pub fn update_rule_params(
+        &self,
+        id: &str,
+        pattern: Option<&str>,
+        replacement: Option<&str>,
+    ) -> Result<bool, DbError> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let mut touched = false;
+        if let Some(p) = pattern {
+            let n = conn.execute(
+                "UPDATE rules SET pattern = ?1 WHERE id = ?2",
+                params![p, id],
+            )?;
+            touched |= n > 0;
+        }
+        if let Some(r) = replacement {
+            let n = conn.execute(
+                "UPDATE rules SET replacement = ?1 WHERE id = ?2",
+                params![r, id],
+            )?;
+            touched |= n > 0;
+        }
+        if !touched {
+            // 无字段要更新 → 仅返回存在性。
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM rules WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )?;
+            return Ok(count > 0);
+        }
+        Ok(touched)
+    }
+
+    /// 启动时若 DB 无规则，则 seed 三条内置姓名规则。
+    /// 已有规则则不动（保留用户参数修改）。
+    pub fn seed_builtin_rules(&self) -> Result<(), DbError> {
+        if self.count_rules()? > 0 {
+            return Ok(());
+        }
+        // 用 core 的 RuleRegistry::with_defaults() 拿到 3 条内置规则。
+        let reg = RuleRegistry::with_defaults();
+        for rule in reg.list() {
+            self.upsert_rule(rule)?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -331,10 +528,10 @@ mod tests {
     fn new_creates_tables_and_schema_version() {
         let dir = tempfile::tempdir().unwrap();
         let mgr = DbManager::new(dir.path()).unwrap();
-        // schema_version 应为 1
+        // v1.1.0: schema_version=2
         assert_eq!(
             mgr.get_setting("schema_version").unwrap().as_deref(),
-            Some("1")
+            Some("2")
         );
         // DB 文件已生成
         assert!(dir.path().join("ruT0datakit.db").exists());
@@ -474,5 +671,185 @@ mod tests {
         assert_eq!(detail.sheets.len(), 2);
         assert_eq!(detail.sheets[0].id, sh2); // position=0 在前
         assert_eq!(detail.sheets[1].id, sh1); // position=1 在后
+    }
+
+    #[test]
+    fn find_col_idx_and_query_column_cells() {
+        let (_dir, mgr) = open();
+        let sid = mgr.create_session("s", None, "csv", 0).unwrap();
+        let shid = mgr.create_sheet(sid, "Sheet1", 0).unwrap();
+        // 3 列 × 3 行（row_idx=0 表头 + 2 数据行）
+        let cells: Vec<Cell> = vec![
+            Cell {
+                sheet_id: shid,
+                row_idx: 0,
+                col_idx: 0,
+                value: Some("name".into()),
+            },
+            Cell {
+                sheet_id: shid,
+                row_idx: 0,
+                col_idx: 1,
+                value: Some("phone".into()),
+            },
+            Cell {
+                sheet_id: shid,
+                row_idx: 0,
+                col_idx: 2,
+                value: Some("email".into()),
+            },
+            Cell {
+                sheet_id: shid,
+                row_idx: 1,
+                col_idx: 0,
+                value: Some("张三".into()),
+            },
+            Cell {
+                sheet_id: shid,
+                row_idx: 1,
+                col_idx: 1,
+                value: Some("13812345678".into()),
+            },
+            Cell {
+                sheet_id: shid,
+                row_idx: 2,
+                col_idx: 0,
+                value: Some("李四".into()),
+            },
+            Cell {
+                sheet_id: shid,
+                row_idx: 2,
+                col_idx: 1,
+                value: Some("13987654321".into()),
+            },
+        ];
+        mgr.write_cells(shid, &cells).unwrap();
+
+        // find_col_idx
+        assert_eq!(mgr.find_col_idx(shid, "name").unwrap(), Some(0));
+        assert_eq!(mgr.find_col_idx(shid, "phone").unwrap(), Some(1));
+        assert_eq!(mgr.find_col_idx(shid, "nope").unwrap(), None);
+
+        // query_column_cells：排除表头，返回 2 行
+        let col0 = mgr.query_column_cells(shid, 0).unwrap();
+        assert_eq!(col0.len(), 2);
+        assert_eq!(col0[0], (1, Some("张三".into())));
+        assert_eq!(col0[1], (2, Some("李四".into())));
+
+        // col_idx=2 无数据行 → 空
+        let col2 = mgr.query_column_cells(shid, 2).unwrap();
+        assert!(col2.is_empty());
+    }
+
+    // ---- Rule CRUD（v1.1.0）----
+
+    #[test]
+    fn rule_crud_upsert_list_get() {
+        let (_dir, mgr) = open();
+        assert_eq!(mgr.count_rules().unwrap(), 0);
+        let r = RuleRegistry::name_validate_rule();
+        mgr.upsert_rule(&r).unwrap();
+        assert_eq!(mgr.count_rules().unwrap(), 1);
+        // list
+        let list = mgr.list_rules().unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id, "name-validate");
+        assert_eq!(list[0].kind, RuleKind::Validate);
+        assert!(list[0].enabled);
+        // get
+        let got = mgr.get_rule("name-validate").unwrap().unwrap();
+        assert_eq!(got.name, "姓名校验");
+        assert!(mgr.get_rule("nope").unwrap().is_none());
+    }
+
+    #[test]
+    fn rule_crud_upsert_overwrites_same_id() {
+        let (_dir, mgr) = open();
+        let mut r = RuleRegistry::name_validate_rule();
+        mgr.upsert_rule(&r).unwrap();
+        // 修改 pattern 后再 upsert → 覆盖
+        r.pattern = Some(r"^[\u4e00-\u9fa5]{2,8}$".into());
+        mgr.upsert_rule(&r).unwrap();
+        assert_eq!(mgr.count_rules().unwrap(), 1);
+        let got = mgr.get_rule("name-validate").unwrap().unwrap();
+        assert_eq!(got.pattern.as_deref(), Some(r"^[\u4e00-\u9fa5]{2,8}$"));
+    }
+
+    #[test]
+    fn rule_crud_toggle_enabled() {
+        let (_dir, mgr) = open();
+        mgr.upsert_rule(&RuleRegistry::name_validate_rule())
+            .unwrap();
+        assert!(mgr.get_rule("name-validate").unwrap().unwrap().enabled);
+        assert!(mgr.set_rule_enabled("name-validate", false).unwrap());
+        assert!(!mgr.get_rule("name-validate").unwrap().unwrap().enabled);
+        assert!(!mgr.set_rule_enabled("nope", true).unwrap());
+    }
+
+    #[test]
+    fn rule_crud_update_params() {
+        let (_dir, mgr) = open();
+        mgr.upsert_rule(&RuleRegistry::name_validate_rule())
+            .unwrap();
+        // 更新 pattern
+        assert!(mgr
+            .update_rule_params("name-validate", Some(r"^[\u4e00-\u9fa5]{2,8}$"), None)
+            .unwrap());
+        let got = mgr.get_rule("name-validate").unwrap().unwrap();
+        assert_eq!(got.pattern.as_deref(), Some(r"^[\u4e00-\u9fa5]{2,8}$"));
+        // 更新 replacement（mask 规则）
+        mgr.upsert_rule(&RuleRegistry::name_mask_rule()).unwrap();
+        assert!(mgr
+            .update_rule_params("name-mask", None, Some("***"))
+            .unwrap());
+        let got2 = mgr.get_rule("name-mask").unwrap().unwrap();
+        assert_eq!(got2.replacement.as_deref(), Some("***"));
+        // 无字段更新 → 仅返回存在性
+        assert!(mgr.update_rule_params("name-mask", None, None).unwrap());
+        assert!(!mgr.update_rule_params("nope", None, None).unwrap());
+    }
+
+    #[test]
+    fn seed_builtin_rules_inserts_three_when_empty() {
+        let (_dir, mgr) = open();
+        assert_eq!(mgr.count_rules().unwrap(), 0);
+        mgr.seed_builtin_rules().unwrap();
+        assert_eq!(mgr.count_rules().unwrap(), 3);
+        let kinds: Vec<RuleKind> = mgr.list_rules().unwrap().iter().map(|r| r.kind).collect();
+        assert!(kinds.contains(&RuleKind::Mask));
+        assert!(kinds.contains(&RuleKind::Validate));
+        assert!(kinds.contains(&RuleKind::Extract));
+        // 再次 seed 不重复插入
+        mgr.seed_builtin_rules().unwrap();
+        assert_eq!(mgr.count_rules().unwrap(), 3);
+    }
+
+    #[test]
+    fn seed_builtin_rules_preserves_user_param_modifications() {
+        let (_dir, mgr) = open();
+        mgr.seed_builtin_rules().unwrap();
+        // 用户修改了 pattern
+        mgr.update_rule_params("name-validate", Some(r"^[\u4e00-\u9fa5]{2,8}$"), None)
+            .unwrap();
+        // 再次 seed 不应覆盖用户修改
+        mgr.seed_builtin_rules().unwrap();
+        let got = mgr.get_rule("name-validate").unwrap().unwrap();
+        assert_eq!(got.pattern.as_deref(), Some(r"^[\u4e00-\u9fa5]{2,8}$"));
+    }
+
+    #[test]
+    fn rule_kind_round_trip_through_db() {
+        let (_dir, mgr) = open();
+        for r in RuleRegistry::with_defaults().list() {
+            mgr.upsert_rule(r).unwrap();
+        }
+        let list = mgr.list_rules().unwrap();
+        // 确保三种 kind 都能正确反序列化
+        assert_eq!(list.len(), 3);
+        for r in &list {
+            // 确认 kind 字符串化 + 反序列化闭环
+            let s = r.kind.to_string();
+            assert_eq!(RuleKind::from_str_lowercase(&s), Some(r.kind));
+        }
     }
 }

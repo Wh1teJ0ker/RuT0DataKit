@@ -141,6 +141,26 @@ export function reducer(state, action) {
     case ACTION.SET_TSHARK_LOADING:
       return { ...state, tsharkLoading: Boolean(action.payload) };
 
+    // ---- v1.1.0 行状态高亮（脱敏/校验/提取）----
+    case ACTION.APPLY_ROW_STATUSES: {
+      // payload = { sheetId, rowStatuses: { [rowKey]: "default"|"invalid"|"masked"|"hit" } }
+      const { sheetId, rowStatuses } = action.payload;
+      return {
+        ...state,
+        sheets: state.sheets.map((s) => {
+          if (s.id !== sheetId) return s;
+          const rows = s.rows.map((r) =>
+            rowStatuses[r.key] ? { ...r, status: rowStatuses[r.key] } : r
+          );
+          return {
+            ...s,
+            rows,
+            statusHighlights: { ...s.statusHighlights, ...rowStatuses },
+          };
+        }),
+      };
+    }
+
     default:
       return state;
   }

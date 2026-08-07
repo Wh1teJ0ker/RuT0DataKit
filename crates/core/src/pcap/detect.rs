@@ -27,16 +27,16 @@ pub struct TsharkInfo {
 
 /// 设置 tshark 覆盖路径。`None` 清除覆盖，回退到 PATH 中的 `tshark`。
 pub fn set_tshark_path(path: Option<String>) {
-    let mut guard = TSHARK_OVERRIDE.lock().expect("TSHARK_OVERRIDE poisoned");
-    *guard = path.filter(|s| !s.trim().is_empty());
+    // Mutex 中毒仅在持锁线程 panic 且未恢复时发生，此时静默丢弃覆盖值
+    // 优于让整个应用 panic。
+    if let Ok(mut guard) = TSHARK_OVERRIDE.lock() {
+        *guard = path.filter(|s| !s.trim().is_empty());
+    }
 }
 
 /// 读取当前覆盖路径（可能为 None）。
 pub fn get_tshark_path() -> Option<String> {
-    TSHARK_OVERRIDE
-        .lock()
-        .expect("TSHARK_OVERRIDE poisoned")
-        .clone()
+    TSHARK_OVERRIDE.lock().map(|g| g.clone()).unwrap_or(None)
 }
 
 /// 解析实际要调用的 tshark 命令：覆盖路径优先，否则字面量 `tshark`。

@@ -1,8 +1,9 @@
-// Sheet 工厂（T13 拆分自原 state.js monolith）。
+// Sheet 工厂。
 // Sheet 对象结构：{ id, sessionId, name, headers, rows, total, page, pageSize,
 //                  columnOrder, columnVisibility, selection, statusHighlights }
-// v1.0.0（T5）：真实导入流接管。「新建」Tab 产生空表（无列、无行），由用户
-// 在导入或后续列编辑流程中填充；IMPORT_SUCCESS action 用 ImportResult 填充真实 Sheet。
+// 「新建」Tab 产生空表（无列、无行），由用户在导入或后续列编辑流程中填充；
+// IMPORT_SUCCESS action 用 ImportResult 填充真实 Sheet。
+// sessionId 由真实导入流填充（importFile → ImportResult.sessionId）。
 
 import { PAGE_SIZE } from "../constants";
 
@@ -21,7 +22,7 @@ function createEmptySheet(name) {
   const headers = [];
   return {
     id,
-    sessionId: null, // T5 接管后由真实导入流填充
+    sessionId: null, // 真实导入流接管后填充（importFile → ImportResult.sessionId）
     name,
     headers,
     rows: [],
@@ -31,7 +32,7 @@ function createEmptySheet(name) {
     columnOrder: [],
     columnVisibility: {},
     selection: { selectedRowKeys: [], lastSelectedIndex: null },
-    statusHighlights: {}, // 状态高亮触发逻辑开发中，v1.0.0 占位
+    statusHighlights: {}, // v1.1.0 ValidatePanel/MaskPanel/ExtractPanel 触发行高亮
   };
 }
 

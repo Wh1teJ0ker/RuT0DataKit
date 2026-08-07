@@ -27,7 +27,7 @@ export default function AboutCard() {
           ))}
         </Space>
         <Text type="secondary">
-          数据脱敏 / 校验 / 提取工作台（v1.0.0 仅布局壳，业务能力 {DEV_STATUS}）
+          数据脱敏 / 校验 / 提取工作台（v1.1.0 处理器原型已接入，业务能力 {DEV_STATUS}）
         </Text>
       </Space>
     </Card>

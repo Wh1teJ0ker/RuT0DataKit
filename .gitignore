@@ -23,3 +23,14 @@ src-tauri/icons/generate-icons.sh
 
 # Tauri updater 签名私钥（pubkey 在 tauri.conf.json 可入库；私钥永不入库）
 *.key
+
+# Mimosa security scan artifacts (local-only)
+.mimosa/
+**/.mimosa/
+
+# ZCode plan scratch files
+.zcode/plans/
+
+# CTF / test sample data (local-only, not part of release)
+tests/dasctf_ds/
+tests/tips/

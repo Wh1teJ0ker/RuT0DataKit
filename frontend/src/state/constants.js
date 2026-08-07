@@ -36,6 +36,8 @@ export const ACTION = {
   SET_TSHARK_PATH: "SET_TSHARK_PATH",
   SET_TSHARK_DETECTED: "SET_TSHARK_DETECTED",
   SET_TSHARK_LOADING: "SET_TSHARK_LOADING",
+  // v1.1.0 action（脱敏/校验/提取 → 行高亮）
+  APPLY_ROW_STATUSES: "APPLY_ROW_STATUSES",
 };
 
 // 初始空态：无 Sheet。导入前显示 Workbench 空态文案。

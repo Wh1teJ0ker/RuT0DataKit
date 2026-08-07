@@ -2,19 +2,19 @@ import { Button, Empty, Layout } from "antd";
 import MaskPanel from "../panels/MaskPanel";
 import ValidatePanel from "../panels/ValidatePanel";
 import ExtractPanel from "../panels/ExtractPanel";
-import RulesPanel from "../panels/RulesPanel";
 
 const { Sider } = Layout;
 
+// v1.1.0：`rules` 能力改在 Workbench 主区渲染两栏布局，不再走 260px SidePanel。
 const PANELS = {
   mask: MaskPanel,
   validate: ValidatePanel,
   extract: ExtractPanel,
-  rules: RulesPanel,
 };
 
-// 左侧动态能力面板容器：由 activeCapability 驱动切换 4 个占位面板；
+// 左侧动态能力面板容器：由 activeCapability 驱动切换面板；
 // activeCapability === null 显示空态。「⚙ 设置」入口已移至右侧 AiPanel。
+// v1.1.0：`rules` 不在此列（改由 App.jsx 路由到主区 RulesPanel）。
 export default function SidePanel({ activeCapability }) {
   const PanelComp = activeCapability ? PANELS[activeCapability] : null;
 

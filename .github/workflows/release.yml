@@ -84,7 +84,7 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "RuT0DataKit ${{ github.ref_name }}"
-          releaseBody: "See [RELEASE-NOTES.md](docs/versions/1.0.0/RELEASE-NOTES.md) for details."
+          releaseBody: "See [RELEASE-NOTES.md](docs/versions/1.1.0/RELEASE-NOTES.md) for details."
           releaseDraft: false
           prerelease: false
           args: --target ${{ matrix.target }}
@@ -108,62 +108,3 @@ jobs:
             Write-Host "Portable exe not found at $exe, skipping"
           }
         shell: pwsh
-
-  # tauri-action 默认产物名不含 linux/windows/mac 平台字样，
-  # 这里在所有矩阵构建完成后统一重命名为 RuT0DataKit-<ver>-<platform>-<arch>.<ext>
-  rename-assets:
-    name: Rename assets with platform labels
-    needs: release
-    if: always() && needs.release.result == 'success'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Download → rename → re-upload
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.ref_name }}
-          REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          mkdir -p assets && cd assets
-          gh release download "$TAG" --repo "$REPO" --clobber
-
-          # 主产物重命名映射（按扩展名判定平台）
-          # portable exe 已在上一步上传时就带平台名，跳过
-          declare -A renamed
-          for f in *; do
-            case "$f" in
-              *portable*)        echo "skip (already named): $f"; continue ;;
-              *.deb)              new="RuT0DataKit-${TAG}-linux-x64.deb" ;;
-              *.rpm)              new="RuT0DataKit-${TAG}-linux-x64.rpm" ;;
-              *.AppImage.tar.gz)  new="RuT0DataKit-${TAG}-linux-x64.AppImage.tar.gz" ;;
-              *.AppImage)         new="RuT0DataKit-${TAG}-linux-x64.AppImage" ;;
-              *.dmg)              new="RuT0DataKit-${TAG}-mac-arm64.dmg" ;;
-              *.app.tar.gz)       new="RuT0DataKit-${TAG}-mac-arm64.app.tar.gz" ;;
-              *-setup.exe)        new="RuT0DataKit-${TAG}-windows-x64-setup.exe" ;;
-              *.msi)              new="RuT0DataKit-${TAG}-windows-x64.msi" ;;
-              *)                  echo "skip: $f"; continue ;;
-            esac
-            renamed["$f"]="$new"
-          done
-
-          # 签名文件跟随主产物
-          for f in *.sig; do
-            [ -f "$f" ] || continue
-            base="${f%.sig}"
-            if [ -n "${renamed[$base]:-}" ]; then
-              renamed["$f"]="${renamed[$base]}.sig"
-            fi
-          done
-
-          # 执行：删除旧资产 + 本地改名
-          for old in "${!renamed[@]}"; do
-            new="${renamed[$old]}"
-            echo "$old → $new"
-            gh release delete-asset "$TAG" "$old" --repo "$REPO" --yes
-            mv "$old" "$new"
-          done
-
-          # 上传改名后的资产
-          gh release upload "$TAG" * --repo "$REPO"

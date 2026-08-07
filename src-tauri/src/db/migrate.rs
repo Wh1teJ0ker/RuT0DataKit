@@ -1,10 +1,12 @@
 //! 数据库迁移逻辑。
 //!
-//! v1.0.0: 仅 `schema_version=1`，无真实历史版本迁移。
-//! - 首次启动：建表 + 建索引 + 写 `schema_version=1`。
+//! v1.1.0: `schema_version=2`，新增 `rules` 表（v1→v2 增量迁移）。
+//! v1.0.0: `schema_version=1`，无真实历史版本迁移。
+//! - 首次启动：建表 + 建索引 + 写 `schema_version`。
 //! - 后续启动：读 `app_settings.schema_version`；不存在视为首次；存在且 != 当前版本则备份旧 DB 重建。
 //!
-//! v1.1+ 在此扩展版本阶梯式迁移；当前框架占位。
+//! v1→v2 迁移：仅追加 `rules` 表 + `idx_rules_kind` 索引（`IF NOT EXISTS` 幂等），
+//! 不影响历史数据，无需备份重建。
 
 use std::path::{Path, PathBuf};
 
@@ -49,7 +51,33 @@ pub fn bootstrap(conn: &Connection) -> Result<(), DbError> {
     Ok(())
 }
 
-/// 初始化迁移：首次建表；版本不兼容则备份旧 DB 重建。
+/// v1→v2 增量迁移：追加 `rules` 表 + `idx_rules_kind` 索引（幂等），
+/// 更新 `schema_version=2`。不影响历史数据。
+pub fn migrate_v1_to_v2(conn: &Connection) -> Result<(), DbError> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS rules (
+            id          TEXT PRIMARY KEY,
+            name        TEXT NOT NULL,
+            kind        TEXT NOT NULL,
+            field       TEXT,
+            pattern     TEXT,
+            replacement TEXT,
+            enabled     INTEGER NOT NULL DEFAULT 1,
+            description TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_rules_kind ON rules(kind);",
+    )
+    .map_err(DbError::Sqlite)?;
+    conn.execute(
+        "INSERT INTO app_settings(key, value) VALUES('schema_version', ?1)
+         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        rusqlite::params![SCHEMA_VERSION.to_string()],
+    )
+    .map_err(DbError::Sqlite)?;
+    Ok(())
+}
+
+/// 初始化迁移：首次建表；版本不兼容则备份旧 DB 重建；v1→v2 增量迁移。
 ///
 /// - `db_path`: DB 文件路径（`app_config_dir/ruT0datakit.db`）。
 /// - `conn`: 已打开的连接。
@@ -66,8 +94,13 @@ pub fn migrate(db_path: &Path, conn: &Connection) -> Result<String, DbError> {
             conn.execute_batch(SCHEMA_DDL).map_err(DbError::Sqlite)?;
             Ok(format!("schema_version={} ok", v))
         }
+        Some(1) if SCHEMA_VERSION == 2 => {
+            // v1→v2 增量迁移：追加 rules 表，不备份重建。
+            migrate_v1_to_v2(conn)?;
+            Ok("migrated v1→v2 (rules table added)".into())
+        }
         Some(v) => {
-            // 版本不兼容（低于当前）：备份旧 DB 后重建。
+            // 版本不兼容（高于当前或无法增量迁移）：备份旧 DB 后重建。
             let ts = backup_timestamp();
             let bak: PathBuf = db_path
                 .with_extension(format!("db.bak.{}", ts))
@@ -83,7 +116,8 @@ pub fn migrate(db_path: &Path, conn: &Connection) -> Result<String, DbError> {
                  DROP TABLE IF EXISTS operations; \
                  DROP TABLE IF EXISTS sheets; \
                  DROP TABLE IF EXISTS sessions; \
-                 DROP TABLE IF EXISTS app_settings;",
+                 DROP TABLE IF EXISTS app_settings; \
+                 DROP TABLE IF EXISTS rules;",
             )
             .map_err(DbError::Sqlite)?;
             bootstrap(conn)?;
@@ -127,5 +161,53 @@ mod tests {
         let note = migrate(&db_path, &conn).unwrap();
         assert!(note.contains("ok"));
         assert_eq!(read_schema_version(&conn).unwrap(), Some(SCHEMA_VERSION));
+    }
+
+    #[test]
+    fn migrate_v1_to_v2_adds_rules_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("ruT0datakit.db");
+        let conn = Connection::open(&db_path).unwrap();
+        // 模拟 v1：用旧 DDL 建表 + 写 schema_version=1（不含 rules 表）。
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS sessions (id INTEGER PRIMARY KEY, name TEXT);
+             CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT);
+             INSERT INTO app_settings(key, value) VALUES('schema_version', '1');",
+        )
+        .unwrap();
+        assert_eq!(read_schema_version(&conn).unwrap(), Some(1));
+        // 迁移到 v2。
+        let note = migrate(&db_path, &conn).unwrap();
+        assert!(note.contains("v1→v2"));
+        assert_eq!(read_schema_version(&conn).unwrap(), Some(2));
+        // rules 表已存在。
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='rules'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn migrate_v1_to_v2_preserves_existing_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("ruT0datakit.db");
+        let conn = Connection::open(&db_path).unwrap();
+        // v1 + 一些数据。
+        conn.execute_batch(
+            "CREATE TABLE sessions (id INTEGER PRIMARY KEY, name TEXT);
+             CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT);
+             INSERT INTO app_settings(key, value) VALUES('schema_version', '1');
+             INSERT INTO sessions(id, name) VALUES(1, 'preserved');",
+        )
+        .unwrap();
+        migrate(&db_path, &conn).unwrap();
+        let name: String = conn
+            .query_row("SELECT name FROM sessions WHERE id=1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(name, "preserved");
     }
 }

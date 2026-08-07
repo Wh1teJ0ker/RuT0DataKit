@@ -1,23 +1,23 @@
-/* DataTable 状态高亮样式（T3）。
- * v1.0.0 仅 default 触发；invalid/masked/hit 在 CSS 占位，触发逻辑是 v1.2+。
+/* DataTable 状态高亮样式（T3 + v1.1.0 触发）。
+ * v1.0.0 仅 default；v1.1.0 起脱敏/校验/提取能力触发 invalid/masked/hit。
  */
 
-/* default：正常行（v1.0.0 mock 全 default） */
+/* default：正常行 */
 .ant-table-row.default > td {
   background: #fff;
 }
 
-/* invalid：非法行（v1.2+ 触发） */
+/* invalid：校验不通过行（v1.1.0 ValidatePanel 触发） */
 .ant-table-row.invalid > td {
   background: #fff1f0;
 }
 
-/* masked：脱敏行（v1.2+ 触发） */
+/* masked：已脱敏行（v1.1.0 MaskPanel 触发） */
 .ant-table-row.masked > td {
   background: #f0f5ff;
 }
 
-/* hit：命中行（v1.2+ 触发） */
+/* hit：提取命中行（v1.1.0 ExtractPanel 触发） */
 .ant-table-row.hit > td {
   background: #f6ffed;
 }
