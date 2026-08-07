@@ -89,22 +89,3 @@ jobs:
           prerelease: false
           args: --target ${{ matrix.target }}
           updaterJsonPreferNsis: true
-
-      # Windows：上传便携版 exe（无需安装，直接双击运行）
-      # tauri-action 只上传安装包 (msi/nsis)，裸 exe 需手动上传
-      # 注意：cargo workspace 根在仓库根（不在 src-tauri/），target 在仓库根
-      - name: Upload portable exe (Windows)
-        if: runner.os == 'Windows'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          $exe = "target/${{ matrix.target }}/release/ruT0-data-kit.exe"
-          if (Test-Path $exe) {
-            $new = "RuT0DataKit-${{ github.ref_name }}-windows-x64-portable.exe"
-            Copy-Item $exe $new
-            gh release upload "${{ github.ref_name }}" $new --repo "${{ github.repository }}" --clobber
-            Write-Host "Uploaded portable: $new"
-          } else {
-            Write-Host "Portable exe not found at $exe, skipping"
-          }
-        shell: pwsh
