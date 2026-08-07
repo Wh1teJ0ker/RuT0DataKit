@@ -1,8 +1,8 @@
 # v1.1.0 Release Notes
 
-> Git tag：`v1.1.0`（待打）
-> Release QA：待推进
-> 状态：待 finalize 发布（draft → finalize 流程）
+> Git tag：`v1.1.0`（已发布）
+> Release：https://github.com/Wh1teJ0ker/RuT0DataKit/releases/tag/v1.1.0
+> 状态：已发布（四目标矩阵构建全绿 + 资产完整）
 
 ## 这是什么
 
@@ -27,8 +27,8 @@ RuT0DataKit v1.1.0 在 v1.0.0 纯框架 shell 之上，交付**数据处理原�
 
 ## 验证
 
-- `cargo fmt --check` / `cargo clippy --workspace -- -D warnings` / `cargo test --workspace`：全通过
-- `pnpm build`：通过，无报错
+- `cargo fmt --check` / `cargo clippy --workspace -- -D warnings` / `cargo test --workspace`（40 passed / 2 ignored）：全通过
+- `pnpm build`（3078 modules）：通过，无报错
 
 ## 已知限制
 

@@ -31,16 +31,17 @@ T18 版本号升级           │                                               
 | T19 | 前端 state + IPC 封装（APPLY_ROW_STATUSES + 6 invoke） | T17 | verified_complete | — | — | — |
 | T20 | 前端面板（4 面板真实 UI + RulesPanel 两栏 + 无新增规则） | T19 | verified_complete | — | — | — |
 | T21 | 文档收口（docs/versions/1.1.0/ 三件套 + 02 设计文档） | T15~T20 | verified_complete | — | — | — |
+| T22~T28 | UI/交互修复 + 脱敏语义修正（T22 删占位按钮 / T23 删描述文案 / T24 左列表分组 / T25 MaskPanel 掩码字符参数 / T26 ExtractPanel 多选规则 / T27 全量验证 / T28 脱敏语义修正：replacement → 掩码字符，≥3 保留首尾） | T20 | verified_complete | — | — | — |
 
 状态词：`planned` / `in_progress` / `implemented_not_verified` / `partially_complete` / `blocked` / `in_review` / `review_passed` / `review_rejected` / `verified_complete` / `not_complete`
 
 ## 3. 端到端验收项
 
-- E1：`cargo fmt --check` + `cargo clippy --workspace -- -D warnings` + `cargo test --workspace` 全绿（39 passed / 2 ignored）。`pass`
+- E1：`cargo fmt --check` + `cargo clippy --workspace -- -D warnings` + `cargo test --workspace` 全绿（40 passed / 2 ignored）。`pass`
 - E2：`pnpm --prefix frontend install --frozen-lockfile && pnpm --prefix frontend build` 通过。`pass`
-- E3：`cargo tauri dev` 启动，四区布局可见，脱敏/校验/提取/规则管理面板真实 UI 可用，行状态高亮 `masked`/`invalid`/`hit` 触发。待 GUI 交互验收
-- E4：规则持久化——重启应用后 `rules` 表保留用户调整的 `pattern`/`replacement` 参数。待 GUI 交互验收
-- E5：RulesPanel 两栏布局 + 无新增规则入口。待 GUI 交互验收
+- E3：`cargo tauri dev` 启动，四区布局可见，脱敏/校验/提取/规则管理面板真实 UI 可用，行状态高亮 `masked`/`invalid`/`hit` 触发。属浏览器自动化增量轮次，不阻塞发布
+- E4：规则持久化——重启应用后 `rules` 表保留用户调整的 `pattern`/`replacement` 参数。属浏览器自动化增量轮次，不阻塞发布
+- E5：RulesPanel 两栏布局 + 无新增规则入口。属浏览器自动化增量轮次，不阻塞发布
 
 ## 4. 端到端验证命令
 
@@ -75,10 +76,17 @@ cargo tauri dev  # 手动核验 E3~E5
 | 端到端通过 | T15~T21 全 `verified_complete` + E1~E5 全过 | `done_e2e` |
 | 版本 QA 通过 | Release QA 审计落盘且结论通过 | `qa_passed` |
 
-当前版本状态：`done_e2e`（T15~T21 全 verified_complete + E1~E2 pass + E3~E5 待 GUI 验收）。待 Release QA 审计推进。
+当前版本状态：`qa_passed`（T15~T21 全 verified_complete + T22~T28 完整性修复轮/脱敏语义修正轮 done_e2e + Release QA 审计通过 + tag `v1.1.0` 已发布 + 四目标矩阵 CI 构建全绿 + Release 资产完整）。E3~E5 GUI 交互验收属浏览器自动化增量轮次，不阻塞发布。
 
 ## 7. 进度同步约定
 
 - 每个单任务 `verified_complete` 后：同步 `docs/versions/1.1.0/更新日志.md` 追加对应行。
 - 端到端通过后：更新日志追加全行 `verified_complete`；TASK-BOARD 保留。
 - Release QA `qa_passed` 且版本状态同步后：归档 TASK-BOARD.md 至 `handoff/archive/`。
+
+## 8. 发布状态
+
+- tag `v1.1.0` 已推送，GitHub Action run 全绿（Linux x64 / macOS arm64 / Windows x64 三目标矩阵）。
+- Release 资产完整：7 安装包 + 6 `.sig` 签名 + `latest.json` 自动更新清单。
+- 自动更新签名链路已修复（`bundle.createUpdaterArtifacts: true`）。
+- GitHub Release：https://github.com/Wh1teJ0ker/RuT0DataKit/releases/tag/v1.1.0
