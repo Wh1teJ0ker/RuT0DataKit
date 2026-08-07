@@ -2691,6 +2691,7 @@ name = "ruT0-data-kit"
 version = "1.1.0"
 dependencies = [
  "chrono",
+ "regex",
  "ruT0-data-kit-core",
  "rusqlite",
  "serde",

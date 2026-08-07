@@ -1,5 +1,10 @@
 //! SQLite 持久层入口。
 //!
+//! v1.1.1: `SCHEMA_VERSION=3`，`operations` 表新增 `before_snapshot_json` 列
+//! 存撤销前置快照；新增 `idx_cells_sheet_col` 复合索引供搜索加速；`DbManager`
+//! 新增 7 个方法（列范围查询 / 关键字搜索 / 正则搜索 / 计数 / 列内替换 /
+//! 全表替换 / 按 id 查 operation），全部参数化 SQL，供 T30/T31/T32 命令层调用。
+//!
 //! v1.1.0: 新增 `rules` 表 CRUD（`upsert_rule`/`list_rules`/`get_rule`/
 //! `set_rule_enabled`/`count_rules`/`update_rule_params`/`seed_builtin_rules`），
 //! 6 表 + 4 索引，`SCHEMA_VERSION=2`。
@@ -19,6 +24,7 @@ pub use error::DbError;
 use std::path::Path;
 use std::sync::Mutex;
 
+use regex::Regex;
 use ruT0_data_kit_core::processor::rules::{Rule, RuleKind, RuleRegistry};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
@@ -31,6 +37,35 @@ pub struct Cell {
     pub row_idx: u32,
     pub col_idx: u32,
     pub value: Option<String>,
+}
+
+/// `operations` 表一行（撤销/重做用）。
+///
+/// `before_snapshot_json` / `result_snapshot_json` 存撤销/重做所需的 cell 快照
+/// JSON（由命令层序列化）；DB 层只做透明存储。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OperationRow {
+    pub id: i64,
+    pub sheet_id: Option<i64>,
+    pub kind: String,
+    pub params_json: Option<String>,
+    pub before_snapshot_json: Option<String>,
+    pub result_snapshot_json: Option<String>,
+    pub created_at: String,
+}
+
+/// 正则搜索结果：每条命中 cell + 该 cell 内所有匹配区间 `(start, end)`
+/// （字节偏移，`end` 为 exclusive 结束位置）。
+pub type RegexSearchResult = Vec<(Cell, Vec<(usize, usize)>)>;
+
+/// 可撤销操作摘要（撤销/重做列表用）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UndoableOpRow {
+    pub id: i64,
+    pub kind: String,
+    pub created_at: String,
 }
 
 /// `sessions` 摘要（列表用）。
@@ -248,12 +283,27 @@ impl DbManager {
         params_json: &str,
         result_json: &str,
     ) -> Result<i64, DbError> {
+        self.log_operation_with_snapshot(sheet_id, kind, params_json, None, result_json)
+    }
+
+    /// 记录操作日志（带撤销前置快照），返回 `id`。
+    ///
+    /// `before_snapshot_json` 为撤销所需的前置 cell 快照 JSON（由命令层序列化），
+    /// `None` 表示该操作不可撤销。`result_json` 为操作结果快照（重做用）。
+    pub fn log_operation_with_snapshot(
+        &self,
+        sheet_id: Option<i64>,
+        kind: &str,
+        params_json: &str,
+        before_snapshot_json: Option<&str>,
+        result_json: &str,
+    ) -> Result<i64, DbError> {
         let conn = self.conn.lock().expect("db mutex poisoned");
         let now = now_rfc3339();
         conn.execute(
-            "INSERT INTO operations (sheet_id, kind, params_json, result_snapshot_json, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![sheet_id, kind, params_json, result_json, now],
+            "INSERT INTO operations (sheet_id, kind, params_json, before_snapshot_json, result_snapshot_json, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![sheet_id, kind, params_json, before_snapshot_json, result_json, now],
         )?;
         Ok(conn.last_insert_rowid())
     }
@@ -512,6 +562,408 @@ impl DbManager {
         }
         Ok(())
     }
+
+    // ---- 搜索 / 替换 / 操作日志查询（v1.1.1）----
+
+    /// 查询某列指定 row_idx 范围的 cells（搜索分页用，排除 `row_idx=0` 表头）。
+    ///
+    /// 按 `row_idx` 升序返回，分页用 `OFFSET`/`LIMIT`。`offset`/`limit` 为 0
+    /// 时分别视为 0/0（返回空）。
+    pub fn query_column_cells_with_row_idx_range(
+        &self,
+        sheet_id: i64,
+        col_idx: u32,
+        offset: u32,
+        limit: u32,
+    ) -> Result<Vec<Cell>, DbError> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT sheet_id, row_idx, col_idx, value FROM cells
+             WHERE sheet_id = ?1 AND col_idx = ?2 AND row_idx > 0
+             ORDER BY row_idx ASC
+             LIMIT ?3 OFFSET ?4",
+        )?;
+        let rows = stmt.query_map(
+            params![sheet_id, col_idx as i64, limit as i64, offset as i64],
+            |r| {
+                Ok(Cell {
+                    sheet_id: r.get::<_, i64>(0)?,
+                    row_idx: r.get::<_, i64>(1)? as u32,
+                    col_idx: r.get::<_, i64>(2)? as u32,
+                    value: r.get::<_, Option<String>>(3)?,
+                })
+            },
+        )?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    /// 关键字搜索（`LIKE '%kw%'` + `ESCAPE '\'`）。`col_idx=None` 搜全表所有列。
+    /// 返回命中 cells（按 `row_idx`、`col_idx` 升序，排除 `row_idx=0` 表头）。
+    ///
+    /// `keyword` 中的 `%`/`_`/`\` 会被转义为字面字符，避免改变 LIKE 语义。
+    pub fn search_cells(
+        &self,
+        sheet_id: i64,
+        col_idx: Option<u32>,
+        keyword: &str,
+        offset: u32,
+        limit: u32,
+    ) -> Result<Vec<Cell>, DbError> {
+        let pattern = format!("%{}%", escape_like(keyword));
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let map_cell = |r: &rusqlite::Row<'_>| -> rusqlite::Result<Cell> {
+            Ok(Cell {
+                sheet_id: r.get::<_, i64>(0)?,
+                row_idx: r.get::<_, i64>(1)? as u32,
+                col_idx: r.get::<_, i64>(2)? as u32,
+                value: r.get::<_, Option<String>>(3)?,
+            })
+        };
+        let mut out = Vec::new();
+        if let Some(c) = col_idx {
+            // col_idx 限定列搜索。SQL 固定，仅参数绑定。
+            let mut stmt = conn.prepare(
+                "SELECT sheet_id, row_idx, col_idx, value FROM cells
+                 WHERE sheet_id = ?1 AND col_idx = ?2 AND row_idx > 0
+                   AND value LIKE ?3 ESCAPE '\\'
+                 ORDER BY row_idx ASC, col_idx ASC
+                 LIMIT ?4 OFFSET ?5",
+            )?;
+            let rows = stmt.query_map(
+                params![sheet_id, c as i64, pattern, limit as i64, offset as i64],
+                map_cell,
+            )?;
+            for row in rows {
+                out.push(row?);
+            }
+        } else {
+            // 全表所有列搜索（不带 col_idx 条件）。
+            let mut stmt = conn.prepare(
+                "SELECT sheet_id, row_idx, col_idx, value FROM cells
+                 WHERE sheet_id = ?1 AND row_idx > 0
+                   AND value LIKE ?2 ESCAPE '\\'
+                 ORDER BY row_idx ASC, col_idx ASC
+                 LIMIT ?3 OFFSET ?4",
+            )?;
+            let rows = stmt.query_map(
+                params![sheet_id, pattern, limit as i64, offset as i64],
+                map_cell,
+            )?;
+            for row in rows {
+                out.push(row?);
+            }
+        }
+        Ok(out)
+    }
+
+    /// 正则搜索：SQL `LIKE` 预筛（用整个 pattern 做粗筛，`%`/`_`/`\` 转义）
+    /// + Rust `regex` 精确匹配。返回命中 cells + 每条命中的所有匹配区间
+    ///   `(start, end)`（按字节偏移；`end` 是 exclusive 结束位置）。
+    ///
+    /// 预筛保证不漏（宁可多筛再由 regex 过滤）；`pattern` 编译失败返回 `Err`，不 panic。
+    /// 分页在 Rust 侧做（regex 过滤后再切片），`offset`/`limit` 作用于最终命中结果。
+    pub fn search_cells_regex(
+        &self,
+        sheet_id: i64,
+        col_idx: Option<u32>,
+        pattern: &str,
+        offset: u32,
+        limit: u32,
+    ) -> Result<RegexSearchResult, DbError> {
+        let re = Regex::new(pattern)
+            .map_err(|e| DbError::Migration(format!("invalid regex `{}`: {}", pattern, e)))?;
+        // LIKE 预筛：不使用 pattern 字面粗筛（regex 元字符如 \d 不会匹配字面值），
+        // 而是用 `%` 匹配所有非空 value 行，再由 Rust regex 精确过滤。
+        // 这样保证不漏；命中量受 sheet 数据量限制，由 regex 二次精确匹配。
+        let like_pattern = "%".to_string();
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let map_cell = |r: &rusqlite::Row<'_>| -> rusqlite::Result<Cell> {
+            Ok(Cell {
+                sheet_id: r.get::<_, i64>(0)?,
+                row_idx: r.get::<_, i64>(1)? as u32,
+                col_idx: r.get::<_, i64>(2)? as u32,
+                value: r.get::<_, Option<String>>(3)?,
+            })
+        };
+        let mut out: RegexSearchResult = Vec::new();
+        if let Some(c) = col_idx {
+            let mut stmt = conn.prepare(
+                "SELECT sheet_id, row_idx, col_idx, value FROM cells
+                 WHERE sheet_id = ?1 AND col_idx = ?2 AND row_idx > 0
+                   AND value LIKE ?3 ESCAPE '\\'
+                 ORDER BY row_idx ASC, col_idx ASC",
+            )?;
+            let rows = stmt.query_map(params![sheet_id, c as i64, like_pattern], map_cell)?;
+            for row in rows {
+                let cell = row?;
+                if let Some(ref val) = cell.value {
+                    let spans: Vec<(usize, usize)> =
+                        re.find_iter(val).map(|m| (m.start(), m.end())).collect();
+                    if !spans.is_empty() {
+                        out.push((cell, spans));
+                    }
+                }
+            }
+        } else {
+            let mut stmt = conn.prepare(
+                "SELECT sheet_id, row_idx, col_idx, value FROM cells
+                 WHERE sheet_id = ?1 AND row_idx > 0
+                   AND value LIKE ?2 ESCAPE '\\'
+                 ORDER BY row_idx ASC, col_idx ASC",
+            )?;
+            let rows = stmt.query_map(params![sheet_id, like_pattern], map_cell)?;
+            for row in rows {
+                let cell = row?;
+                if let Some(ref val) = cell.value {
+                    let spans: Vec<(usize, usize)> =
+                        re.find_iter(val).map(|m| (m.start(), m.end())).collect();
+                    if !spans.is_empty() {
+                        out.push((cell, spans));
+                    }
+                }
+            }
+        }
+        // 在 Rust 侧分页（LIKE 预筛结果可能大于 limit，regex 过滤后再切片）。
+        let start = (offset as usize).min(out.len());
+        let end = (start + limit as usize).min(out.len());
+        Ok(out[start..end].to_vec())
+    }
+
+    /// 统计搜索结果总数（分页 total）。语义与 `search_cells` 一致：
+    /// `LIKE '%kw%'` + `ESCAPE '\'`，`col_idx=None` 搜全表所有列。
+    pub fn count_search_results(
+        &self,
+        sheet_id: i64,
+        col_idx: Option<u32>,
+        keyword: &str,
+    ) -> Result<u32, DbError> {
+        let pattern = format!("%{}%", escape_like(keyword));
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let count: i64 = if let Some(c) = col_idx {
+            conn.query_row(
+                "SELECT COUNT(*) FROM cells
+                 WHERE sheet_id = ?1 AND col_idx = ?2 AND row_idx > 0
+                   AND value LIKE ?3 ESCAPE '\\'",
+                params![sheet_id, c as i64, pattern],
+                |r| r.get(0),
+            )?
+        } else {
+            conn.query_row(
+                "SELECT COUNT(*) FROM cells
+                 WHERE sheet_id = ?1 AND row_idx > 0
+                   AND value LIKE ?2 ESCAPE '\\'",
+                params![sheet_id, pattern],
+                |r| r.get(0),
+            )?
+        };
+        Ok(count.max(0) as u32)
+    }
+
+    /// 列内批量替换。返回 `(受影响行数, before 快照, after 快照)`。
+    ///
+    /// `use_regex=true` 时用 `regex::Regex` 替换 `from` → `to`（`from` 为正则
+    /// pattern，编译失败返回 `Err`）；`false` 时用 `str::replace` 做字面替换。
+    /// 仅返回有变化的行（before/after 一一对应），`before` 含原始值，`after`
+    /// 含替换后值。所有写入在单事务内完成，保证原子性。
+    pub fn replace_in_column_cells(
+        &self,
+        sheet_id: i64,
+        col_idx: u32,
+        from: &str,
+        to: &str,
+        use_regex: bool,
+    ) -> Result<(u32, Vec<Cell>, Vec<Cell>), DbError> {
+        self.replace_cells_inner(sheet_id, Some(col_idx), from, to, use_regex)
+    }
+
+    /// 全表替换（所有列）。返回 `(受影响行数, before 快照, after 快照)`。
+    /// 语义同 `replace_in_column_cells`，但不限定 `col_idx`。
+    pub fn replace_all_cells(
+        &self,
+        sheet_id: i64,
+        from: &str,
+        to: &str,
+        use_regex: bool,
+    ) -> Result<(u32, Vec<Cell>, Vec<Cell>), DbError> {
+        self.replace_cells_inner(sheet_id, None, from, to, use_regex)
+    }
+
+    /// 按 id 查询单条 operation（撤销/重做用）。不存在返回 `Ok(None)`。
+    pub fn query_operation_by_id(&self, op_id: i64) -> Result<Option<OperationRow>, DbError> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let row = conn
+            .query_row(
+                "SELECT id, sheet_id, kind, params_json, before_snapshot_json,
+                        result_snapshot_json, created_at
+                 FROM operations
+                 WHERE id = ?1",
+                params![op_id],
+                |r| {
+                    Ok(OperationRow {
+                        id: r.get::<_, i64>(0)?,
+                        sheet_id: r.get::<_, Option<i64>>(1)?,
+                        kind: r.get::<_, String>(2)?,
+                        params_json: r.get::<_, Option<String>>(3)?,
+                        before_snapshot_json: r.get::<_, Option<String>>(4)?,
+                        result_snapshot_json: r.get::<_, Option<String>>(5)?,
+                        created_at: r.get::<_, String>(6)?,
+                    })
+                },
+            )
+            .ok();
+        Ok(row)
+    }
+
+    /// `replace_in_column_cells` / `replace_all_cells` 的共享实现。
+    ///
+    /// `col_filter`：`Some(c)` 限定单列，`None` 全表所有列。
+    /// 单事务内：查 before 快照 → 计算替换值 → 筛有变化的行 → 批量 upsert
+    /// after 值 → 返回 `(affected, before, after)`。
+    fn replace_cells_inner(
+        &self,
+        sheet_id: i64,
+        col_filter: Option<u32>,
+        from: &str,
+        to: &str,
+        use_regex: bool,
+    ) -> Result<(u32, Vec<Cell>, Vec<Cell>), DbError> {
+        let re = if use_regex {
+            Some(
+                Regex::new(from)
+                    .map_err(|e| DbError::Migration(format!("invalid regex `{}`: {}", from, e)))?,
+            )
+        } else {
+            None
+        };
+        let mut conn = self.conn.lock().expect("db mutex poisoned");
+        let tx = conn.transaction()?;
+        // 抓 before 快照（限定列 / 全表，排除表头 row_idx=0）。
+        let before: Vec<Cell> = {
+            let map_cell = |r: &rusqlite::Row<'_>| -> rusqlite::Result<Cell> {
+                Ok(Cell {
+                    sheet_id: r.get::<_, i64>(0)?,
+                    row_idx: r.get::<_, i64>(1)? as u32,
+                    col_idx: r.get::<_, i64>(2)? as u32,
+                    value: r.get::<_, Option<String>>(3)?,
+                })
+            };
+            let mut out = Vec::new();
+            if let Some(c) = col_filter {
+                let mut stmt = tx.prepare(
+                    "SELECT sheet_id, row_idx, col_idx, value FROM cells
+                     WHERE sheet_id = ?1 AND col_idx = ?2 AND row_idx > 0
+                     ORDER BY row_idx ASC, col_idx ASC",
+                )?;
+                let rows = stmt.query_map(params![sheet_id, c as i64], map_cell)?;
+                for r in rows {
+                    out.push(r?);
+                }
+            } else {
+                let mut stmt = tx.prepare(
+                    "SELECT sheet_id, row_idx, col_idx, value FROM cells
+                     WHERE sheet_id = ?1 AND row_idx > 0
+                     ORDER BY row_idx ASC, col_idx ASC",
+                )?;
+                let rows = stmt.query_map(params![sheet_id], map_cell)?;
+                for r in rows {
+                    out.push(r?);
+                }
+            }
+            out
+        };
+        // 计算替换值，筛有变化的行。
+        let mut before_changed: Vec<Cell> = Vec::new();
+        let mut after_changed: Vec<Cell> = Vec::new();
+        for c in &before {
+            if let Some(ref val) = c.value {
+                let new_val = if let Some(ref re) = re {
+                    re.replace_all(val, to).into_owned()
+                } else {
+                    val.replace(from, to)
+                };
+                if new_val != *val {
+                    before_changed.push(c.clone());
+                    after_changed.push(Cell {
+                        sheet_id: c.sheet_id,
+                        row_idx: c.row_idx,
+                        col_idx: c.col_idx,
+                        value: Some(new_val),
+                    });
+                }
+            }
+        }
+        // 批量写回 after 值（同一事务）。
+        if !after_changed.is_empty() {
+            let mut stmt = tx.prepare(
+                "INSERT INTO cells (sheet_id, row_idx, col_idx, value)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(sheet_id, row_idx, col_idx) DO UPDATE SET value=excluded.value",
+            )?;
+            for c in &after_changed {
+                stmt.execute(params![
+                    sheet_id,
+                    c.row_idx as i64,
+                    c.col_idx as i64,
+                    c.value,
+                ])?;
+            }
+        }
+        tx.commit()?;
+        let affected = after_changed.len() as u32;
+        Ok((affected, before_changed, after_changed))
+    }
+
+    /// 列出某 sheet 的可撤销操作（最近 `limit` 条，按 `created_at` DESC）。
+    ///
+    /// 仅返回 kind ∈ {`mask`, `replace_in_column`, `replace_all`} 的操作——
+    /// 即「就地变更」类操作；`import`/`validate`/`extract`/`undo`/`redo` 等
+    /// 只读或辅助操作不入撤销栈。`kind` 值是硬编码常量（非用户输入），
+    /// IN 子句无注入风险；`sheet_id`/`limit` 仍用 `?N` + `params![]` 绑定。
+    pub fn list_undoable_operations(
+        &self,
+        sheet_id: i64,
+        limit: u32,
+    ) -> Result<Vec<UndoableOpRow>, DbError> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT id, kind, created_at FROM operations
+             WHERE sheet_id = ?1 AND kind IN ('mask', 'replace_in_column', 'replace_all')
+             ORDER BY created_at DESC
+             LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![sheet_id, limit as i64], |r| {
+            Ok(UndoableOpRow {
+                id: r.get::<_, i64>(0)?,
+                kind: r.get::<_, String>(1)?,
+                created_at: r.get::<_, String>(2)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+}
+
+/// `LIKE` 模式转义：把 `\` → `\\`，`%` → `\%`，`_` → `\_`，
+/// 配合 `ESCAPE '\'` 子句让 keyword 中的特殊字符按字面匹配。
+fn escape_like(keyword: &str) -> String {
+    let mut out = String::with_capacity(keyword.len());
+    for ch in keyword.chars() {
+        match ch {
+            '\\' | '%' | '_' => {
+                out.push('\\');
+                out.push(ch);
+            }
+            _ => out.push(ch),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -528,10 +980,10 @@ mod tests {
     fn new_creates_tables_and_schema_version() {
         let dir = tempfile::tempdir().unwrap();
         let mgr = DbManager::new(dir.path()).unwrap();
-        // v1.1.0: schema_version=2
+        // v1.1.1: schema_version=3
         assert_eq!(
             mgr.get_setting("schema_version").unwrap().as_deref(),
-            Some("2")
+            Some("3")
         );
         // DB 文件已生成
         assert!(dir.path().join("ruT0datakit.db").exists());
@@ -851,5 +1303,283 @@ mod tests {
             let s = r.kind.to_string();
             assert_eq!(RuleKind::from_str_lowercase(&s), Some(r.kind));
         }
+    }
+
+    // ---- 搜索 / 替换 / 操作日志查询（v1.1.1）----
+
+    /// 构造一个 3 列 × 4 行的 sheet（row_idx=0 表头）。
+    /// col0=name, col1=phone, col2=memo。
+    fn build_search_sheet(mgr: &DbManager) -> i64 {
+        let sid = mgr.create_session("s", None, "csv", 0).unwrap();
+        let shid = mgr.create_sheet(sid, "Sheet1", 0).unwrap();
+        let cells: Vec<Cell> = vec![
+            cell(shid, 0, 0, "name"),
+            cell(shid, 0, 1, "phone"),
+            cell(shid, 0, 2, "memo"),
+            cell(shid, 1, 0, "张三"),
+            cell(shid, 1, 1, "13812345678"),
+            cell(shid, 1, 2, "vip"),
+            cell(shid, 2, 0, "李四"),
+            cell(shid, 2, 1, "13987654321"),
+            cell(shid, 2, 2, "普通"),
+            cell(shid, 3, 0, "张五"),
+            cell(shid, 3, 1, "13700000000"),
+            cell(shid, 3, 2, "50%"),
+        ];
+        mgr.write_cells(shid, &cells).unwrap();
+        shid
+    }
+
+    fn cell(shid: i64, row: u32, col: u32, val: &str) -> Cell {
+        Cell {
+            sheet_id: shid,
+            row_idx: row,
+            col_idx: col,
+            value: Some(val.into()),
+        }
+    }
+
+    #[test]
+    fn query_column_cells_with_row_idx_range_paged() {
+        let (_dir, mgr) = open();
+        let shid = build_search_sheet(&mgr);
+        // col=0 数据行 row_idx=1,2,3 → offset=0 limit=2 取前 2 行。
+        let p1 = mgr
+            .query_column_cells_with_row_idx_range(shid, 0, 0, 2)
+            .unwrap();
+        assert_eq!(p1.len(), 2);
+        assert_eq!(p1[0].row_idx, 1);
+        assert_eq!(p1[0].value.as_deref(), Some("张三"));
+        assert_eq!(p1[1].row_idx, 2);
+        // offset=2 取剩余 1 行。
+        let p2 = mgr
+            .query_column_cells_with_row_idx_range(shid, 0, 2, 2)
+            .unwrap();
+        assert_eq!(p2.len(), 1);
+        assert_eq!(p2[0].row_idx, 3);
+    }
+
+    #[test]
+    fn search_cells_keyword_basic() {
+        let (_dir, mgr) = open();
+        let shid = build_search_sheet(&mgr);
+        // 全表搜 "张" → 命中 row_idx=1 col0, row_idx=3 col0。
+        let hits = mgr.search_cells(shid, None, "张", 0, 10).unwrap();
+        assert_eq!(hits.len(), 2);
+        assert!(hits
+            .iter()
+            .all(|c| c.value.as_deref().unwrap().contains("张")));
+        // 仅 col1 搜 "138" → 命中 row_idx=1。
+        let hits_col = mgr.search_cells(shid, Some(1), "138", 0, 10).unwrap();
+        assert_eq!(hits_col.len(), 1);
+        assert_eq!(hits_col[0].row_idx, 1);
+        assert_eq!(hits_col[0].col_idx, 1);
+    }
+
+    #[test]
+    fn search_cells_excludes_header_row() {
+        let (_dir, mgr) = open();
+        let shid = build_search_sheet(&mgr);
+        // 搜 "name"（表头）→ row_idx=0 应被排除，返回空。
+        let hits = mgr.search_cells(shid, None, "name", 0, 10).unwrap();
+        assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn search_cells_escapes_like_special_chars() {
+        let (_dir, mgr) = open();
+        let shid = build_search_sheet(&mgr);
+        // memo 列含 "50%"；搜字面 "%" 应只命中 "50%"。
+        let hits = mgr.search_cells(shid, Some(2), "%", 0, 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].row_idx, 3);
+        assert_eq!(hits[0].value.as_deref(), Some("50%"));
+        // 搜 "_" 字面 → memo 列无单下划线值，应 0 命中。
+        let hits_u = mgr.search_cells(shid, Some(2), "_", 0, 10).unwrap();
+        assert!(hits_u.is_empty());
+    }
+
+    #[test]
+    fn search_cells_regex_basic() {
+        let (_dir, mgr) = open();
+        let shid = build_search_sheet(&mgr);
+        // 正则 \d{3} → phone 列两个值都含 3 位数字段；命中应带区间。
+        let hits = mgr
+            .search_cells_regex(shid, Some(1), r"\d{3}", 0, 10)
+            .unwrap();
+        assert_eq!(hits.len(), 3); // 3 个 phone 值都含 3 位数字
+        for (c, spans) in &hits {
+            assert!(!spans.is_empty());
+            // 区间在 value 长度范围内
+            let val = c.value.as_ref().unwrap();
+            for &(s, e) in spans {
+                assert!(s < e && e <= val.len());
+            }
+        }
+    }
+
+    #[test]
+    fn search_cells_regex_invalid_pattern_returns_err() {
+        let (_dir, mgr) = open();
+        let shid = build_search_sheet(&mgr);
+        // 非法正则（未闭合 `[`）→ 返回 Err，不 panic。
+        let res = mgr.search_cells_regex(shid, None, "[unclosed", 0, 10);
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn search_cells_regex_pagination() {
+        let (_dir, mgr) = open();
+        let shid = build_search_sheet(&mgr);
+        // 全表正则 \d → phone 列 3 命中 + memo "50%" 1 命中 = 4。
+        let all = mgr.search_cells_regex(shid, None, r"\d", 0, 100).unwrap();
+        assert_eq!(all.len(), 4);
+        // offset=2 limit=1 → 取第 3 条。
+        let p = mgr.search_cells_regex(shid, None, r"\d", 2, 1).unwrap();
+        assert_eq!(p.len(), 1);
+    }
+
+    #[test]
+    fn count_search_results_basic() {
+        let (_dir, mgr) = open();
+        let shid = build_search_sheet(&mgr);
+        // 全表搜 "1" → phone 3 行 + memo "50%" 0 = 3。
+        let count = mgr.count_search_results(shid, None, "1").unwrap();
+        assert_eq!(count, 3);
+        // col1 搜 "139" → 1。
+        let count_col = mgr.count_search_results(shid, Some(1), "139").unwrap();
+        assert_eq!(count_col, 1);
+    }
+
+    #[test]
+    fn count_search_results_escapes_special_chars() {
+        let (_dir, mgr) = open();
+        let shid = build_search_sheet(&mgr);
+        // 搜字面 "%" → 仅 "50%" 命中，count=1。
+        let count = mgr.count_search_results(shid, Some(2), "%").unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn replace_in_column_cells_returns_before_snapshot() {
+        let (_dir, mgr) = open();
+        let shid = build_search_sheet(&mgr);
+        // col0 把 "张" → "王"：row_idx=1,3 两个值变化。
+        let (affected, before, after) = mgr
+            .replace_in_column_cells(shid, 0, "张", "王", false)
+            .unwrap();
+        assert_eq!(affected, 2);
+        assert_eq!(before.len(), 2);
+        assert_eq!(after.len(), 2);
+        // before 含原值 "张三"/"张五"。
+        let before_vals: Vec<&str> = before.iter().map(|c| c.value.as_deref().unwrap()).collect();
+        assert!(before_vals.contains(&"张三"));
+        assert!(before_vals.contains(&"张五"));
+        // after 含新值。
+        let after_vals: Vec<&str> = after.iter().map(|c| c.value.as_deref().unwrap()).collect();
+        assert!(after_vals.contains(&"王三"));
+        assert!(after_vals.contains(&"王五"));
+        // DB 已更新。
+        let col0 = mgr.query_column_cells(shid, 0).unwrap();
+        let vals: Vec<&str> = col0.iter().map(|(_, v)| v.as_deref().unwrap()).collect();
+        assert!(vals.contains(&"王三"));
+        assert!(vals.contains(&"王五"));
+        assert!(!vals.contains(&"张三"));
+    }
+
+    #[test]
+    fn replace_all_cells_across_columns() {
+        let (_dir, mgr) = open();
+        let shid = build_search_sheet(&mgr);
+        // 全表正则 \d+ → "#"：phone 3 个纯数字值 → "#"；memo "50%" → "#%"。
+        let (affected, _before, after) = mgr.replace_all_cells(shid, r"\d+", "#", true).unwrap();
+        assert_eq!(affected, 4);
+        // phone 列 3 个值变 "#"；memo "50%" 变 "#%"。
+        let phone_hits = after.iter().filter(|c| c.col_idx == 1).collect::<Vec<_>>();
+        assert_eq!(phone_hits.len(), 3);
+        assert!(phone_hits.iter().all(|c| c.value.as_deref() == Some("#")));
+        let memo_hits = after.iter().filter(|c| c.col_idx == 2).collect::<Vec<_>>();
+        assert_eq!(memo_hits.len(), 1);
+        assert_eq!(memo_hits[0].value.as_deref(), Some("#%"));
+    }
+
+    #[test]
+    fn replace_in_column_cells_no_change_returns_empty() {
+        let (_dir, mgr) = open();
+        let shid = build_search_sheet(&mgr);
+        // 搜不存在的字符串 → 0 受影响，快照空。
+        let (affected, before, after) = mgr
+            .replace_in_column_cells(shid, 0, "不存在的串", "x", false)
+            .unwrap();
+        assert_eq!(affected, 0);
+        assert!(before.is_empty());
+        assert!(after.is_empty());
+    }
+
+    #[test]
+    fn replace_in_column_cells_invalid_regex_returns_err() {
+        let (_dir, mgr) = open();
+        let shid = build_search_sheet(&mgr);
+        let res = mgr.replace_in_column_cells(shid, 0, "[bad", "x", true);
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn replace_all_cells_returns_both_snapshots() {
+        let (_dir, mgr) = open();
+        let shid = build_search_sheet(&mgr);
+        // 全表把 "1" → "X"：phone 3 行 + memo "50%" 0（无 1）→ 3 行变化。
+        let (affected, before, after) = mgr.replace_all_cells(shid, "1", "X", false).unwrap();
+        assert_eq!(affected, 3);
+        assert_eq!(before.len(), 3);
+        assert_eq!(after.len(), 3);
+        // before 中应都含 "1"。
+        assert!(before
+            .iter()
+            .all(|c| c.value.as_deref().unwrap().contains('1')));
+        // after 中应都不含 "1"。
+        assert!(after
+            .iter()
+            .all(|c| !c.value.as_deref().unwrap().contains('1')));
+    }
+
+    #[test]
+    fn query_operation_by_id_basic() {
+        let (_dir, mgr) = open();
+        let sid = mgr.create_session("s", None, "csv", 0).unwrap();
+        let shid = mgr.create_sheet(sid, "Sheet1", 0).unwrap();
+        let id = mgr
+            .log_operation_with_snapshot(
+                Some(shid),
+                "replace",
+                r#"{"from":"a","to":"b"}"#,
+                Some(r#"[{"row":1,"col":0,"v":"a"}]"#),
+                r#"[{"row":1,"col":0,"v":"b"}]"#,
+            )
+            .unwrap();
+        let row = mgr.query_operation_by_id(id).unwrap().unwrap();
+        assert_eq!(row.id, id);
+        assert_eq!(row.sheet_id, Some(shid));
+        assert_eq!(row.kind, "replace");
+        assert_eq!(row.params_json.as_deref(), Some(r#"{"from":"a","to":"b"}"#));
+        assert_eq!(
+            row.before_snapshot_json.as_deref(),
+            Some(r#"[{"row":1,"col":0,"v":"a"}]"#)
+        );
+        assert_eq!(
+            row.result_snapshot_json.as_deref(),
+            Some(r#"[{"row":1,"col":0,"v":"b"}]"#)
+        );
+        // 不存在的 id → None。
+        assert!(mgr.query_operation_by_id(id + 999).unwrap().is_none());
+    }
+
+    #[test]
+    fn log_operation_without_snapshot_keeps_before_null() {
+        let (_dir, mgr) = open();
+        let id = mgr.log_operation(None, "import", "{}", "{}").unwrap();
+        let row = mgr.query_operation_by_id(id).unwrap().unwrap();
+        assert_eq!(row.before_snapshot_json, None);
+        assert_eq!(row.result_snapshot_json.as_deref(), Some("{}"));
     }
 }

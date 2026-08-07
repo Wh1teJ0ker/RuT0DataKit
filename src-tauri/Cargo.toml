@@ -20,6 +20,7 @@ tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-updater = "2"
 rusqlite = { version = "0.31", features = ["bundled"] }
+regex = "1"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 thiserror = { workspace = true }
 serde = { workspace = true }

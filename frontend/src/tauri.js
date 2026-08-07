@@ -158,6 +158,101 @@ export function updateRuleParams(ruleId, pattern, replacement) {
   return invoke("update_rule_params", { ruleId, pattern, replacement });
 }
 
+// v1.1.1 撤销 / 搜索 / 列操作 IPC 封装。
+
+/**
+ * 调用 `undo_operation` IPC：按 op_id 撤销单个操作（就地回滚 DB cells）。
+ * 后端签名 `undo_operation(op_id: i64, db: State<...>)` 只接 op_id（db 自动注入），
+ * 因此 JS 侧不传 sheetId。
+ * @param {number} opId  操作 ID（来自 listUndoableOperations 返回的 id）
+ * @returns {Promise<{restored: number}>} 还原的行数
+ */
+export function undoOperation(opId) {
+  return invoke("undo_operation", { opId });
+}
+
+/**
+ * 调用 `redo_operation` IPC：按 op_id 重做单个操作。
+ * 与 undo_operation 对称，只接 op_id。
+ * @param {number} opId  操作 ID
+ * @returns {Promise<{restored: number}>} 还原的行数
+ */
+export function redoOperation(opId) {
+  return invoke("redo_operation", { opId });
+}
+
+/**
+ * 调用 `list_undoable_operations` IPC：列出可撤销操作（撤销工具栏数据源）。
+ * @param {number} sheetId  Sheet ID
+ * @returns {Promise<Array<{id: number, kind: string, createdAt: string}>>}
+ */
+export function listUndoableOperations(sheetId) {
+  return invoke("list_undoable_operations", { sheetId });
+}
+
+/**
+ * 调用 `search_cells` IPC：分页搜索匹配单元格。
+ * @param {number} sheetId   Sheet ID
+ * @param {string} query     搜索文本（useRegex=true 时为正则）
+ * @param {boolean} useRegex 是否正则模式
+ * @param {number|null} colIdx 0-based 列号；null 表示搜全表所有列
+ * @param {number} page       页码，从 1 开始
+ * @param {number} pageSize   每页命中条数
+ * @returns {Promise<{rows: Array<{rowIdx: number, colIdx: number, value: string|null, matches: Array<{start: number, end: number}>}>, total: number, page: number, pageSize: number}>}
+ */
+export function searchCells(sheetId, query, useRegex, colIdx, page, pageSize) {
+  return invoke("search_cells", {
+    sheetId,
+    query,
+    useRegex,
+    colIdx,
+    page,
+    pageSize,
+  });
+}
+
+/**
+ * 调用 `replace_all` IPC：全表替换。
+ * @param {number} sheetId  Sheet ID
+ * @param {string} from    搜索文本（useRegex=true 时为正则）
+ * @param {string} to      替换文本
+ * @param {boolean} useRegex 是否正则模式
+ * @returns {Promise<{affected: number}>} 受影响单元格数
+ */
+export function replaceAll(sheetId, from, to, useRegex) {
+  return invoke("replace_all", { sheetId, from, to, useRegex });
+}
+
+/**
+ * 调用 `parse_column_as_json` IPC：把指定列解析为 JSON，落成新 Sheet。
+ * @param {number} sheetId   源 Sheet ID
+ * @param {string} column    列名
+ * @param {number} sessionId 当前会话 ID（用于派生新 Sheet 的 sessionId）
+ * @returns {Promise<{newSheetId: number, headers: string[], rowCount: number, skipped: number}>}
+ */
+export function parseColumnAsJson(sheetId, column, sessionId) {
+  return invoke("parse_column_as_json", { sheetId, column, sessionId });
+}
+
+/**
+ * 调用 `replace_in_column` IPC：在指定列内替换匹配项。
+ * @param {number} sheetId  Sheet ID
+ * @param {string} column   列名
+ * @param {string} from     搜索文本（useRegex=true 时为正则）
+ * @param {string} to       替换文本
+ * @param {boolean} useRegex 是否正则模式
+ * @returns {Promise<{affected: number}>} 受影响单元格数
+ */
+export function replaceInColumn(sheetId, column, from, to, useRegex) {
+  return invoke("replace_in_column", {
+    sheetId,
+    column,
+    from,
+    to,
+    useRegex,
+  });
+}
+
 /**
  * 公共文件保存：优先 Tauri save 对话框 + writeTextFile；回退浏览器 Blob 下载。
  * @param {string} filename  建议文件名（含扩展名）
