@@ -5,6 +5,9 @@
 //! v1.1.0: 规则持久化到 DB（`rules` 表），启动时 `seed_builtin_rules`；
 //! 注册 6 个 processor IPC（`mask_column` / `validate_column` / `extract_column`
 //! / `list_rules` / `toggle_rule` / `update_rule_params`）。
+//! v1.1.1: 新增 3 个撤销/重做 IPC（`undo_operation` / `redo_operation`
+//! / `list_undoable_operations`）；`mask_column` 改用
+//! `log_operation_with_snapshot` 存 before/after 快照。
 
 // crate 名 `ruT0-data-kit` 为品牌命名（非 snake_case），有意保留；
 // 改名将牵动 workspace dep / Cargo.toml `[lib].name` / main.rs 调用，得不偿失。
@@ -38,6 +41,9 @@ pub fn run() {
             commands::processor::list_rules,
             commands::processor::toggle_rule,
             commands::processor::update_rule_params,
+            commands::processor::undo_operation,
+            commands::processor::redo_operation,
+            commands::processor::list_undoable_operations,
         ])
         .setup(|app| {
             let dir = app.path().app_config_dir()?;

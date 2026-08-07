@@ -59,6 +59,15 @@ pub struct OperationRow {
 /// （字节偏移，`end` 为 exclusive 结束位置）。
 pub type RegexSearchResult = Vec<(Cell, Vec<(usize, usize)>)>;
 
+/// 可撤销操作摘要（撤销/重做列表用）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UndoableOpRow {
+    pub id: i64,
+    pub kind: String,
+    pub created_at: String,
+}
+
 /// `sessions` 摘要（列表用）。
 // v1.1+ IPC 将调用；单测已覆盖。
 #[allow(
@@ -906,6 +915,38 @@ impl DbManager {
         tx.commit()?;
         let affected = after_changed.len() as u32;
         Ok((affected, before_changed, after_changed))
+    }
+
+    /// 列出某 sheet 的可撤销操作（最近 `limit` 条，按 `created_at` DESC）。
+    ///
+    /// 仅返回 kind ∈ {`mask`, `replace_in_column`, `replace_all`} 的操作——
+    /// 即「就地变更」类操作；`import`/`validate`/`extract`/`undo`/`redo` 等
+    /// 只读或辅助操作不入撤销栈。`kind` 值是硬编码常量（非用户输入），
+    /// IN 子句无注入风险；`sheet_id`/`limit` 仍用 `?N` + `params![]` 绑定。
+    pub fn list_undoable_operations(
+        &self,
+        sheet_id: i64,
+        limit: u32,
+    ) -> Result<Vec<UndoableOpRow>, DbError> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT id, kind, created_at FROM operations
+             WHERE sheet_id = ?1 AND kind IN ('mask', 'replace_in_column', 'replace_all')
+             ORDER BY created_at DESC
+             LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![sheet_id, limit as i64], |r| {
+            Ok(UndoableOpRow {
+                id: r.get::<_, i64>(0)?,
+                kind: r.get::<_, String>(1)?,
+                created_at: r.get::<_, String>(2)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
     }
 }
 
