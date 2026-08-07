@@ -34,7 +34,7 @@ T29 DB schema v2→v3 (before_snapshot + 搜索索引 + 列操作辅助方法)
 | T31 | 搜索后端命令（search_cells + replace_all） | T29 | verified_complete | handoff/TASK-T31-HANDOFF.md（已清理） | handoff/TASK-T31-REPORT.md（已清理） | handoff/TASK-T31-REVIEW.md (review_rejected→fix→review_passed, 已清理) |
 | T32 | 列操作后端命令（parse_column_as_json + replace_in_column） | T29 | verified_complete | handoff/TASK-T32-HANDOFF.md（已清理） | handoff/TASK-T32-REPORT.md（已清理） | handoff/TASK-T32-REVIEW.md (review_passed, 已清理) |
 | T33 | 前端 IPC + state 扩展（7 IPC + 5 ACTION + factory searchHits） | T30, T31, T32 | verified_complete | handoff/TASK-T33-HANDOFF.md（已清理） | handoff/TASK-T33-REPORT.md（已清理） | handoff/TASK-T33-REVIEW.md (review_passed, 已清理) |
-| T34 | 前端 UI（撤销工具栏 + 搜索栏 + 列操作面板 + 单元格高亮） | T33 | planned | — | — | — |
+| T34 | 前端 UI（撤销工具栏 + 搜索栏 + 列操作面板 + 单元格高亮） | T33 | verified_complete | handoff/TASK-T34-HANDOFF.md（已清理） | handoff/TASK-T34-REPORT.md（已清理） | handoff/TASK-T34-REVIEW.md (review_passed, 3 minor, 已清理) |
 | T35 | 版本号升级 1.1.0→1.1.1（6 处一致） | T34 | planned | — | — | — |
 | T36 | 文档收口 + 全量验证 + Release QA | T35 | planned | — | — | — |
 
@@ -84,7 +84,7 @@ cargo tauri dev  # 手动核验 E3~E6
 | 端到端通过 | T29~T36 全 `verified_complete` + E1~E8 全过 | `done_e2e` |
 | 版本 QA 通过 | Release QA 审计落盘且结论通过 | `qa_passed` |
 
-当前版本状态：`in_progress`（T29~T33 verified_complete；T34~T36 待启动）。
+当前版本状态：`in_progress`（T29~T34 verified_complete；T35~T36 待启动）。
 
 ## 7. 进度同步约定
 
