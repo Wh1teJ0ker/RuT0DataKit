@@ -1,13 +1,16 @@
 //! SQLite schema DDL。
 //!
+//! v1.2.0: 6 表 + 5 索引（`operations` 表新增 `before_snapshot_json` 列存撤销前置快照，
+//! 新增 `idx_cells_sheet_col` 复合索引供搜索加速），`SCHEMA_VERSION=3`。
 //! v1.1.0: 6 表 + 4 索引（新增 `rules` 表 + `idx_rules_kind` 索引）。
 //! v1.0.0: 5 表 + 3 索引，严格对齐 `docs/02-技术设计文档.md` §3。
 //! 全部用 `IF NOT EXISTS`，保证重复启动幂等。
 
-/// 当前 schema 版本。v1.1.0 起为 `2`（新增 `rules` 表）。
-pub const SCHEMA_VERSION: i64 = 2;
+/// 当前 schema 版本。v1.2.0 起为 `3`（`operations` 表加 `before_snapshot_json`
+/// 列 + `idx_cells_sheet_col` 复合索引）。
+pub const SCHEMA_VERSION: i64 = 3;
 
-/// 6 表 + 4 索引 DDL。`CREATE ... IF NOT EXISTS` 幂等。
+/// 6 表 + 5 索引 DDL。`CREATE ... IF NOT EXISTS` 幂等。
 pub const SCHEMA_DDL: &str = r#"
 -- sessions：导入会话
 CREATE TABLE IF NOT EXISTS sessions (
@@ -46,6 +49,7 @@ CREATE TABLE IF NOT EXISTS operations (
     sheet_id             INTEGER REFERENCES sheets(id),
     kind                 TEXT    NOT NULL,
     params_json          TEXT,
+    before_snapshot_json TEXT,
     result_snapshot_json TEXT,
     created_at           TEXT    NOT NULL
 );
@@ -70,6 +74,7 @@ CREATE TABLE IF NOT EXISTS rules (
 
 -- 索引
 CREATE INDEX IF NOT EXISTS idx_cells_sheet_row ON cells(sheet_id, row_idx);
+CREATE INDEX IF NOT EXISTS idx_cells_sheet_col ON cells(sheet_id, col_idx);
 CREATE INDEX IF NOT EXISTS idx_operations_sheet ON operations(sheet_id);
 CREATE INDEX IF NOT EXISTS idx_sheets_session ON sheets(session_id);
 CREATE INDEX IF NOT EXISTS idx_rules_kind ON rules(kind);
