@@ -12,6 +12,7 @@ export { ACTION, initialState } from "./state/constants";
 export {
   createEmptySheet,
   createSheetFromImport,
+  createSheetFromParse,
 } from "./state/factory";
 export { reducer, patchActiveSheet } from "./state/reducer";
 export {
