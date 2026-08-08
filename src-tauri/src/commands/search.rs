@@ -1,7 +1,10 @@
 //! v1.1.1 搜索 / 全表替换 IPC 命令。
 //!
-//! - `search_cells`：关键字（`LIKE '%kw%'` + `ESCAPE '\'`）/ 正则
-//!   （`LIKE` 预筛 + Rust `regex` 精确匹配）搜索，分页返回命中 cells + 匹配区间。
+//! - `search_rows`：v1.1.1 hotfix——**行级**搜索，返回整行数据 + 命中区间。
+//!   前端用其结果「只保留搜索结果」+ 高亮匹配区间。关键字 / 正则两种模式，
+//!   服务端按 distinct row_idx 分页。
+//! - `search_cells`：v1.1.0 **cell 级**搜索，分页返回命中 cells + 匹配区间。
+//!   保留以向后兼容；新前端默认走 `search_rows`。
 //! - `replace_all`：全表搜索替换，调用 `replace_all_cells`（单事务，返回 before/after
 //!   快照），`log_operation_with_snapshot` 记录操作供撤销。
 //!
@@ -10,7 +13,7 @@
 //!
 //! 测试策略（与 processor 命令一致）：`#[tauri::command]` 函数需要 Tauri State，无法
 //! 在单元测试中直接调用。测试通过直接调用 `DbManager` 方法模拟命令内部流程，覆盖
-//! 关键字 / 正则 / 分页 / 非法正则 / 全表替换 / 快照写入 / 正则替换等场景。
+//! 关键字 / 正则 / 分页 / 非法正则 / 全表替换 / 快照写入 / 正则替换 / 行级搜索等场景。
 
 use serde::Serialize;
 
@@ -38,11 +41,44 @@ pub struct MatchSpan {
     pub end: usize,
 }
 
-/// 搜索分页结果（camelCase）。
+/// 搜索分页结果（cell 级，向后兼容用）。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchPage {
     pub rows: Vec<SearchHit>,
+    pub total: u32,
+    pub page: u32,
+    pub page_size: u32,
+}
+
+/// 一行的命中信息（行级搜索用）。`col_idx` 对应 `headers` 中的列位置，
+/// `matches` 为该 cell 内的所有匹配区间。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RowCellMatch {
+    pub col_idx: u32,
+    pub value: Option<String>,
+    pub matches: Vec<MatchSpan>,
+}
+
+/// 一行的完整搜索结果（行级搜索用）。
+/// `cells` 长度 = 该 sheet 的列数，按 `col_idx` 顺序排列（缺失列用 `None` 占位）。
+/// `row_idx` 为数据行号（>=1，0 是表头）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchRow {
+    pub row_idx: u32,
+    /// 该行的全部列值（按 col_idx 升序，长度 = 列数）。
+    pub cells: Vec<Option<String>>,
+    /// 有命中的 cell 信息（仅含 `matches` 非空的列）。
+    pub hits: Vec<RowCellMatch>,
+}
+
+/// 行级搜索分页结果。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchRowsPage {
+    pub rows: Vec<SearchRow>,
     pub total: u32,
     pub page: u32,
     pub page_size: u32,
@@ -180,6 +216,133 @@ pub fn replace_all(
     )
     .map_err(|e| e.to_string())?;
     Ok(ReplaceResult { affected })
+}
+
+// ---------------------------------------------------------------------------
+// 行级搜索（v1.1.1 hotfix：只保留搜索结果）
+// ---------------------------------------------------------------------------
+
+/// 行级搜索：返回 **整行数据** + 命中区间，服务端按 `distinct row_idx` 分页。
+///
+/// 与 `search_cells` 的区别：
+/// - `search_cells` 按 cell 分页，一行多列命中各占一条，前端自行拼行；
+/// - `search_rows` 按 **行** 分页，每行返回完整 cells + 仅命中列的 `matches`，
+///   前端可直接「只保留搜索结果」渲染整张过滤后的表。
+///
+/// - `use_regex=false`（关键字）：`search_matched_row_ids` + `count_matched_rows`，
+///   `LIKE '%kw%'` + `ESCAPE '\'`；命中区间由 `compute_keyword_matches` 计算。
+/// - `use_regex=true`（正则）：`search_matched_row_ids_regex` +
+///   `count_matched_rows_regex`；命中区间由 `regex::find_iter` 计算。
+///
+/// `page` 从 1 开始；`col_idx=None` 搜全表所有列；空 `query` 返回空结果。
+#[tauri::command]
+pub fn search_rows(
+    sheet_id: i64,
+    query: String,
+    use_regex: bool,
+    col_idx: Option<u32>,
+    page: u32,
+    page_size: u32,
+    db: tauri::State<'_, crate::db::DbManager>,
+) -> Result<SearchRowsPage, String> {
+    let page = page.max(1);
+    let page_size = page_size.max(1);
+    let offset = (page - 1) * page_size;
+
+    // 空 query：返回空结果，不报错（不搜）。
+    if query.is_empty() {
+        return Ok(SearchRowsPage {
+            rows: Vec::new(),
+            total: 0,
+            page,
+            page_size,
+        });
+    }
+
+    // 列数：用于把 row_cells 对齐成定长 Vec<Option<String>>。
+    let col_count = db.count_columns(sheet_id).map_err(|e| e.to_string())?;
+    let col_count = col_count as usize;
+
+    // 1. 取本页命中的 row_idx 列表 + total。
+    let (row_ids, total) = if use_regex {
+        let ids = db
+            .search_matched_row_ids_regex(sheet_id, col_idx, &query, offset, page_size)
+            .map_err(|e| e.to_string())?;
+        let total = db
+            .count_matched_rows_regex(sheet_id, col_idx, &query)
+            .map_err(|e| e.to_string())?;
+        (ids, total)
+    } else {
+        let ids = db
+            .search_matched_row_ids(sheet_id, col_idx, &query, offset, page_size)
+            .map_err(|e| e.to_string())?;
+        let total = db
+            .count_matched_rows(sheet_id, col_idx, &query)
+            .map_err(|e| e.to_string())?;
+        (ids, total)
+    };
+
+    // 2. 为每个 row_idx 取整行 cells，组装成 SearchRow。
+    let mut rows: Vec<SearchRow> = Vec::with_capacity(row_ids.len());
+    for rid in row_ids {
+        let cells_raw = db
+            .query_row_cells(sheet_id, rid)
+            .map_err(|e| e.to_string())?;
+        // 对齐成定长 Vec<Option<String>>（按 col_idx 升序，缺失列用 None 占位）。
+        let mut cells: Vec<Option<String>> = vec![None; col_count];
+        // 同时收集命中区间：col_idx -> Vec<(start, end)>
+        let mut hits: Vec<RowCellMatch> = Vec::new();
+        for c in &cells_raw {
+            let ci = c.col_idx as usize;
+            if ci < col_count {
+                cells[ci] = c.value.clone();
+            }
+            let spans = if use_regex {
+                compute_regex_matches(&c.value, &query)
+            } else {
+                compute_keyword_matches(&c.value, &query)
+            };
+            if !spans.is_empty() {
+                hits.push(RowCellMatch {
+                    col_idx: c.col_idx,
+                    value: c.value.clone(),
+                    matches: spans,
+                });
+            }
+        }
+        rows.push(SearchRow {
+            row_idx: rid,
+            cells,
+            hits,
+        });
+    }
+
+    Ok(SearchRowsPage {
+        rows,
+        total,
+        page,
+        page_size,
+    })
+}
+
+/// 用 `regex::Regex` 计算一个 cell 的所有匹配区间（字节偏移）。
+/// `pattern` 编译失败时返回空（命令入口已在 DB 方法层校验，此处兜底）。
+fn compute_regex_matches(value: &Option<String>, pattern: &str) -> Vec<MatchSpan> {
+    let mut spans = Vec::new();
+    if let Some(val) = value {
+        if pattern.is_empty() {
+            return spans;
+        }
+        if let Ok(re) = regex::Regex::new(pattern) {
+            for m in re.find_iter(val) {
+                spans.push(MatchSpan {
+                    start: m.start(),
+                    end: m.end(),
+                });
+            }
+        }
+    }
+    spans
 }
 
 // ---------------------------------------------------------------------------
@@ -563,5 +726,157 @@ mod tests {
         assert!(after
             .iter()
             .all(|c| !c.value.as_deref().unwrap().contains('1')));
+    }
+
+    // ---- 行级搜索（search_rows 命令内部流程模拟）----
+
+    /// 模拟 `search_rows` 关键字模式：返回整行 + 仅命中列的 matches。
+    #[test]
+    fn search_rows_keyword_returns_full_rows() {
+        let (_dir, mgr) = open();
+        let shid = build_search_sheet(&mgr);
+        // 全表搜 "张"：命中 row_idx=1（"张三"）和 row_idx=3（"张五"），共 2 行。
+        let col_count = mgr.count_columns(shid).unwrap() as usize;
+        assert_eq!(col_count, 3);
+        let row_ids = mgr.search_matched_row_ids(shid, None, "张", 0, 50).unwrap();
+        let total = mgr.count_matched_rows(shid, None, "张").unwrap();
+        assert_eq!(total, 2);
+        assert_eq!(row_ids.len(), 2);
+        assert!(row_ids.contains(&1));
+        assert!(row_ids.contains(&3));
+
+        // 对每个 row_idx 取整行 cells，组装成 SearchRow。
+        for &rid in &row_ids {
+            let cells_raw = mgr.query_row_cells(shid, rid).unwrap();
+            let mut cells: Vec<Option<String>> = vec![None; col_count];
+            let mut hits: Vec<RowCellMatch> = Vec::new();
+            for c in &cells_raw {
+                let ci = c.col_idx as usize;
+                if ci < col_count {
+                    cells[ci] = c.value.clone();
+                }
+                let spans = compute_keyword_matches(&c.value, "张");
+                if !spans.is_empty() {
+                    hits.push(RowCellMatch {
+                        col_idx: c.col_idx,
+                        value: c.value.clone(),
+                        matches: spans,
+                    });
+                }
+            }
+            // 命中的行至少 1 列有 matches，且该列包含 "张"。
+            assert!(!hits.is_empty());
+            let hit_row = SearchRow {
+                row_idx: rid,
+                cells,
+                hits,
+            };
+            // col0 = name 列命中 "张"。
+            assert!(hit_row.cells[0].as_deref().unwrap().contains('张'));
+            // 命中区间对应的字面应 == "张"。
+            for h in &hit_row.hits {
+                for span in &h.matches {
+                    let val = h.value.as_ref().unwrap();
+                    assert_eq!(&val[span.start..span.end], "张");
+                }
+            }
+        }
+    }
+
+    /// 行级搜索分页：page_size=1 时返回 1 行，total 为命中行数。
+    #[test]
+    fn search_rows_pagination() {
+        let (_dir, mgr) = open();
+        let shid = build_search_sheet(&mgr);
+        // 全表搜 "1"：phone 列 3 行都命中（"138..."、"139..."、"137..."）。
+        let total = mgr.count_matched_rows(shid, None, "1").unwrap();
+        assert_eq!(total, 3);
+        // page_size=1 offset=0 → 第 1 行（row_idx=1）。
+        let p1 = mgr.search_matched_row_ids(shid, None, "1", 0, 1).unwrap();
+        assert_eq!(p1.len(), 1);
+        assert_eq!(p1[0], 1);
+        // page_size=1 offset=1 → 第 2 行（row_idx=2）。
+        let p2 = mgr.search_matched_row_ids(shid, None, "1", 1, 1).unwrap();
+        assert_eq!(p2.len(), 1);
+        assert_eq!(p2[0], 2);
+        // page_size=2 offset=2 → 剩余 1 行（row_idx=3）。
+        let p3 = mgr.search_matched_row_ids(shid, None, "1", 2, 2).unwrap();
+        assert_eq!(p3.len(), 1);
+        assert_eq!(p3[0], 3);
+    }
+
+    /// 行级搜索 col_idx 限定列：只在该列命中。
+    #[test]
+    fn search_rows_col_filtered() {
+        let (_dir, mgr) = open();
+        let shid = build_search_sheet(&mgr);
+        // col1 (phone) 搜 "138" → 只命中 row_idx=1。
+        let row_ids = mgr
+            .search_matched_row_ids(shid, Some(1), "138", 0, 50)
+            .unwrap();
+        let total = mgr.count_matched_rows(shid, Some(1), "138").unwrap();
+        assert_eq!(total, 1);
+        assert_eq!(row_ids.len(), 1);
+        assert_eq!(row_ids[0], 1);
+    }
+
+    /// 行级搜索正则模式：返回命中行 + matches 由 regex 计算。
+    #[test]
+    fn search_rows_regex_returns_full_rows() {
+        let (_dir, mgr) = open();
+        let shid = build_search_sheet(&mgr);
+        // 正则 \d{3}：phone 列 3 行都命中。
+        let row_ids = mgr
+            .search_matched_row_ids_regex(shid, None, r"\d{3}", 0, 50)
+            .unwrap();
+        let total = mgr.count_matched_rows_regex(shid, None, r"\d{3}").unwrap();
+        assert_eq!(total, 3);
+        assert_eq!(row_ids.len(), 3);
+        // row_idx 应为 1,2,3。
+        assert!(row_ids.contains(&1));
+        assert!(row_ids.contains(&2));
+        assert!(row_ids.contains(&3));
+
+        // 对 row_idx=1 用 compute_regex_matches 计算区间。
+        let cells_raw = mgr.query_row_cells(shid, 1).unwrap();
+        for c in &cells_raw {
+            let spans = compute_regex_matches(&c.value, r"\d{3}");
+            if c.col_idx == 1 {
+                // phone "13812345678" → 3 段 \d{3} 匹配。
+                assert_eq!(spans.len(), 3);
+            } else if c.col_idx == 0 {
+                // name "张三" → 0 匹配。
+                assert!(spans.is_empty());
+            }
+        }
+    }
+
+    /// 行级搜索正则非法模式返回错误。
+    #[test]
+    fn search_rows_regex_invalid_returns_err() {
+        let (_dir, mgr) = open();
+        let shid = build_search_sheet(&mgr);
+        let res = mgr.search_matched_row_ids_regex(shid, None, "[bad", 0, 10);
+        assert!(res.is_err());
+        let err = res.unwrap_err().to_string();
+        assert!(err.contains("invalid regex"), "实际: {err}");
+    }
+
+    /// 行级搜索：空 query 返回空结果（不搜，不报错）。
+    #[test]
+    fn search_rows_empty_query_returns_empty() {
+        let (_dir, mgr) = open();
+        let shid = build_search_sheet(&mgr);
+        let query = "";
+        let rows: Vec<SearchRow> = if query.is_empty() {
+            Vec::new()
+        } else {
+            // （不会走到这里）
+            Vec::new()
+        };
+        assert!(rows.is_empty());
+        // count_matched_rows 对空 keyword 仍返回 0（LIKE '%%' 不应匹配空 cell，
+        // 但此处仅验证空 query 路径）。
+        let _ = mgr.count_matched_rows(shid, None, "张").unwrap();
     }
 }

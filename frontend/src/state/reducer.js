@@ -180,6 +180,9 @@ export function reducer(state, action) {
       //   pageInnerIdx = rowIdx - 1 - pageBase（减 1 跳过表头行）
       //   rowKey = `${sheetId}-${sheet.page}-${pageInnerIdx}`
       // 越界（不在当前页 / 列号超长）跳过该 hit。
+      //
+      // v1.1.1 hotfix：每次先清空 searchHits（不再 spread 旧值），避免「第一次搜索的高亮
+      // 在第二次搜索后仍显示」的 stale highlight bug。
       const { sheetId, hits } = action.payload;
       return {
         ...state,
@@ -187,7 +190,7 @@ export function reducer(state, action) {
           if (s.id !== sheetId) return s;
           const pageBase = (s.page - 1) * s.pageSize;
           const pageLen = Array.isArray(s.rows) ? s.rows.length : 0;
-          const searchHits = { ...(s.searchHits || {}) };
+          const searchHits = {}; // 先清空，再写入本次命中
           for (const hit of hits || []) {
             const pageInnerIdx = hit.rowIdx - 1 - pageBase;
             if (pageInnerIdx < 0 || pageInnerIdx >= pageLen) continue; // 不在当前页
@@ -204,9 +207,57 @@ export function reducer(state, action) {
         }),
       };
     }
+    case ACTION.APPLY_SEARCH_ROWS: {
+      // v1.1.1 hotfix 行级搜索：payload = { sheetId, rows: SearchRowsPage }
+      //   rows: { rows: Array<{ rowIdx, cells: Array<Option<String>>, hits: Array<{colIdx, value, matches}> }>,
+      //           total, page, pageSize }
+      // 把后端行级命中转成 antd 行对象（toRowObjects），写入 sheet.searchRows / searchTotal，
+      // 同时同步一份 searchHits（按行 key 即 `${sheetId}-${page}-${i}`，便于 DataTable
+      // 复用 highlightCell）。searchRows !== null 即表示「搜索态」。
+      const { sheetId, rows: page } = action.payload;
+      return {
+        ...state,
+        sheets: state.sheets.map((s) => {
+          if (s.id !== sheetId) return s;
+          const list = page?.rows || [];
+          const total = page?.total ?? 0;
+          const pageNum = page?.page ?? 1;
+          // 转 antd 行对象：key = `${sheetId}-${pageNum}-${i}`，i 为页内 0-based 下标。
+          const searchRows = list.map((r, i) => {
+            const obj = { key: `${sheetId}-${pageNum}-${i}` };
+            s.headers.forEach((h, ci) => {
+              obj[h] = r.cells?.[ci] ?? null;
+            });
+            return obj;
+          });
+          // 同步 searchHits：行 key → colHeader → [[start, end], ...]
+          const searchHits = {};
+          list.forEach((r, i) => {
+            const rowKey = `${sheetId}-${pageNum}-${i}`;
+            const rowHits = {};
+            for (const h of r.hits || []) {
+              const colHeader = s.headers[h.colIdx];
+              if (colHeader === undefined) continue;
+              rowHits[colHeader] = (h.matches || []).map((m) => [m.start, m.end]);
+            }
+            if (Object.keys(rowHits).length > 0) searchHits[rowKey] = rowHits;
+          });
+          return {
+            ...s,
+            searchRows,
+            searchTotal: total,
+            searchHits,
+          };
+        }),
+      };
+    }
     case ACTION.CLEAR_SEARCH: {
-      // 清空当前 Sheet 高亮 + 重置顶层搜索状态。
-      const cleared = patchActiveSheet(state, (s) => ({ searchHits: {} }));
+      // 清空当前 Sheet 高亮 + searchRows + 重置顶层搜索状态。
+      const cleared = patchActiveSheet(state, (s) => ({
+        searchHits: {},
+        searchRows: null,
+        searchTotal: 0,
+      }));
       return {
         ...cleared,
         searchState: { query: "", useRegex: false, colIdx: null, page: 1 },

@@ -1,10 +1,18 @@
 // Sheet 工厂。
 // Sheet 对象结构：{ id, sessionId, name, headers, rows, total, page, pageSize,
-//                  columnOrder, columnVisibility, selection, statusHighlights, searchHits }
+//                  columnOrder, columnVisibility, selection, statusHighlights,
+//                  searchHits, searchRows, searchTotal }
 // 「新建」Tab 产生空表（无列、无行），由用户在导入或后续列编辑流程中填充；
 // IMPORT_SUCCESS action 用 ImportResult 填充真实 Sheet。
 // ADD_SHEET_FROM_PARSE action 用 ParseResult（parse_column_as_json 返回）填充新 Sheet。
 // sessionId 由真实导入流填充（importFile → ImportResult.sessionId）。
+//
+// v1.1.1 hotfix：新增 `searchRows` / `searchTotal` 两个字段。
+// - `searchRows`：行级搜索命中行（toRowObjects 结果），非 null 时 DataTable 切换为
+//   「只保留搜索结果」渲染；`null` 表示不在搜索态。
+// - `searchTotal`：搜索命中行数（供分页 total）。
+// - `searchHits`：仍保留单元格高亮区间（rowKey → colHeader → [[start, end]]）。
+//   APPLY_SEARCH_HITS 现在每次先清空再写入，避免 stale highlight。
 
 import { PAGE_SIZE } from "../constants";
 
@@ -35,6 +43,8 @@ function createEmptySheet(name) {
     selection: { selectedRowKeys: [], lastSelectedIndex: null },
     statusHighlights: {}, // v1.1.0 ValidatePanel/MaskPanel/ExtractPanel 触发行高亮
     searchHits: {}, // v1.1.1 搜索命中高亮：{ [rowKey]: { [colHeader]: [[start, end], ...] } }
+    searchRows: null, // v1.1.1 hotfix 行级搜索结果行（toRowObjects），null = 不在搜索态
+    searchTotal: 0, // v1.1.1 hotfix 行级搜索命中行数
   };
 }
 
@@ -56,6 +66,8 @@ export function createSheetFromImport(result) {
     selection: { selectedRowKeys: [], lastSelectedIndex: null },
     statusHighlights: {},
     searchHits: {}, // v1.1.1 搜索命中高亮（默认空）
+    searchRows: null, // v1.1.1 hotfix 行级搜索结果行
+    searchTotal: 0, // v1.1.1 hotfix 行级搜索命中行数
   };
 }
 
@@ -79,6 +91,8 @@ export function createSheetFromParse(result) {
     selection: { selectedRowKeys: [], lastSelectedIndex: null },
     statusHighlights: {},
     searchHits: {},
+    searchRows: null, // v1.1.1 hotfix 行级搜索结果行
+    searchTotal: 0, // v1.1.1 hotfix 行级搜索命中行数
   };
 }
 

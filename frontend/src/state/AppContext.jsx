@@ -85,6 +85,10 @@ export function AppProvider({ children }) {
     (payload) => dispatch({ type: ACTION.APPLY_SEARCH_HITS, payload }),
     []
   );
+  const applySearchRows = useCallback(
+    (payload) => dispatch({ type: ACTION.APPLY_SEARCH_ROWS, payload }),
+    []
+  );
   const clearSearch = useCallback(
     () => dispatch({ type: ACTION.CLEAR_SEARCH }),
     []
@@ -118,6 +122,7 @@ export function AppProvider({ children }) {
       applyRowStatuses,
       setSearchState,
       applySearchHits,
+      applySearchRows,
       clearSearch,
       addSheetFromParse,
       setUndoStack,
@@ -141,6 +146,7 @@ export function AppProvider({ children }) {
       applyRowStatuses,
       setSearchState,
       applySearchHits,
+      applySearchRows,
       clearSearch,
       addSheetFromParse,
       setUndoStack,

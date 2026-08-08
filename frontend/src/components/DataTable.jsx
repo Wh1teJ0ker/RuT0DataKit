@@ -29,7 +29,7 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { useAppContext } from "../state";
-import { searchCells, replaceAll, getSheetData } from "../tauri";
+import { searchRows, replaceAll, getSheetData } from "../tauri";
 import { PAGE_SIZE } from "../constants";
 import "./DataTable.css";
 
@@ -76,27 +76,36 @@ function HeaderCell({ "data-colkey": colkey, ...rest }) {
 
 // v1.1.1 单元格高亮渲染：
 // 取 sheet.searchHits?.[record.key]?.[header]，命中区间用 <mark> 包裹。
-// start/end 为字节偏移；这里按字符串索引直接 slice，对纯 ASCII 安全，
-// 多字节字符（中文）边界可能错位 —— T34 简化实现，后续优化。
+// 后端 start/end 为 **字节偏移**（Rust str::find / regex::find 返回字节位置），
+// 不能直接用 JS string slice（UTF-16 code unit 索引）切片——中文等多字节字符
+// 会导致 end > text.length 误判越界而 break，表现为无高亮。
+// 这里用 TextEncoder 取 UTF-8 字节、TextDecoder 按字节区间还原字符串，保证偏移语义一致。
+const _encoder = new TextEncoder();
+const _decoder = new TextDecoder("utf-8", { fatal: false });
+
 function highlightCell(value, hitRanges) {
   if (value == null) return value;
   const text = String(value);
   if (!hitRanges || hitRanges.length === 0) return text;
+  const bytes = _encoder.encode(text);
+  const byteLen = bytes.length;
   const sorted = [...hitRanges].sort((a, b) => a[0] - b[0]);
   const parts = [];
-  let cursor = 0;
+  let cursor = 0; // 字节游标
   for (const [start, end] of sorted) {
     if (start < cursor) continue; // 越界/重叠，跳过
-    if (start > text.length || end > text.length) break;
-    if (start > cursor) parts.push(text.slice(cursor, start));
+    if (start > byteLen || end > byteLen) break; // 超出字节长度，终止
+    if (start > cursor) {
+      parts.push(_decoder.decode(bytes.subarray(cursor, start)));
+    }
     parts.push(
       <mark key={`${start}-${end}`} style={{ background: "#fff48f" }}>
-        {text.slice(start, end)}
+        {_decoder.decode(bytes.subarray(start, end))}
       </mark>
     );
     cursor = end;
   }
-  if (cursor < text.length) parts.push(text.slice(cursor));
+  if (cursor < byteLen) parts.push(_decoder.decode(bytes.subarray(cursor)));
   return <span>{parts}</span>;
 }
 
@@ -119,7 +128,7 @@ export default function DataTable({ sheet, onSetPage }) {
     reorderColumns,
     setColumnVisibility,
     setSearchState,
-    applySearchHits,
+    applySearchRows,
     clearSearch,
   } = useAppContext();
 
@@ -128,12 +137,13 @@ export default function DataTable({ sheet, onSetPage }) {
   const [searching, setSearching] = useState(false);
   const [replacing, setReplacing] = useState(false);
   const [replaceForm] = Form.useForm();
-  // 当前搜索命中总数（来自后端 searchCells 返回的 total）
-  const [searchTotal, setSearchTotal] = useState(0);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } })
   );
+
+  // 搜索态：sheet.searchRows !== null 表示当前处于「只保留搜索结果」模式。
+  const isSearchMode = !!sheet?.searchRows;
 
   // 按 columnOrder 排序 + 过滤隐藏列 → antd columns
   const columns = useMemo(() => {
@@ -153,16 +163,17 @@ export default function DataTable({ sheet, onSetPage }) {
       }));
   }, [sheet]);
 
-  // 行 key → 当前 sheet.rows 索引（Shift 区间选择用）
+  // 行 key → 当前行索引（Shift 区间选择用）。搜索态用 searchRows，普通态用 rows。
   const rowKeyIndex = useMemo(() => {
     const map = new Map();
-    sheet?.rows?.forEach((r, i) => map.set(r.key, i));
+    const rows = sheet?.searchRows ?? sheet?.rows;
+    rows?.forEach((r, i) => map.set(r.key, i));
     return map;
   }, [sheet]);
 
   function handleSelect(record, checked, _selectedRows, e) {
     if (!sheet) return;
-    const rows = sheet.rows;
+    const rows = sheet.searchRows ?? sheet.rows;
     const currentIdx = rowKeyIndex.get(record.key);
     const prevSelected = sheet.selection.selectedRowKeys || [];
     let nextKeys;
@@ -210,7 +221,8 @@ export default function DataTable({ sheet, onSetPage }) {
     reorderColumns(arrayMove(order, oldIdx, newIdx));
   }
 
-  // 搜索：调 searchCells 取首页 50 条 → dispatch APPLY_SEARCH_HITS → 记录 total
+  // 搜索：调 searchRows 取首页命中行 → dispatch APPLY_SEARCH_ROWS（写入 searchRows +
+  // searchTotal + searchHits）。searchRows !== null 即切换为「只保留搜索结果」渲染。
   async function handleSearch() {
     if (!sheet) return;
     const { query, useRegex, colIdx } = state.searchState;
@@ -220,7 +232,7 @@ export default function DataTable({ sheet, onSetPage }) {
     }
     setSearching(true);
     try {
-      const res = await searchCells(
+      const res = await searchRows(
         sheet.id,
         query,
         useRegex,
@@ -228,19 +240,46 @@ export default function DataTable({ sheet, onSetPage }) {
         1,
         PAGE_SIZE
       );
-      applySearchHits({ sheetId: sheet.id, hits: res.rows || [] });
+      applySearchRows({ sheetId: sheet.id, rows: res });
       setSearchState({ page: 1 });
-      setSearchTotal(res.total ?? (res.rows || []).length);
+      if ((res.total ?? 0) === 0) {
+        message.info("无匹配结果");
+      }
     } catch (e) {
       // eslint-disable-next-line no-console
-      console.error("search_cells failed:", e);
+      console.error("search_rows failed:", e);
       message.error(`搜索失败：${e}`);
     } finally {
       setSearching(false);
     }
   }
 
-  // 全局替换：replaceAll → 刷新当前页 + 清空搜索高亮（数据已变）
+  // 搜索态翻页：调 searchRows 取对应页命中行。
+  async function handleSearchPageChange(page) {
+    if (!sheet) return;
+    const { query, useRegex, colIdx } = state.searchState;
+    setSearching(true);
+    try {
+      const res = await searchRows(
+        sheet.id,
+        query,
+        useRegex,
+        colIdx,
+        page,
+        PAGE_SIZE
+      );
+      applySearchRows({ sheetId: sheet.id, rows: res });
+      setSearchState({ page });
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error("search_rows page failed:", e);
+      message.error(`搜索翻页失败：${e}`);
+    } finally {
+      setSearching(false);
+    }
+  }
+
+  // 全局替换：replaceAll → 退出搜索态 + 刷新当前页（数据已变）
   async function handleReplace() {
     if (!sheet) return;
     try {
@@ -262,9 +301,8 @@ export default function DataTable({ sheet, onSetPage }) {
         type: "SET_SHEET_DATA",
         payload: { ...data, sheetId: sheet.id },
       });
-      // 数据已变 → 清空旧搜索高亮
+      // 数据已变 → 退出搜索态（清空 searchRows/searchHits/searchState）
       clearSearch();
-      setSearchTotal(0);
     } catch (e) {
       if (e?.errorFields) return; // 表单校验失败，antd 自带提示
       // eslint-disable-next-line no-console
@@ -355,9 +393,9 @@ export default function DataTable({ sheet, onSetPage }) {
           >
             全局替换
           </Button>
-          {searchTotal > 0 && (
+          {isSearchMode && (
             <Text type="secondary" style={{ fontSize: 12 }}>
-              共 {searchTotal} 条命中，展示前 {PAGE_SIZE} 条
+              搜索结果共 {sheet.searchTotal ?? 0} 行，仅显示命中行
             </Text>
           )}
         </Space>
@@ -380,12 +418,17 @@ export default function DataTable({ sheet, onSetPage }) {
             }}
             rowClassName={(record) => record.status || "default"}
             columns={columns}
-            dataSource={sheet.rows}
+            dataSource={isSearchMode ? sheet.searchRows : sheet.rows}
             pagination={{
-              current: sheet.page,
+              current: isSearchMode
+                ? state.searchState.page || 1
+                : sheet.page,
               pageSize: sheet.pageSize || PAGE_SIZE,
-              total: sheet.total ?? sheet.rows.length,
-              onChange: (page) => onSetPage(page),
+              total: isSearchMode
+                ? sheet.searchTotal ?? 0
+                : sheet.total ?? sheet.rows.length,
+              onChange: (page) =>
+                isSearchMode ? handleSearchPageChange(page) : onSetPage(page),
               showSizeChanger: false,
             }}
             size="small"

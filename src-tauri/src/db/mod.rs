@@ -763,6 +763,223 @@ impl DbManager {
         Ok(count.max(0) as u32)
     }
 
+    /// 取某 sheet 的列数（`row_idx=0` 表头行的 cell 数）。供搜索结果行级展开对齐用。
+    pub fn count_columns(&self, sheet_id: i64) -> Result<u32, DbError> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM cells WHERE sheet_id = ?1 AND row_idx = 0",
+            params![sheet_id],
+            |r| r.get(0),
+        )?;
+        Ok(count.max(0) as u32)
+    }
+
+    /// 取某行所有列的 cells（按 `col_idx` 升序）。供搜索结果行级展开用。
+    pub fn query_row_cells(&self, sheet_id: i64, row_idx: u32) -> Result<Vec<Cell>, DbError> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT sheet_id, row_idx, col_idx, value FROM cells
+             WHERE sheet_id = ?1 AND row_idx = ?2
+             ORDER BY col_idx ASC",
+        )?;
+        let rows = stmt.query_map(params![sheet_id, row_idx as i64], |r| {
+            Ok(Cell {
+                sheet_id: r.get::<_, i64>(0)?,
+                row_idx: r.get::<_, i64>(1)? as u32,
+                col_idx: r.get::<_, i64>(2)? as u32,
+                value: r.get::<_, Option<String>>(3)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    /// 关键字行级搜索：返回有命中 cell 的 **去重 row_idx**（按 row_idx 升序），
+    /// 服务端分页（`LIMIT/OFFSET` 作用于 distinct row_idx）。
+    ///
+    /// 与 `search_cells` 的区别：后者按 cell 分页（一行多列命中各占一条），
+    /// 前端需自行拼行；本方法按行分页，配合 `query_row_cells` 取整行数据，
+    /// 让前端搜索结果直接以「行」为单位渲染。
+    pub fn search_matched_row_ids(
+        &self,
+        sheet_id: i64,
+        col_idx: Option<u32>,
+        keyword: &str,
+        offset: u32,
+        limit: u32,
+    ) -> Result<Vec<u32>, DbError> {
+        let pattern = format!("%{}%", escape_like(keyword));
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let mut out = Vec::new();
+        if let Some(c) = col_idx {
+            let mut stmt = conn.prepare(
+                "SELECT DISTINCT row_idx FROM cells
+                 WHERE sheet_id = ?1 AND col_idx = ?2 AND row_idx > 0
+                   AND value LIKE ?3 ESCAPE '\\'
+                 ORDER BY row_idx ASC
+                 LIMIT ?4 OFFSET ?5",
+            )?;
+            let rows = stmt.query_map(
+                params![sheet_id, c as i64, pattern, limit as i64, offset as i64],
+                |r| r.get::<_, i64>(0).map(|v| v as u32),
+            )?;
+            for row in rows {
+                out.push(row?);
+            }
+        } else {
+            let mut stmt = conn.prepare(
+                "SELECT DISTINCT row_idx FROM cells
+                 WHERE sheet_id = ?1 AND row_idx > 0
+                   AND value LIKE ?2 ESCAPE '\\'
+                 ORDER BY row_idx ASC
+                 LIMIT ?3 OFFSET ?4",
+            )?;
+            let rows = stmt.query_map(
+                params![sheet_id, pattern, limit as i64, offset as i64],
+                |r| r.get::<_, i64>(0).map(|v| v as u32),
+            )?;
+            for row in rows {
+                out.push(row?);
+            }
+        }
+        Ok(out)
+    }
+
+    /// 统计关键字搜索命中的 **行数**（`COUNT(DISTINCT row_idx)`），
+    /// 与 `search_matched_row_ids` 语义一致，供分页 total。
+    pub fn count_matched_rows(
+        &self,
+        sheet_id: i64,
+        col_idx: Option<u32>,
+        keyword: &str,
+    ) -> Result<u32, DbError> {
+        let pattern = format!("%{}%", escape_like(keyword));
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let count: i64 = if let Some(c) = col_idx {
+            conn.query_row(
+                "SELECT COUNT(DISTINCT row_idx) FROM cells
+                 WHERE sheet_id = ?1 AND col_idx = ?2 AND row_idx > 0
+                   AND value LIKE ?3 ESCAPE '\\'",
+                params![sheet_id, c as i64, pattern],
+                |r| r.get(0),
+            )?
+        } else {
+            conn.query_row(
+                "SELECT COUNT(DISTINCT row_idx) FROM cells
+                 WHERE sheet_id = ?1 AND row_idx > 0
+                   AND value LIKE ?2 ESCAPE '\\'",
+                params![sheet_id, pattern],
+                |r| r.get(0),
+            )?
+        };
+        Ok(count.max(0) as u32)
+    }
+
+    /// 正则行级搜索：返回有命中 cell 的 **去重 row_idx**（按 row_idx 升序），
+    /// 服务端分页（`LIMIT/OFFSET` 作用于 distinct row_idx）。
+    /// 与 `search_matched_row_ids` 的区别：用 `regex::Regex` 二次精确匹配，
+    /// 而非 `LIKE`。语义与 `search_cells_regex` 对齐。
+    pub fn search_matched_row_ids_regex(
+        &self,
+        sheet_id: i64,
+        col_idx: Option<u32>,
+        pattern: &str,
+        offset: u32,
+        limit: u32,
+    ) -> Result<Vec<u32>, DbError> {
+        let re = Regex::new(pattern)
+            .map_err(|e| DbError::Migration(format!("invalid regex `{}`: {}", pattern, e)))?;
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        // 先取 distinct row_idx（按 row_idx 升序），再 regex 过滤，最后分页。
+        let sql = if col_idx.is_some() {
+            "SELECT DISTINCT row_idx FROM cells
+             WHERE sheet_id = ?1 AND col_idx = ?2 AND row_idx > 0
+               AND value LIKE ?3 ESCAPE '\\'
+             ORDER BY row_idx ASC"
+        } else {
+            "SELECT DISTINCT row_idx FROM cells
+             WHERE sheet_id = ?1 AND row_idx > 0
+               AND value LIKE ?2 ESCAPE '\\'
+             ORDER BY row_idx ASC"
+        };
+        let mut stmt = conn.prepare(sql)?;
+        let like_pattern = "%".to_string();
+        let rows: rusqlite::Result<Vec<u32>> = if let Some(c) = col_idx {
+            let mapped = stmt.query_map(params![sheet_id, c as i64, like_pattern], |r| {
+                r.get::<_, i64>(0).map(|v| v as u32)
+            })?;
+            let mut v = Vec::new();
+            for row in mapped {
+                v.push(row?);
+            }
+            Ok(v)
+        } else {
+            let mapped = stmt.query_map(params![sheet_id, like_pattern], |r| {
+                r.get::<_, i64>(0).map(|v| v as u32)
+            })?;
+            let mut v = Vec::new();
+            for row in mapped {
+                v.push(row?);
+            }
+            Ok(v)
+        };
+        let mut all = rows?;
+        // 取每个 row_idx 的 cell values 做 regex 过滤
+        let mut filtered: Vec<u32> = Vec::new();
+        for rid in all.drain(..) {
+            let matched = if let Some(c) = col_idx {
+                let val: Option<String> = conn.query_row(
+                    "SELECT value FROM cells WHERE sheet_id = ?1 AND col_idx = ?2 AND row_idx = ?3",
+                    params![sheet_id, c as i64, rid as i64],
+                    |r| r.get(0),
+                )?;
+                val.map(|v| re.is_match(&v)).unwrap_or(false)
+            } else {
+                // 任意列命中即可
+                let mut stmt2 = conn.prepare(
+                    "SELECT value FROM cells
+                     WHERE sheet_id = ?1 AND row_idx = ?2 AND value IS NOT NULL
+                     ORDER BY col_idx ASC",
+                )?;
+                let mut hit = false;
+                let vals = stmt2.query_map(params![sheet_id, rid as i64], |r| {
+                    r.get::<_, Option<String>>(0)
+                })?;
+                for v in vals {
+                    if let Some(ref s) = v? {
+                        if re.is_match(s) {
+                            hit = true;
+                            break;
+                        }
+                    }
+                }
+                hit
+            };
+            if matched {
+                filtered.push(rid);
+            }
+        }
+        let start = (offset as usize).min(filtered.len());
+        let end = (start + limit as usize).min(filtered.len());
+        Ok(filtered[start..end].to_vec())
+    }
+
+    /// 统计正则搜索命中的 **行数**（`COUNT(DISTINCT row_idx)` 后由 regex 过滤）。
+    pub fn count_matched_rows_regex(
+        &self,
+        sheet_id: i64,
+        col_idx: Option<u32>,
+        pattern: &str,
+    ) -> Result<u32, DbError> {
+        // 复用 search_matched_row_ids_regex 逻辑，取全量再数 length。
+        // 性能：sheet 内行数有限（<1万），可接受；超大表需后续优化。
+        let rows = self.search_matched_row_ids_regex(sheet_id, col_idx, pattern, 0, u32::MAX)?;
+        Ok(rows.len() as u32)
+    }
+
     /// 列内批量替换。返回 `(受影响行数, before 快照, after 快照)`。
     ///
     /// `use_regex=true` 时用 `regex::Regex` 替换 `from` → `to`（`from` 为正则

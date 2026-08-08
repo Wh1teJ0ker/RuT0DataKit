@@ -43,8 +43,9 @@ export const ACTION = {
   APPLY_ROW_STATUSES: "APPLY_ROW_STATUSES",
   // v1.1.1 action（撤销 / 搜索 / 列操作）
   SET_SEARCH_STATE: "SET_SEARCH_STATE", // 搜索框状态（query/useRegex/colIdx/page）
-  APPLY_SEARCH_HITS: "APPLY_SEARCH_HITS", // 命中写入 sheet.searchHits 供 DataTable 高亮
-  CLEAR_SEARCH: "CLEAR_SEARCH", // 清空搜索状态 + 高亮
+  APPLY_SEARCH_HITS: "APPLY_SEARCH_HITS", // 命中写入 sheet.searchHits 供 DataTable 高亮（每次先清空）
+  APPLY_SEARCH_ROWS: "APPLY_SEARCH_ROWS", // v1.1.1 hotfix 行级搜索结果行写入 sheet.searchRows/searchTotal
+  CLEAR_SEARCH: "CLEAR_SEARCH", // 清空搜索状态 + 高亮 + searchRows
   ADD_SHEET_FROM_PARSE: "ADD_SHEET_FROM_PARSE", // parse_column_as_json 返回的新 Sheet 加入 sheets
   SET_UNDO_STACK: "SET_UNDO_STACK", // 可撤销操作列表（撤销工具栏用）
 };

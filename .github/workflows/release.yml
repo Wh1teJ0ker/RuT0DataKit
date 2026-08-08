@@ -84,7 +84,7 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "RuT0DataKit ${{ github.ref_name }}"
-          releaseBody: "See [RELEASE-NOTES.md](docs/versions/1.1.0/RELEASE-NOTES.md) for details."
+          releaseBody: "See [RELEASE-NOTES.md](docs/versions/1.1.1/RELEASE-NOTES.md) for details."
           releaseDraft: false
           prerelease: false
           args: --target ${{ matrix.target }}
