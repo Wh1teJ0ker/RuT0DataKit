@@ -553,7 +553,7 @@ mod tests {
         let total = all.len() as u32;
         // 模拟命令分页：page=1 page_size=50。
         let page_size = 50u32;
-        let start = 0usize.min(all.len());
+        let start = 0usize;
         let end = (start + page_size as usize).min(all.len());
         let rows: Vec<SearchHit> = all[start..end]
             .iter()

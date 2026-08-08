@@ -14,7 +14,6 @@ RuT0DataKit v1.1.1 在 v1.1.0（脱敏 / 校验 / 提取原型 + 规则管理持
 
 - **撤销 / 重做**：`mask_column` / `replace_in_column` / `replace_all` 三类就地变更操作现可撤销可重做；`mask_column` 执行时抓取 before/after 快照（仅变更列 cells）存入 `operations` 表的 `before_snapshot_json` / `result_snapshot_json`；撤销 = 回写 before 快照，重做 = 回写 after 快照；撤销范围明确限定为就地变更类（import / parse_json / validate / extract 不入撤销栈）
 - **列操作 — JSON 解析为新 Tab**：选列 → `parse_column_as_json` 把每行当 JSON 对象解析 → 收集所有 key 作新表头 → 创建新 sheet（`{column}_json`）写入展开后的列；解析失败的行跳过并报告 `skipped` 计数
-- **列操作 — 列内批量替换**：选列 + from/to + useRegex → `replace_in_column` 单事务列内替换，before/after 快照存入 `operations` 供撤销
 - **搜索 — 关键字 + 正则**：搜索栏输入关键字（`LIKE '%kw%' ESCAPE '\'`）或正则模式（SQL LIKE 预筛 + Rust `regex` 精确匹配）；可选指定列或搜全表；服务端分页（`LIMIT/OFFSET`）+ `total` 总数；命中单元格用 `<mark>` 高亮匹配区间（背景 #fff48f）
 - **搜索 — 只保留搜索结果**（v1.1.1 hotfix）：搜索切到「只显示命中行」模式，新增 `search_rows` 行级搜索命令（按 `distinct row_idx` 分页，返回整行数据 + 命中区间），DataTable 在搜索态渲染 `searchRows` 而非 `sheet.rows`；同时修复「第一次搜索的高亮在第二次搜索后仍显示」的 stale highlight bug（`APPLY_SEARCH_HITS` 改为先清空再写入）
 - **搜索 — 全局替换**：全局替换 Modal（from/to/useRegex）→ `replace_all` 全表搜索替换（单事务），before/after 快照存入 `operations` 供撤销
