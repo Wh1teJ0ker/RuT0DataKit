@@ -12,7 +12,10 @@
 //! `replace_all` 全表搜索替换 + before/after 快照撤销）；
 //! 新增 `search_rows` **行级**搜索（只保留搜索结果 + 高亮，hotfix）。
 //! v1.1.1: 新增 2 个列操作 IPC（`parse_column_as_json` JSON 列展开为新 sheet，
-//! `replace_in_column` 列内批量替换 + before/after 快照撤销）。
+//! `replace_in_column` 列内批量替换 + before/after 快照撤销）；
+//! 新增 `base64_column` 列 Base64 编/解码 + before/after 快照撤销。
+//! v1.1.2: 新增 2 个设置 IPC（`load_page_size` / `save_page_size`），
+//! 全局每页行数持久化到 settings.json。
 
 // crate 名 `ruT0-data-kit` 为品牌命名（非 snake_case），有意保留；
 // 改名将牵动 workspace dep / Cargo.toml `[lib].name` / main.rs 调用，得不偿失。
@@ -40,6 +43,8 @@ pub fn run() {
             commands::settings::detect_tshark,
             commands::settings::load_tshark_path,
             commands::settings::save_tshark_path,
+            commands::settings::load_page_size,
+            commands::settings::save_page_size,
             commands::processor::mask_column,
             commands::processor::validate_column,
             commands::processor::extract_column,
@@ -54,6 +59,7 @@ pub fn run() {
             commands::search::replace_all,
             commands::columns::parse_column_as_json,
             commands::columns::replace_in_column,
+            commands::columns::base64_column,
         ])
         .setup(|app| {
             let dir = app.path().app_config_dir()?;

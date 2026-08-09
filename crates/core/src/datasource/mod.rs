@@ -21,6 +21,7 @@ use crate::error::{CoreError, CoreResult};
 
 mod csv;
 mod json;
+mod log;
 mod pcap;
 mod sql;
 mod txt;
@@ -29,6 +30,7 @@ mod xlsx;
 
 pub use csv::CsvReader;
 pub use json::JsonReader;
+pub use log::LogReader;
 pub use pcap::PcapReader;
 pub use sql::SqlReader;
 pub use txt::TxtReader;
@@ -47,7 +49,8 @@ pub trait Reader: Send + Sync {
 ///
 /// 支持扩展名：`.csv` → `CsvReader`、`.xlsx` → `XlsxReader`、
 /// `.json`/`.jsonl` → `JsonReader`、`.txt` → `TxtReader`、
-/// `.sql` → `SqlReader`、`.pcap`/`.pcapng` → `PcapReader`。
+/// `.log` → `LogReader`、`.sql` → `SqlReader`、
+/// `.pcap`/`.pcapng` → `PcapReader`。
 /// 其它扩展名返回 `NotImplemented`。
 pub fn detect_format(path: &str) -> CoreResult<Box<dyn Reader>> {
     let p = Path::new(path);
@@ -57,6 +60,7 @@ pub fn detect_format(path: &str) -> CoreResult<Box<dyn Reader>> {
         Some("json") => Ok(Box::new(JsonReader::new(path))),
         Some("jsonl") => Ok(Box::new(JsonReader::new(path))),
         Some("txt") => Ok(Box::new(TxtReader::new(path))),
+        Some("log") => Ok(Box::new(LogReader::new(path))),
         Some("sql") => Ok(Box::new(SqlReader::new(path))),
         Some("pcap") => Ok(Box::new(PcapReader::new(path))),
         Some("pcapng") => Ok(Box::new(PcapReader::new(path))),
@@ -79,6 +83,7 @@ mod tests {
         assert!(detect_format("/tmp/foo.sql").is_ok());
         assert!(detect_format("/tmp/foo.pcap").is_ok());
         assert!(detect_format("/tmp/foo.pcapng").is_ok());
+        assert!(detect_format("/tmp/foo.log").is_ok());
         // 不支持的扩展名仍返回 NotImplemented。
         let err = detect_format("/tmp/foo.unknown").err().unwrap();
         assert!(matches!(err, CoreError::NotImplemented(_)));

@@ -1134,6 +1134,96 @@ impl DbManager {
         Ok((affected, before_changed, after_changed))
     }
 
+    /// Base64 编/解码列数据（就地变更）。单事务：查 before 快照 → 对每行
+    /// 调用 `transform` → 筛变化行 → 批量 upsert after 值 → 返回
+    /// `(affected, skipped, before_changed, after_changed)`。
+    ///
+    /// `transform` 接受当前值 `&str`，返回：
+    /// - `Some(new_val)`：转换成功；与原值不同则计入 `affected`，相同则忽略。
+    /// - `None`：该行跳过（如 Base64 解码失败 / 非 UTF-8 字节），计入 `skipped`。
+    ///
+    /// 空值（`None`）行不参与变换，不计入 `affected` 也不计入 `skipped`
+    /// （与 `replace_cells_inner` 语义一致：`None` 不入变换）。
+    ///
+    /// 用闭包而非 `Base64Mode` 入参，使 DB 层不依赖 commands 层；转换逻辑
+    /// （`base64` crate 编/解码）由调用方在闭包内实现。SQL 全部用 `?N` +
+    /// `params![]` 绑定，禁止字符串拼接。
+    pub fn base64_transform_column_cells<F>(
+        &self,
+        sheet_id: i64,
+        col_idx: u32,
+        transform: F,
+    ) -> Result<(u32, u32, Vec<Cell>, Vec<Cell>), DbError>
+    where
+        F: Fn(&str) -> Option<String>,
+    {
+        let mut conn = self.conn.lock().expect("db mutex poisoned");
+        let tx = conn.transaction()?;
+        // 抓 before 快照（限定列，排除表头 row_idx=0）。
+        let before: Vec<Cell> = {
+            let map_cell = |r: &rusqlite::Row<'_>| -> rusqlite::Result<Cell> {
+                Ok(Cell {
+                    sheet_id: r.get::<_, i64>(0)?,
+                    row_idx: r.get::<_, i64>(1)? as u32,
+                    col_idx: r.get::<_, i64>(2)? as u32,
+                    value: r.get::<_, Option<String>>(3)?,
+                })
+            };
+            let mut out = Vec::new();
+            let mut stmt = tx.prepare(
+                "SELECT sheet_id, row_idx, col_idx, value FROM cells
+                 WHERE sheet_id = ?1 AND col_idx = ?2 AND row_idx > 0
+                 ORDER BY row_idx ASC",
+            )?;
+            let rows = stmt.query_map(params![sheet_id, col_idx as i64], map_cell)?;
+            for r in rows {
+                out.push(r?);
+            }
+            out
+        };
+        // 计算转换值，筛有变化的行；transform 返回 None 的行计入 skipped。
+        let mut before_changed: Vec<Cell> = Vec::new();
+        let mut after_changed: Vec<Cell> = Vec::new();
+        let mut skipped: u32 = 0;
+        for c in &before {
+            match c.value.as_deref() {
+                Some(val) => match transform(val) {
+                    Some(new_val) if new_val != val => {
+                        before_changed.push(c.clone());
+                        after_changed.push(Cell {
+                            sheet_id: c.sheet_id,
+                            row_idx: c.row_idx,
+                            col_idx: c.col_idx,
+                            value: Some(new_val),
+                        });
+                    }
+                    Some(_) => { /* 转换后与原值相同，不变 */ }
+                    None => skipped += 1, // transform 返回 None（如 decode 失败）
+                },
+                None => { /* 空值行不参与变换 */ }
+            }
+        }
+        // 批量写回 after 值（同一事务）。
+        if !after_changed.is_empty() {
+            let mut stmt = tx.prepare(
+                "INSERT INTO cells (sheet_id, row_idx, col_idx, value)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(sheet_id, row_idx, col_idx) DO UPDATE SET value=excluded.value",
+            )?;
+            for c in &after_changed {
+                stmt.execute(params![
+                    sheet_id,
+                    c.row_idx as i64,
+                    c.col_idx as i64,
+                    c.value,
+                ])?;
+            }
+        }
+        tx.commit()?;
+        let affected = after_changed.len() as u32;
+        Ok((affected, skipped, before_changed, after_changed))
+    }
+
     /// 列出某 sheet 的可撤销操作（最近 `limit` 条，按 `created_at` DESC）。
     ///
     /// 仅返回 kind ∈ {`mask`, `replace_in_column`, `replace_all`} 的操作——
@@ -1148,7 +1238,7 @@ impl DbManager {
         let conn = self.conn.lock().expect("db mutex poisoned");
         let mut stmt = conn.prepare(
             "SELECT id, kind, created_at FROM operations
-             WHERE sheet_id = ?1 AND kind IN ('mask', 'replace_in_column', 'replace_all')
+             WHERE sheet_id = ?1 AND kind IN ('mask', 'replace_in_column', 'replace_all', 'base64_column')
              ORDER BY created_at DESC
              LIMIT ?2",
         )?;

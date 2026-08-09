@@ -13,6 +13,10 @@
 // - `searchTotal`：搜索命中行数（供分页 total）。
 // - `searchHits`：仍保留单元格高亮区间（rowKey → colHeader → [[start, end]]）。
 //   APPLY_SEARCH_HITS 现在每次先清空再写入，避免 stale highlight。
+//
+// v1.1.2：3 个工厂新增可选 `pageSize` 参数（默认 PAGE_SIZE）。
+// reducer 在 ADD_SHEET / IMPORT_SUCCESS / ADD_SHEET_FROM_PARSE 时传入
+// `state.pageSize`（全局每页行数），使新建/导入 Sheet 继承当前全局设置。
 
 import { PAGE_SIZE } from "../constants";
 
@@ -25,7 +29,7 @@ export function defaultSheetName() {
   return `Sheet ${sheetSeq}`;
 }
 
-function createEmptySheet(name) {
+function createEmptySheet(name, pageSize = PAGE_SIZE) {
   sheetSeq += 1;
   const id = `sheet-${Date.now()}-${sheetSeq}`;
   const headers = [];
@@ -37,7 +41,7 @@ function createEmptySheet(name) {
     rows: [],
     total: 0,
     page: 1,
-    pageSize: PAGE_SIZE,
+    pageSize,
     columnOrder: [],
     columnVisibility: {},
     selection: { selectedRowKeys: [], lastSelectedIndex: null },
@@ -50,7 +54,7 @@ function createEmptySheet(name) {
 
 // 由 ImportResult（camelCase）构造真实 Sheet。rows 初始为空，由 SET_SHEET_DATA
 // action 在导入后/翻页后填充首页数据。
-export function createSheetFromImport(result) {
+export function createSheetFromImport(result, pageSize = PAGE_SIZE) {
   const headers = result.headers || [];
   return {
     id: result.sheetId, // Sheet ID 来自 DB（i64），与 getSheetData 入参一致
@@ -60,7 +64,7 @@ export function createSheetFromImport(result) {
     rows: [], // 由 SET_SHEET_DATA 填充首页
     total: result.rowCount, // DB cell 行数（含表头行；前端展示去掉表头行）
     page: 1,
-    pageSize: PAGE_SIZE,
+    pageSize,
     columnOrder: [...headers],
     columnVisibility: headers.reduce((acc, h) => ({ ...acc, [h]: true }), {}),
     selection: { selectedRowKeys: [], lastSelectedIndex: null },
@@ -75,7 +79,7 @@ export function createSheetFromImport(result) {
 // 与 createSheetFromImport 几乎一致，但 id 取 newSheetId（而非 sheetId），
 // sessionId / name / column 由调用方在 payload 传入。rows 初始为空，
 // 由 SET_SHEET_DATA action 在 ADD_SHEET_FROM_PARSE 后填充。
-export function createSheetFromParse(result) {
+export function createSheetFromParse(result, pageSize = PAGE_SIZE) {
   const headers = result.headers || [];
   return {
     id: result.newSheetId,
@@ -85,7 +89,7 @@ export function createSheetFromParse(result) {
     rows: [], // 由 SET_SHEET_DATA 填充首页
     total: result.rowCount,
     page: 1,
-    pageSize: PAGE_SIZE,
+    pageSize,
     columnOrder: [...headers],
     columnVisibility: headers.reduce((acc, h) => ({ ...acc, [h]: true }), {}),
     selection: { selectedRowKeys: [], lastSelectedIndex: null },

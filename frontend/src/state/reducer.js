@@ -40,9 +40,10 @@ export function reducer(state, action) {
     // ---- T3 ----
     case ACTION.ADD_SHEET: {
       // 新建产生空表（无列、无行）。payload = { sheet } | { name } | {}
+      // v1.1.2：pageSize 继承全局 state.pageSize。
       const sheet =
         action.payload?.sheet ||
-        createEmptySheet(action.payload?.name || defaultSheetName());
+        createEmptySheet(action.payload?.name || defaultSheetName(), state.pageSize);
       return {
         ...state,
         sheets: [...state.sheets, sheet],
@@ -100,7 +101,8 @@ export function reducer(state, action) {
     // ---- T5（导入流）----
     case ACTION.IMPORT_SUCCESS: {
       // payload = ImportResult { sessionId, sheetId, rowCount, headers } + name
-      const sheet = createSheetFromImport(action.payload);
+      // v1.1.2：pageSize 继承全局 state.pageSize。
+      const sheet = createSheetFromImport(action.payload, state.pageSize);
       // 若已存在同 sheetId 的 Sheet，替换之；否则追加。
       const exists = state.sheets.some((s) => s.id === sheet.id);
       const sheets = exists
@@ -121,7 +123,8 @@ export function reducer(state, action) {
             action.payload.rows,
             headers,
             action.payload.sheetId,
-            action.payload.page
+            action.payload.page,
+            action.payload.pageSize ?? s.pageSize
           );
           return {
             ...s,
@@ -145,6 +148,19 @@ export function reducer(state, action) {
       return { ...state, tsharkDetected: action.payload || null };
     case ACTION.SET_TSHARK_LOADING:
       return { ...state, tsharkLoading: Boolean(action.payload) };
+
+    // ---- v1.1.2 全局每页行数 ----
+    case ACTION.SET_PAGE_SIZE: {
+      // payload = number
+      // 同步全局 + 所有 Sheet 的 pageSize（page 重置为 1 防越界）。
+      // 当前激活 Sheet 的 rows 由 PageSizeCard 再调 getSheetData 刷新。
+      const pageSize = action.payload;
+      return {
+        ...state,
+        pageSize,
+        sheets: state.sheets.map((s) => ({ ...s, pageSize, page: 1 })),
+      };
+    }
 
     // ---- v1.1.0 行状态高亮（脱敏/校验/提取）----
     case ACTION.APPLY_ROW_STATUSES: {
@@ -266,7 +282,8 @@ export function reducer(state, action) {
     case ACTION.ADD_SHEET_FROM_PARSE: {
       // payload = ParseResult（含 newSheetId/headers/rowCount/skipped + sessionId/name?/column?）
       // 新 Sheet 必然新 id，不替换同名；追加并激活。
-      const sheet = createSheetFromParse(action.payload);
+      // v1.1.2：pageSize 继承全局 state.pageSize。
+      const sheet = createSheetFromParse(action.payload, state.pageSize);
       return {
         ...state,
         sheets: [...state.sheets, sheet],

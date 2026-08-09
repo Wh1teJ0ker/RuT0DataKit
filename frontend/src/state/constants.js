@@ -4,7 +4,7 @@
 export const initialState = {
   // T2 字段（保留，禁止覆盖）
   currentView: "workbench", // 'workbench' | 'settings'
-  activeCapability: null, // null | 'mask' | 'validate' | 'extract' | 'rules' | 'columnOps'
+  activeCapability: null, // null | 'mask' | 'validate' | 'extract' | 'rules' | 'columnOps' | 'crypto'
   aiPanel: { visible: false }, // 默认折叠为图标条
   // T3 字段
   sheets: [], // Sheet[]
@@ -13,6 +13,10 @@ export const initialState = {
   tsharkPath: null, // string | null：用户覆盖路径
   tsharkDetected: null, // { path, version } | null
   tsharkLoading: false,
+  // v1.1.2 全局每页行数（settings.json 持久化）
+  // 初始值 = PAGE_SIZE；PageSizeCard 启动时 loadPageSize 覆盖。
+  // 新建/导入 Sheet 的 sheet.pageSize 由 reducer 从此字段继承。
+  pageSize: 50,
   // v1.1.1 state（撤销 / 搜索 / 列操作）
   undoStack: [], // Array<{ id: number, kind: string, createdAt: string }>，撤销工具栏数据源
   searchState: { query: "", useRegex: false, colIdx: null, page: 1 }, // 搜索框受控状态（colIdx: null = 全表）
@@ -39,6 +43,8 @@ export const ACTION = {
   SET_TSHARK_PATH: "SET_TSHARK_PATH",
   SET_TSHARK_DETECTED: "SET_TSHARK_DETECTED",
   SET_TSHARK_LOADING: "SET_TSHARK_LOADING",
+  // v1.1.2 全局每页行数（payload = number）
+  SET_PAGE_SIZE: "SET_PAGE_SIZE",
   // v1.1.0 action（脱敏/校验/提取 → 行高亮）
   APPLY_ROW_STATUSES: "APPLY_ROW_STATUSES",
   // v1.1.1 action（撤销 / 搜索 / 列操作）

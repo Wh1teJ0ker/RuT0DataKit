@@ -3,16 +3,19 @@ import MaskPanel from "../panels/MaskPanel";
 import ValidatePanel from "../panels/ValidatePanel";
 import ExtractPanel from "../panels/ExtractPanel";
 import ColumnOpsPanel from "../panels/ColumnOpsPanel";
+import CryptoPanel from "../panels/CryptoPanel";
 
 const { Sider } = Layout;
 
 // v1.1.0：`rules` 能力改在 Workbench 主区渲染两栏布局，不再走 260px SidePanel。
 // v1.1.1：新增 `columnOps` 列操作面板。
+// v1.1.2：新增 `crypto` 加解密面板（Base64 从 columnOps 迁入，后续扩展哈希/AES 等）。
 const PANELS = {
   mask: MaskPanel,
   validate: ValidatePanel,
   extract: ExtractPanel,
   columnOps: ColumnOpsPanel,
+  crypto: CryptoPanel,
 };
 
 // 左侧动态能力面板容器：由 activeCapability 驱动切换面板；

@@ -1,7 +1,10 @@
-//! v1.0.0 tshark 设置命令（多平台路径检测 + 持久化）。
+//! 应用设置命令（tshark 路径 + 全局每页行数）。
 //!
-//! settings.json 结构：`{ "tshark_path": "<path>" | null }`。
+//! settings.json 结构：
+//! `{ "tshark_path": "<path>" | null, "page_size": <u32> | null }`。
 //! 读 `app_config_dir/settings.json`，缺失返回默认。
+//! v1.1.2：新增 `page_size` 字段（全局每页行数），`#[serde(default)]`
+//! 保证旧版 settings.json（无 page_size）反序列化时取 None → 前端回退 50。
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -9,29 +12,31 @@ use tauri::AppHandle;
 
 use ruT0_data_kit_core::pcap;
 
-/// settings.json 结构：`{ "tshark_path": "<path>" | null }`。
+/// settings.json 结构（v1.1.2 新增 page_size）。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub(crate) struct TsharkSettings {
+pub(crate) struct AppSettings {
     pub(crate) tshark_path: Option<String>,
+    #[serde(default)]
+    pub(crate) page_size: Option<u32>,
 }
 
 /// 读取 app_config_dir 下的 settings.json，缺失返回默认。
-pub(crate) fn read_settings(app: &AppHandle) -> TsharkSettings {
+pub(crate) fn read_settings(app: &AppHandle) -> AppSettings {
     use tauri::Manager;
     let dir = match app.path().app_config_dir() {
         Ok(p) => p,
-        Err(_) => return TsharkSettings::default(),
+        Err(_) => return AppSettings::default(),
     };
     let path = dir.join("settings.json");
     let content = match std::fs::read_to_string(&path) {
         Ok(s) => s,
-        Err(_) => return TsharkSettings::default(),
+        Err(_) => return AppSettings::default(),
     };
     serde_json::from_str(&content).unwrap_or_default()
 }
 
 /// 写入 settings.json。
-fn write_settings(app: &AppHandle, settings: &TsharkSettings) -> Result<(), String> {
+fn write_settings(app: &AppHandle, settings: &AppSettings) -> Result<(), String> {
     use tauri::Manager;
     let dir = app
         .path()
@@ -80,4 +85,24 @@ pub async fn save_tshark_path(app: AppHandle, path: Option<String>) -> Result<()
     write_settings(&app, &settings)?;
     pcap::set_tshark_path(path);
     Ok(())
+}
+
+/// 加载全局每页行数（v1.1.2）。
+///
+/// 读 settings.json 的 `page_size`，未配置时返回 null（前端回退默认 50）。
+#[tauri::command]
+pub async fn load_page_size(app: AppHandle) -> Result<Option<u32>, String> {
+    let settings = read_settings(&app);
+    Ok(settings.page_size)
+}
+
+/// 保存全局每页行数（v1.1.2）。
+///
+/// `page_size = Some(n)` 时写入；`None` 时清除（前端回退默认 50）。
+/// 仅持久化到 settings.json，不注入运行时——前端 state 自行 dispatch。
+#[tauri::command]
+pub async fn save_page_size(app: AppHandle, page_size: Option<u32>) -> Result<(), String> {
+    let mut settings = read_settings(&app);
+    settings.page_size = page_size;
+    write_settings(&app, &settings)
 }

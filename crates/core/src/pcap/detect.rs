@@ -121,6 +121,24 @@ mod tests {
     }
 
     #[test]
+    fn candidate_paths_windows_paths_are_absolute() {
+        let paths = candidate_paths();
+        let win_paths: Vec<_> = paths
+            .iter()
+            .filter(|p| p.contains(r"Program Files"))
+            .copied()
+            .collect();
+        assert!(!win_paths.is_empty(), "至少有一条 Windows 路径");
+        for p in &win_paths {
+            assert!(p.starts_with(r"C:\"), "Windows 路径以盘符开头: {p}");
+            assert!(
+                p.ends_with("tshark.exe"),
+                "Windows 路径以 tshark.exe 结尾: {p}"
+            );
+        }
+    }
+
+    #[test]
     fn set_and_get_tshark_path_roundtrip() {
         let original = get_tshark_path();
         set_tshark_path(Some("/tmp/fake_tshark".to_string()));

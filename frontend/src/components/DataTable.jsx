@@ -238,7 +238,7 @@ export default function DataTable({ sheet, onSetPage }) {
         useRegex,
         colIdx,
         1,
-        PAGE_SIZE
+        sheet.pageSize || PAGE_SIZE
       );
       applySearchRows({ sheetId: sheet.id, rows: res });
       setSearchState({ page: 1 });
@@ -266,7 +266,7 @@ export default function DataTable({ sheet, onSetPage }) {
         useRegex,
         colIdx,
         page,
-        PAGE_SIZE
+        sheet.pageSize || PAGE_SIZE
       );
       applySearchRows({ sheetId: sheet.id, rows: res });
       setSearchState({ page });

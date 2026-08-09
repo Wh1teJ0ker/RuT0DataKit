@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useEffect } from "react";
 import { Layout } from "antd";
 import TopToolbar from "./components/layout/TopToolbar";
 import SidePanel from "./components/layout/SidePanel";
@@ -7,7 +7,7 @@ import AiPanel from "./components/AiPanel";
 import SettingsView from "./components/settings/SettingsView";
 import RulesPanel from "./components/panels/RulesPanel";
 import { AppProvider, useAppContext, ACTION } from "./state";
-import { getSheetData } from "./tauri";
+import { getSheetData, loadPageSize } from "./tauri";
 import { PAGE_SIZE } from "./constants";
 
 const { Header, Content } = Layout;
@@ -21,16 +21,32 @@ const { Header, Content } = Layout;
 // 子组件（TopToolbar / Workbench / AiPanel 等）改用 useAppContext 取数，消除 prop drilling。
 // v1.1.0：`activeCapability === "rules"` 时，规则管理面板占据 Workbench 主区，
 // 不再走 260px SidePanel（左侧列表 + 右侧详情两栏布局）。
+// v1.1.2：启动时加载全局每页行数（settings.json 持久化），dispatch SET_PAGE_SIZE。
 function AppShell() {
   const { state, dispatch, setView, setAiPanelVisible, setPage } =
     useAppContext();
 
+  // v1.1.2：启动时加载全局每页行数。
+  useEffect(() => {
+    (async () => {
+      try {
+        const saved = await loadPageSize();
+        if (saved && saved > 0) {
+          dispatch({ type: ACTION.SET_PAGE_SIZE, payload: saved });
+        }
+      } catch {
+        // 静默忽略（开发态无 IPC）
+      }
+    })();
+  }, [dispatch]);
+
   // 导入成功后：dispatch IMPORT_SUCCESS 填充 Sheet，并拉取首页数据。
+  // v1.1.2：首页 pageSize 用全局 state.pageSize。
   const handleImport = useCallback(
     async (payload) => {
       dispatch({ type: ACTION.IMPORT_SUCCESS, payload });
       try {
-        const data = await getSheetData(payload.sheetId, 1, PAGE_SIZE);
+        const data = await getSheetData(payload.sheetId, 1, state.pageSize);
         dispatch({
           type: ACTION.SET_SHEET_DATA,
           payload: { ...data, sheetId: payload.sheetId },
@@ -41,7 +57,7 @@ function AppShell() {
         console.error("getSheetData page 1 failed:", e);
       }
     },
-    [dispatch]
+    [dispatch, state.pageSize]
   );
 
   // 翻页时按需拉取对应页数据。
@@ -98,7 +114,7 @@ function AppShell() {
         <Layout style={{ overflow: "hidden" }}>
           <SidePanel activeCapability={state.activeCapability} />
           <Workbench setPage={handleSetPage} />
-          <AiPanel onSettings={() => setView("settings")} />
+          <AiPanel />
         </Layout>
       )}
     </Layout>

@@ -145,10 +145,7 @@ export default function TsharkPathCard() {
           />
         </div>
 
-        <Text type="secondary">
-          pcap 导入依赖 tshark。未配置时按 PATH 查找；缺失则 pcap 导入禁用。
-          全本地处理，不上传任何 pcap/规则/样本。
-        </Text>
+        <Text type="secondary">pcap 导入依赖 tshark，全本地处理。</Text>
       </Space>
     </Card>
   );

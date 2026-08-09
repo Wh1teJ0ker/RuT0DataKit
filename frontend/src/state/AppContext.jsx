@@ -5,7 +5,7 @@ import { createContext, useContext, useMemo, useReducer, useCallback } from "rea
 import { ACTION, initialState } from "./constants";
 import { reducer } from "./reducer";
 
-// Context 值：{ state, dispatch, ...19 个 dispatcher }
+// Context 值：{ state, dispatch, ...20 个 dispatcher（v1.1.2 新增 setPageSize） }
 export const AppContext = createContext(null);
 
 export function AppProvider({ children }) {
@@ -102,6 +102,12 @@ export function AppProvider({ children }) {
     []
   );
 
+  // ---- v1.1.2 全局每页行数 ----
+  const setPageSize = useCallback(
+    (pageSize) => dispatch({ type: ACTION.SET_PAGE_SIZE, payload: pageSize }),
+    []
+  );
+
   const value = useMemo(
     () => ({
       state,
@@ -126,6 +132,7 @@ export function AppProvider({ children }) {
       clearSearch,
       addSheetFromParse,
       setUndoStack,
+      setPageSize,
     }),
     [
       state,
@@ -150,6 +157,7 @@ export function AppProvider({ children }) {
       clearSearch,
       addSheetFromParse,
       setUndoStack,
+      setPageSize,
     ]
   );
 

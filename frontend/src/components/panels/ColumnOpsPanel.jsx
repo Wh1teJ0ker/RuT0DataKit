@@ -1,11 +1,12 @@
 import { useState } from "react";
-import { Button, Form, Input, Select, message } from "antd";
+import { Button, Form, Select, message } from "antd";
 import { useAppContext } from "../../state";
-import { parseColumnAsJson, getSheetData } from "../../tauri";
+import { getSheetData, parseColumnAsJson } from "../../tauri";
 import { PAGE_SIZE } from "../../constants";
 
-// v1.1.1 列操作面板：
+// v1.1.2 列操作面板：
 // - JSON 解析为新 Tab：parseColumnAsJson → dispatch ADD_SHEET_FROM_PARSE → 拉首页
+// v1.1.2 起 Base64 编解码已迁至独立 CryptoPanel（加解密能力按钮）。
 // 参考 MaskPanel/ExtractPanel 模式（Form + Select + Button + message +
 // 操作后 getSheetData + dispatch SET_SHEET_DATA 刷新）。
 export default function ColumnOpsPanel() {

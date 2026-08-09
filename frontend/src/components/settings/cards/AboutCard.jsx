@@ -1,5 +1,5 @@
 import { Card, Space, Typography } from "antd";
-import { APP_VERSION, DEV_STATUS } from "../../../constants";
+import { APP_VERSION } from "../../../constants";
 
 const { Text, Link } = Typography;
 
@@ -26,9 +26,7 @@ export default function AboutCard() {
             </Link>
           ))}
         </Space>
-        <Text type="secondary">
-          数据脱敏 / 校验 / 提取工作台（v1.1.0 处理器原型已接入，业务能力 {DEV_STATUS}）
-        </Text>
+        <Text type="secondary">本地数据处理工作台</Text>
       </Space>
     </Card>
   );

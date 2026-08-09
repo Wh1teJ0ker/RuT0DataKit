@@ -8,6 +8,8 @@ import {
   FileSearchOutlined,
   ControlOutlined,
   ColumnHeightOutlined,
+  KeyOutlined,
+  SettingOutlined,
 } from "@ant-design/icons";
 import { open } from "@tauri-apps/plugin-dialog";
 import { importFile } from "../../tauri";
@@ -20,11 +22,12 @@ const CAPABILITIES = [
   { id: "validate", label: "校验", icon: <CheckCircleOutlined /> },
   { id: "extract", label: "提取", icon: <FileSearchOutlined /> },
   { id: "columnOps", label: "列操作", icon: <ColumnHeightOutlined /> },
+  { id: "crypto", label: "加解密", icon: <KeyOutlined /> },
   { id: "rules", label: "规则管理", icon: <ControlOutlined /> },
 ];
 
 export default function TopToolbar({ onImport }) {
-  const { state, setActiveCapability } = useAppContext();
+  const { state, setActiveCapability, setView } = useAppContext();
   const { activeCapability } = state;
   const activeSheet = state.sheets.find(
     (s) => s.id === state.activeSheetId
@@ -51,6 +54,7 @@ export default function TopToolbar({ onImport }) {
               "txt",
               "pcap",
               "pcapng",
+              "log",
             ],
           },
         ],
@@ -125,6 +129,14 @@ export default function TopToolbar({ onImport }) {
           </Button>
         ))}
       </Space>
+
+      <div style={{ flex: 1 }} />
+
+      <Button
+        type="text"
+        icon={<SettingOutlined />}
+        onClick={() => setView("settings")}
+      />
 
       <ExportModal
         open={exportOpen}

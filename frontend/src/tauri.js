@@ -77,6 +77,25 @@ export function saveTsharkPath(path) {
 }
 
 /**
+ * 调用 `load_page_size` IPC：启动时加载 settings.json 中的全局每页行数。
+ * v1.1.2 新增。
+ * @returns {Promise<number | null>} 已保存的每页行数或 null（未配置时回退默认 50）
+ */
+export function loadPageSize() {
+  return invoke("load_page_size");
+}
+
+/**
+ * 调用 `save_page_size` IPC：保存全局每页行数到 settings.json。
+ * v1.1.2 新增。
+ * @param {number | null} pageSize - 每页行数；null 清除（回退默认 50）
+ * @returns {Promise<void>}
+ */
+export function savePageSize(pageSize) {
+  return invoke("save_page_size", { pageSize });
+}
+
+/**
  * 调用 `check_update` IPC：检查应用更新（无网络/无新版本统一降级 available=false）。
  * @returns {Promise<{available: boolean, version: string|null, notes: string|null}>} UpdateStatus（camelCase）
  */
@@ -257,6 +276,17 @@ export function parseColumnAsJson(sheetId, column, sessionId) {
 }
 
 /**
+ * 调用 `base64_column` IPC：对指定列就地 Base64 编/解码（可撤销，已入撤销栈）。
+ * @param {number} sheetId  Sheet ID
+ * @param {string} column   列名（headers 中的值）
+ * @param {string} mode     "encode" | "decode"（后端 Base64Mode serde lowercase）
+ * @returns {Promise<{affected: number, skipped: number}>} Base64Result（camelCase）
+ */
+export function base64Column(sheetId, column, mode) {
+  return invoke("base64_column", { sheetId, column, mode });
+}
+
+/**
  * 调用 `replace_in_column` IPC：在指定列内替换匹配项。
  * @param {number} sheetId  Sheet ID
  * @param {string} column   列名
@@ -319,10 +349,11 @@ export async function saveTextFile(filename, content, mimeType, filters) {
  * @param {string[]} headers  字段名顺序
  * @param {number} sheetId  用于生成稳定 key
  * @param {number} [page=1]  当前页码（仅用于 key 区分）
+ * @param {number} [pageSize=PAGE_SIZE]  每页行数（v1.1.2：用于 _rowIdx 全局行号计算）
  * @returns {Array<object>} antd 行对象数组
  */
-export function toRowObjects(rawRows, headers, sheetId, page = 1) {
-  const base = (page - 1) * PAGE_SIZE;
+export function toRowObjects(rawRows, headers, sheetId, page = 1, pageSize = PAGE_SIZE) {
+  const base = (page - 1) * pageSize;
   return rawRows.map((row, i) => {
     const obj = { key: `${sheetId}-${page}-${i}`, _rowIdx: base + i + 1 };
     headers.forEach((h, col) => {

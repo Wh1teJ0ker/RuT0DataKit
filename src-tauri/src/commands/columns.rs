@@ -1,19 +1,22 @@
-//! v1.1.1 列操作类 IPC 命令（JSON 展开解析 / 列内批量替换）。
+//! v1.1.1 列操作类 IPC 命令（JSON 展开解析 / 列内批量替换 / Base64 编解码）。
 //!
 //! 全部 `#[tauri::command]` → `Result<T, String>` + `.map_err(|e| e.to_string())`。
 //! 依赖 `DbManager`（`find_col_idx` / `query_column_cells` / `replace_in_column_cells`
-//! / `create_sheet` / `write_cells` / `log_operation` / `log_operation_with_snapshot`）。
+//! / `base64_transform_column_cells` / `create_sheet` / `write_cells` / `log_operation`
+//! / `log_operation_with_snapshot`）。
 //!
 //! - `parse_column_as_json`：把某列每行当 JSON 解析，展开成多列写入新 sheet。
 //!   新增 sheet（非就地变更），不纳入撤销栈（`before_snapshot=None`）；撤销 = 关闭 Tab。
 //! - `replace_in_column`：列内批量字段替换，单事务 + before/after 快照，可撤销。
+//! - `base64_column`：对某列做 Base64 编码或解码，单事务 + before/after 快照，可撤销。
 //!
 //! 命令实现拆为 `_inner` 核心逻辑（接受 `&DbManager`，便于单测直接调用）+
 //! 薄 `#[tauri::command]` 包装（仅做 `tauri::State` → `&DbManager` 解包）。
 
 use std::collections::BTreeMap;
 
-use serde::Serialize;
+use base64::{engine::general_purpose::STANDARD, Engine};
+use serde::{Deserialize, Serialize};
 
 use crate::db::{Cell, DbManager};
 
@@ -36,6 +39,28 @@ pub struct ParseResult {
 #[serde(rename_all = "camelCase")]
 pub struct ReplaceResult {
     pub affected: u32,
+}
+
+/// Base64 操作模式。
+///
+/// - `Encode`：对文本做标准 Base64 编码（`aGVsbG8=` ← `hello`）。
+/// - `Decode`：把 Base64 串还原为原文（`hello` ← `aGVsbG8=`）；非法串行跳过。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Base64Mode {
+    Encode,
+    Decode,
+}
+
+/// Base64 操作结果（camelCase）。
+///
+/// - `affected`：实际被改写的行数（转换成功且值发生了变化）。
+/// - `skipped`：被跳过的行数（解码失败 / 非 UTF-8 字节等）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Base64Result {
+    pub affected: u32,
+    pub skipped: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -226,6 +251,81 @@ pub fn replace_in_column(
     db: tauri::State<'_, DbManager>,
 ) -> Result<ReplaceResult, String> {
     replace_in_column_inner(&db, sheet_id, &column, &from, &to, use_regex)
+}
+
+// ---------------------------------------------------------------------------
+// base64_column
+// ---------------------------------------------------------------------------
+
+/// 对指定列做 Base64 编码或解码（就地变更，单事务 + before/after 快照，可撤销）。
+///
+/// - `mode=Encode`：每行文本经标准 Base64 编码后写回；空值行跳过。
+/// - `mode=Decode`：每行 Base64 串解码为原文后写回；解码失败（非法串或
+///   非 UTF-8 字节）的行计入 `skipped`，不 panic，不中断整体操作。
+///
+/// 调用 `base64_transform_column_cells`（单事务，返回 before/after 快照）
+/// → `log_operation_with_snapshot` 供撤销。返回 `(affected, skipped)`。
+///
+/// 编码后再解码可恢复原文（往返一致）。`None` 行不参与变换，不计入
+/// `affected` 也不计入 `skipped`（与 `replace_in_column` 的空值语义一致）。
+pub fn base64_column_inner(
+    db: &DbManager,
+    sheet_id: i64,
+    column: &str,
+    mode: Base64Mode,
+) -> Result<Base64Result, String> {
+    let col_idx = db
+        .find_col_idx(sheet_id, column)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("列 `{column}` 不存在"))?;
+
+    // 闭包封装编/解码逻辑：返回 Some(new_val) 表示成功，None 表示跳过。
+    // 编码永远成功（任意 &[u8] 都可编码）；解码可能因非法串或非 UTF-8 失败。
+    let transform = |val: &str| match mode {
+        Base64Mode::Encode => Some(STANDARD.encode(val.as_bytes())),
+        Base64Mode::Decode => match STANDARD.decode(val) {
+            Ok(bytes) => String::from_utf8(bytes).ok(), // 非 UTF-8 字节无法回写为 String → 跳过
+            Err(_) => None,                             // 非法 Base64 串 → 跳过
+        },
+    };
+
+    let (affected, skipped, before_cells, after_cells) = db
+        .base64_transform_column_cells(sheet_id, col_idx, transform)
+        .map_err(|e| e.to_string())?;
+
+    let before_json = serde_json::to_string(&before_cells).map_err(|e| e.to_string())?;
+    let after_json = serde_json::to_string(&after_cells).map_err(|e| e.to_string())?;
+
+    db.log_operation_with_snapshot(
+        Some(sheet_id),
+        "base64_column",
+        &serde_json::json!({
+            "column": column,
+            "mode": match mode {
+                Base64Mode::Encode => "encode",
+                Base64Mode::Decode => "decode",
+            },
+            "affected": affected,
+            "skipped": skipped
+        })
+        .to_string(),
+        Some(&before_json),
+        &after_json,
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(Base64Result { affected, skipped })
+}
+
+/// `base64_column` 的 Tauri 命令包装。
+#[tauri::command]
+pub fn base64_column(
+    sheet_id: i64,
+    column: String,
+    mode: Base64Mode,
+    db: tauri::State<'_, DbManager>,
+) -> Result<Base64Result, String> {
+    base64_column_inner(&db, sheet_id, &column, mode)
 }
 
 // ---------------------------------------------------------------------------
@@ -485,5 +585,145 @@ mod tests {
         // 列数据不应被修改（事务回滚 / 未写入）。
         let names = column_values(&db, sheet_id, 0);
         assert_eq!(names, vec!["张三".to_string()]);
+    }
+
+    // 8. base64_column encode 对 "hello" 编码后值为 "aGVsbG8="
+    #[test]
+    fn base64_encode_column_basic() {
+        let (_dir, db) = setup_db();
+        let (_session_id, sheet_id) = setup_sheet(
+            &db,
+            &[
+                cell(0, 0, "payload"),
+                cell(1, 0, "hello"),
+                cell(2, 0, "world"),
+            ],
+        );
+
+        let result = base64_column_inner(&db, sheet_id, "payload", Base64Mode::Encode).unwrap();
+        assert_eq!(result.affected, 2);
+        assert_eq!(result.skipped, 0);
+
+        // "hello" → "aGVsbG8=", "world" → "d29ybGQ="
+        let vals = column_values(&db, sheet_id, 0);
+        assert_eq!(vals, vec!["aGVsbG8=".to_string(), "d29ybGQ=".to_string()]);
+    }
+
+    // 9. base64_column decode 对 "aGVsbG8=" 解码后值为 "hello"
+    #[test]
+    fn base64_decode_column_basic() {
+        let (_dir, db) = setup_db();
+        let (_session_id, sheet_id) = setup_sheet(
+            &db,
+            &[
+                cell(0, 0, "payload"),
+                cell(1, 0, "aGVsbG8="),
+                cell(2, 0, "d29ybGQ="),
+            ],
+        );
+
+        let result = base64_column_inner(&db, sheet_id, "payload", Base64Mode::Decode).unwrap();
+        assert_eq!(result.affected, 2);
+        assert_eq!(result.skipped, 0);
+
+        let vals = column_values(&db, sheet_id, 0);
+        assert_eq!(vals, vec!["hello".to_string(), "world".to_string()]);
+    }
+
+    // 10. base64_column decode 遇到非法 Base64 串的行被跳过，skipped 计数正确
+    #[test]
+    fn base64_decode_column_skips_invalid() {
+        let (_dir, db) = setup_db();
+        let (_session_id, sheet_id) = setup_sheet(
+            &db,
+            &[
+                cell(0, 0, "payload"),
+                cell(1, 0, "aGVsbG8="),   // 合法 → "hello"
+                cell(2, 0, "!!!not-b64"), // 非法 → 跳过
+                cell(3, 0, "d29ybGQ="),   // 合法 → "world"
+            ],
+        );
+
+        let result = base64_column_inner(&db, sheet_id, "payload", Base64Mode::Decode).unwrap();
+        assert_eq!(result.affected, 2); // 2 行合法且值变化
+        assert_eq!(result.skipped, 1); // 1 行非法被跳过
+
+        let vals = column_values(&db, sheet_id, 0);
+        assert_eq!(vals[0], "hello");
+        assert_eq!(vals[1], "!!!not-b64"); // 非法行原值保留
+        assert_eq!(vals[2], "world");
+    }
+
+    // 11. base64_column 编码 + 解码往返一致（encode → decode 恢复原文）
+    #[test]
+    fn base64_encode_then_decode_roundtrip() {
+        let (_dir, db) = setup_db();
+        let (_session_id, sheet_id) = setup_sheet(
+            &db,
+            &[
+                cell(0, 0, "payload"),
+                cell(1, 0, "hello"),
+                cell(2, 0, "RuT0DataKit"),
+                cell(3, 0, "中文测试"),
+            ],
+        );
+
+        // 编码：3 行数据全部变化（row_idx=0 是表头，不参与）。
+        let enc = base64_column_inner(&db, sheet_id, "payload", Base64Mode::Encode).unwrap();
+        assert_eq!(enc.affected, 3);
+        assert_eq!(enc.skipped, 0);
+
+        // 解码：3 行全部还原。
+        let dec = base64_column_inner(&db, sheet_id, "payload", Base64Mode::Decode).unwrap();
+        assert_eq!(dec.affected, 3);
+        assert_eq!(dec.skipped, 0);
+
+        // 往返后恢复原文。
+        let vals = column_values(&db, sheet_id, 0);
+        assert_eq!(
+            vals,
+            vec![
+                "hello".to_string(),
+                "RuT0DataKit".to_string(),
+                "中文测试".to_string()
+            ]
+        );
+    }
+
+    // 12. base64_column 的 operations 行有 before_snapshot_json（供撤销），撤销可恢复
+    #[test]
+    fn base64_column_logs_before_snapshot_and_undo_restores() {
+        let (_dir, db) = setup_db();
+        let (_session_id, sheet_id) = setup_sheet(
+            &db,
+            &[
+                cell(0, 0, "payload"),
+                cell(1, 0, "hello"),
+                cell(2, 0, "world"),
+            ],
+        );
+
+        let result = base64_column_inner(&db, sheet_id, "payload", Base64Mode::Encode).unwrap();
+        assert_eq!(result.affected, 2);
+
+        // 查最近一条 base64_column 操作，断言 before_snapshot_json 非空。
+        let undoable = db.list_undoable_operations(sheet_id, 50).unwrap();
+        let b64_op = undoable
+            .iter()
+            .find(|r| r.kind == "base64_column")
+            .expect("应有 base64_column 操作记录");
+        let op = db.query_operation_by_id(b64_op.id).unwrap().unwrap();
+        assert!(
+            op.before_snapshot_json.is_some(),
+            "before_snapshot_json 必须存在供撤销"
+        );
+        let before_json = op.before_snapshot_json.unwrap();
+        assert!(before_json.contains("hello"), "before 快照应含原始值 hello");
+
+        // 撤销：把 before 快照回写 → 恢复原始值。
+        let before_cells: Vec<Cell> = serde_json::from_str(&before_json).unwrap();
+        db.write_cells(sheet_id, &before_cells).unwrap();
+        let restored = column_values(&db, sheet_id, 0);
+        assert_eq!(restored, vec!["hello".to_string(), "world".to_string()]);
     }
 }

@@ -22,13 +22,10 @@ export default function DbPathCard() {
         >
           {DB_PATH}
         </Paragraph>
-        <Text type="secondary">
-          这是 v1.0.0 在 macOS 上的预期数据库位置；后续版本将提供动态获取命令。
-        </Text>
         <Button
           icon={<FolderOpenOutlined />}
           onClick={() =>
-            message.info(`「在 Finder 中显示」${DEV_STATUS}`)
+            message.info(`在 Finder 中显示${DEV_STATUS}`)
           }
         >
           在 Finder 中显示

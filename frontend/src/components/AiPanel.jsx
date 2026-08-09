@@ -3,7 +3,6 @@ import {
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   RobotOutlined,
-  SettingOutlined,
 } from "@ant-design/icons";
 
 import { DEV_STATUS } from "../constants";
@@ -12,9 +11,8 @@ import { useAppContext } from "../state";
 const { Sider } = Layout;
 
 // 右侧 AI 面板：默认折叠为图标条，展开后仅显示一行状态文案。
-// 折叠态图标条底部常驻「⚙ 设置」按钮（与左侧 SidePanel 对称入口）。
-// T13：visible / setVisible 经 useAppContext 取，仅保留 onSettings 跨组件回调。
-export default function AiPanel({ onSettings }) {
+// 设置入口已迁移到 TopToolbar 右端（T40）。
+export default function AiPanel() {
   const { state, setAiPanelVisible } = useAppContext();
   const { visible } = state.aiPanel;
   return (
@@ -31,7 +29,7 @@ export default function AiPanel({ onSettings }) {
       trigger={null}
     >
       {!visible ? (
-        // 折叠态：图标条 + 底部设置按钮。
+        // 折叠态：图标条。
         <div
           style={{
             display: "flex",
@@ -46,12 +44,6 @@ export default function AiPanel({ onSettings }) {
             style={{ width: 48, height: 48 }}
           />
           <div style={{ flex: 1 }} />
-          <Button
-            type="text"
-            icon={<SettingOutlined />}
-            onClick={onSettings}
-            style={{ width: 48, height: 48 }}
-          />
         </div>
       ) : (
         <div
@@ -84,20 +76,6 @@ export default function AiPanel({ onSettings }) {
             <Typography.Paragraph type="secondary">
               AI 能力 {DEV_STATUS}
             </Typography.Paragraph>
-          </div>
-          <div
-            style={{
-              borderTop: "1px solid #f0f0f0",
-              padding: 8,
-            }}
-          >
-            <Button
-              block
-              icon={<SettingOutlined />}
-              onClick={onSettings}
-            >
-              设置
-            </Button>
           </div>
         </div>
       )}

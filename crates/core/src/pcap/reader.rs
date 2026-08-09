@@ -81,35 +81,45 @@ impl PcapReader {
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let mut result = Vec::new();
-        for line in stdout.lines() {
-            if line.trim().is_empty() {
-                continue;
-            }
-            let parts: Vec<&str> = line.split('\t').collect();
-            // 7 个字段；缺失的用空串补齐（tshark 对空字段可能输出连续分隔符）。
-            let get = |idx: usize| -> String { parts.get(idx).unwrap_or(&"").to_string() };
-            let body_raw = get(6);
-            let body = if body_raw.is_empty() {
-                String::new()
-            } else {
-                // tshark 以十六进制输出 http.file_data；解码成字节再转字符串。
-                let bytes = hex_to_bytes(&body_raw);
-                String::from_utf8_lossy(&bytes).to_string()
-            };
-            result.push(HttpRequest {
-                frame_no: get(0),
-                src_ip: get(1),
-                dst_ip: get(2),
-                method: get(3),
-                host: get(4),
-                uri: get(5),
-                body,
-                user_agent: get(7),
-            });
-        }
-        Ok(result)
+        Ok(parse_tshark_output(&stdout))
     }
+}
+
+/// 解析 tshark `-T fields` 的 stdout 为 [`HttpRequest`] 列表。
+///
+/// 每行一条记录，tab 分隔 8 字段；空行跳过。缺失字段以空串补齐
+/// （tshark 对空字段可能输出连续分隔符）。`http.file_data`（索引 6）
+/// tshark 以十六进制输出，由 [`hex_to_bytes`] 解码成字节再
+/// `String::from_utf8_lossy`。
+fn parse_tshark_output(stdout: &str) -> Vec<HttpRequest> {
+    let mut result = Vec::new();
+    for line in stdout.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let parts: Vec<&str> = line.split('\t').collect();
+        // 8 个字段；缺失的用空串补齐（tshark 对空字段可能输出连续分隔符）。
+        let get = |idx: usize| -> String { parts.get(idx).unwrap_or(&"").to_string() };
+        let body_raw = get(6);
+        let body = if body_raw.is_empty() {
+            String::new()
+        } else {
+            // tshark 以十六进制输出 http.file_data；解码成字节再转字符串。
+            let bytes = hex_to_bytes(&body_raw);
+            String::from_utf8_lossy(&bytes).to_string()
+        };
+        result.push(HttpRequest {
+            frame_no: get(0),
+            src_ip: get(1),
+            dst_ip: get(2),
+            method: get(3),
+            host: get(4),
+            uri: get(5),
+            body,
+            user_agent: get(7),
+        });
+    }
+    result
 }
 
 /// 十六进制串 → 字节（tshark `http.file_data` 字段解码用）。
@@ -160,6 +170,68 @@ mod tests {
         assert_eq!(hex_to_bytes("6F6E"), b"on");
     }
 
+    #[test]
+    fn parse_tshark_output_basic() {
+        let stdout = "1\t192.168.1.1\t93.184.216.34\tGET\texample.com\t/\t\tRuT0DataKit-test/1.0";
+        let reqs = parse_tshark_output(stdout);
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].frame_no, "1");
+        assert_eq!(reqs[0].src_ip, "192.168.1.1");
+        assert_eq!(reqs[0].dst_ip, "93.184.216.34");
+        assert_eq!(reqs[0].method, "GET");
+        assert_eq!(reqs[0].host, "example.com");
+        assert_eq!(reqs[0].uri, "/");
+        assert_eq!(reqs[0].body, "");
+        assert_eq!(reqs[0].user_agent, "RuT0DataKit-test/1.0");
+    }
+
+    #[test]
+    fn parse_tshark_output_skips_empty_lines() {
+        let stdout = "\n\n1\t\t\tGET\thost\t/\t\t\n\n\n2\t\t\tPOST\thost2\t/path\t\t\n";
+        let reqs = parse_tshark_output(stdout);
+        assert_eq!(reqs.len(), 2);
+        assert_eq!(reqs[0].frame_no, "1");
+        assert_eq!(reqs[0].method, "GET");
+        assert_eq!(reqs[0].host, "host");
+        assert_eq!(reqs[1].frame_no, "2");
+        assert_eq!(reqs[1].method, "POST");
+        assert_eq!(reqs[1].host, "host2");
+    }
+
+    #[test]
+    fn parse_tshark_output_hex_body_decoded() {
+        // "Hello" = 48656c6c6f
+        let stdout = "1\t10.0.0.1\t8.8.8.8\tPOST\thost\t/api\t48656c6c6f\tua";
+        let reqs = parse_tshark_output(stdout);
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].body, "Hello");
+        assert_eq!(reqs[0].method, "POST");
+        assert_eq!(reqs[0].uri, "/api");
+    }
+
+    #[test]
+    fn parse_tshark_output_missing_fields_padded() {
+        // 只到 method（索引 3）→ 其余补空串
+        let stdout = "1\t\t\tGET";
+        let reqs = parse_tshark_output(stdout);
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].frame_no, "1");
+        assert_eq!(reqs[0].src_ip, "");
+        assert_eq!(reqs[0].dst_ip, "");
+        assert_eq!(reqs[0].method, "GET");
+        assert_eq!(reqs[0].host, "");
+        assert_eq!(reqs[0].uri, "");
+        assert_eq!(reqs[0].body, "");
+        assert_eq!(reqs[0].user_agent, "");
+    }
+
+    #[test]
+    fn parse_tshark_output_empty_input() {
+        assert_eq!(parse_tshark_output("").len(), 0);
+        assert_eq!(parse_tshark_output("\n\n\n").len(), 0);
+        assert_eq!(parse_tshark_output("   \n\t\n").len(), 0);
+    }
+
     /// 本机有 tshark 时跑；CI 跳过。
     #[test]
     #[ignore = "本机 tshark 读取，CI 无 tshark/无样本时跳过"]
@@ -168,13 +240,21 @@ mod tests {
             .join("..")
             .join("..")
             .join("tests")
-            .join("pcap")
+            .join("base")
             .join("base.pcap");
         if !path.exists() {
             return;
         }
         let reqs = PcapReader::new().read(&path).expect("read pcap");
-        assert!(!reqs.is_empty());
-        assert!(reqs[0].method.contains("GET") || reqs[0].method.contains("POST"));
+        assert!(!reqs.is_empty(), "fixture pcap 应有 HTTP 请求");
+        let first = &reqs[0];
+        assert!(!first.frame_no.is_empty(), "frame_no 非空");
+        assert!(
+            first.method.contains("GET") || first.method.contains("POST"),
+            "method 是 GET/POST: {}",
+            first.method
+        );
+        assert!(!first.host.is_empty(), "host 非空");
+        assert!(!first.uri.is_empty(), "uri 非空");
     }
 }
