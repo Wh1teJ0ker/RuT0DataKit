@@ -1,7 +1,7 @@
 # RuT0DataKit v1.1.2
 
-> Git tag：`v1.1.2`（待发布）
-> 状态：待发布（T37~T47 verified_complete；T44 文档收口 + Release QA 完成）
+> Git tag：`v1.1.2`（已推送，CI/CD 构建中）
+> 状态：已发布（T37~T47 verified_complete；Release QA R5 完成；tag `v1.1.2` 已推送触发 tauri-action 三目标矩阵构建）
 > 前置：v1.1.1 已 `qa_passed` 并发布 tag `v1.1.1`
 
 ## 这是什么
@@ -30,14 +30,15 @@ RuT0DataKit v1.1.2 在 v1.1.1（撤销/重做 + 列操作 + 搜索）之上，�
 
 ## 下载
 
-> 以下文件名待 v1.1.2 Release 构建产物确定后填充（CI 由 git tag `v1.1.2` 触发四目标矩阵构建）。
+> v1.1.2 Release 由 git tag `v1.1.2` 触发 `release.yml` 工作流，tauri-action 三目标矩阵构建（linux-x86_64 / macos-aarch64 / windows-x86_64），产物自动上传至 GitHub Release。
 
 | 平台 | 安装包 | 校验 |
 |---|---|---|
 | macOS (Apple Silicon) | `RuT0DataKit_1.1.2_aarch64.dmg` / `.app.tar.gz` | 签名校验（updater 公钥） |
-| macOS (Intel) | `RuT0DataKit_1.1.2_x64.dmg` / `.app.tar.gz` | 签名校验 |
 | Windows (x64) | `RuT0DataKit_1.1.2_x64-setup.exe` / `.msi.zip` | 签名校验 |
 | Linux (x64) | `RuT0DataKit_1.1.2_amd64.AppImage` / `.deb` | 签名校验 |
+
+> macOS Intel (x86_64) 不在本版构建矩阵中（v1.1.2 仅构建 aarch64-apple-darwin）。Intel Mac 用户可通过 Rosetta 运行 ARM 版本，或等待后续版本补齐 x86_64-apple-darwin 目标。
 
 ## 验证
 
@@ -45,7 +46,7 @@ RuT0DataKit v1.1.2 在 v1.1.1（撤销/重做 + 列操作 + 搜索）之上，�
 - `cargo clippy --workspace -- -D warnings`：通过
 - `cargo test --workspace`：126 passed / 0 failed / 2 ignored（src-tauri lib 77 + core 49；2 ignored 为本机 tshark 探测/fixture 读取，CI 无 tshark 时跳过）
 - `pnpm --prefix frontend install --frozen-lockfile`：通过（Lockfile is up to date）
-- `pnpm --prefix frontend build`：通过（3079 modules transformed，2.46s）
+- `pnpm --prefix frontend build`：通过（3081 modules transformed，2.58s）
 
 ## 已知限制
 
@@ -55,7 +56,13 @@ RuT0DataKit v1.1.2 在 v1.1.1（撤销/重做 + 列操作 + 搜索）之上，�
 - 设置按钮迁移后 AiPanel 不再承载设置入口；如用户依赖旧入口位置，需适应右上角新位置
 - DbPathCard 仍为硬编码 DB 路径展示，动态 DB 路径命令推迟 v1.2+
 - Mimosa 安全扫描已重跑完整审计（scan-2026-08-08T19-56-00.366Z-a958f772712b，deep 深度）：0 findings、487 个依赖包 0 漏洞、68/68 源文件全量解析成功；覆盖度 `partial`（调用图部分不完整，为动态派发方法学限制，非项目缺陷），`runStatus=inconclusive`。静态分析非运行时验证，**不宣称项目安全**，但无任何已识别 finding 阻碍发布
+- commit/push 时 Mimosa 未得到完整扫描结论（library_source/library_source_unavailable、callgraph/callgraph_fact_partial），按兼容策略继续；建议后续重新运行完整审计
 
 ## 升级
 
 v1.1.1 用户可直接升级：DB schema 不变（`SCHEMA_VERSION=3`，无新增表/列/索引），无需迁移，历史数据完整保留。`settings.json` 向后兼容（新增 `page_size` 字段用 `#[serde(default)]`，旧文件反序列化时自动取 `None` → 前端回退 50，无需手动处理）。启动后即可使用 Base64 列编解码、.log 结构化导入（格式自动识别 + 多列 + raw_line）、全局每页行数设置与优化后的设置界面；既有撤销/重做、列操作、搜索功能无回归。
+
+---
+
+完整更新日志：[`docs/versions/1.1.2/更新日志.md`](更新日志.md)
+QA 审计报告：[`docs/qa/versions/1.1.2/QA-审计报告.md`](../../qa/versions/1.1.2/QA-审计报告.md)
