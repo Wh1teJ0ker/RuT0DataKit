@@ -1,0 +1,13 @@
+value,expected,rule_id
+张三,pass,name-validate
+张三丰,pass,name-validate
+欧阳修,pass,name-validate
+Zhang,fail,name-validate
+张,fail,name-validate
+张三丰大侠,fail,name-validate
+110101199001011234,pass,idcard-validate
+110101199001011,fail,idcard-validate
+12345,fail,idcard-validate
+13812345678,pass,phone-validate
+1381234,fail,phone-validate
+1234567890,fail,phone-validate

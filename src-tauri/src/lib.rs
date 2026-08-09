@@ -51,6 +51,7 @@ pub fn run() {
             commands::processor::list_rules,
             commands::processor::toggle_rule,
             commands::processor::update_rule_params,
+            commands::processor::update_rule_template,
             commands::processor::undo_operation,
             commands::processor::redo_operation,
             commands::processor::list_undoable_operations,

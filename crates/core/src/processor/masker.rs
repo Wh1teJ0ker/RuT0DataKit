@@ -1,16 +1,30 @@
 //! 脱敏器 trait + 原型实现。
 //!
 //! v1.1.0：`Masker` trait + `SimpleMasker`。
-//! 两种脱敏模式：
-//! - **规则驱动**（`rule.kind == Mask`）：
+//! v1.1.3：`SimpleMasker` 扩展通用模板分支（`rule.template`）。
+//! v1.1.3 T49：空模板（`TemplateParams` 所有字段 `None`）→ 不脱敏（透传，
+//! 原样返回），承载 `general-mask` 规则的"未选预设"语义。
+//!
+//! 三种脱敏模式：
+//! - **模板驱动**（`rule.kind == Mask` + `rule.template.is_some()` 且**非空模板**）：
+//!   保留前 `keep_prefix` 字符 + 后 `keep_suffix` 字符，中间替换为 `mask_char`
+//!   （至少 `mask_min_len` 个）。`min_len`/`max_len` 为值总字符数 guard——不在
+//!   区间内原样返回。对齐 v0.8.0 `TemplateOp`。前端选预设（身份证 / 手机 /
+//!   出生日期 / 银行卡）填充 `general-mask` 的 `template` 后走此分支。
+//! - **空模板透传**（`rule.kind == Mask` + `rule.template` 为**空模板**，
+//!   即 `TemplateParams::is_empty()`）：T49 新增。原样返回，不脱敏。
+//!   承载 `general-mask` 规则"未选预设 → 不脱敏"的语义。
+//! - **规则驱动（无模板，v1.1.0 语义）**（`rule.kind == Mask` + `rule.template.is_none()`）：
 //!   - 长度 ≥ 3：保留首尾各 1 字符，中间用「掩码字符」替换（「张三丰」→「张*丰」）。
 //!   - 长度 2：保留首字符，末位用掩码字符替换（「张三」→「张*」）。
 //!   - 长度 1：单个掩码字符；空串：空串。
 //!   - 掩码字符取自 `rule.replacement`（首个字符；`None`/空 → 默认 `*`）。
 //! - **无规则（通用脱敏）**：保留首尾各 1 字符，中间用 `*` 替换（长度 ≤ 2 全 `*`）。
+//!
+//! 掩码字符优先级：`replacement`（临时覆盖） > `template.mask_char` > 默认 `*`。
 
 use crate::error::CoreResult;
-use crate::processor::rules::{Rule, RuleKind};
+use crate::processor::rules::{Rule, RuleKind, TemplateParams};
 
 /// 单值脱敏结果。
 #[derive(Debug, Clone, serde::Serialize)]
@@ -30,13 +44,20 @@ pub trait Masker {
 
 /// 原型脱敏器。
 ///
-/// - **规则驱动**（`rule.kind == Mask`）：
+/// - **模板驱动**（`rule.kind == Mask` + `rule.template` 非空，v1.1.3）：
+///   保留前 `keep_prefix` + 后 `keep_suffix` 字符，中间替换为 `mask_char`（至少
+///   `mask_min_len` 个）。`min_len`/`max_len` 为值总字符数 guard。对齐 v0.8.0
+///   `TemplateOp`。前端选预设填充 `general-mask` 的 `template` 后走此分支。
+/// - **空模板透传**（`rule.template` 为空模板，T49）：原样返回，不脱敏。
+/// - **规则驱动（无模板，v1.1.0）**（`rule.kind == Mask` + `rule.template.is_none()`）：
 ///   - 长度 ≥ 3：保留首尾各 1 字符，中间用「掩码字符」替换（「张三丰」→「张*丰」）。
 ///   - 长度 2：保留首字符，末位用掩码字符替换（「张三」→「张*」）。
 ///   - 长度 1：单个掩码字符；空串：空串。
 ///   - 掩码字符取自 `rule.replacement` 的首个字符；`None`/空 → 默认 `*`。
 /// - **无规则（通用脱敏语义）**：保留首尾各 1 字符，中间用 `*` 替换。
 ///   长度 ≤ 2 时全部 `*`。
+///
+/// 掩码字符优先级：`replacement`（临时覆盖） > `template.mask_char` > 默认 `*`。
 pub struct SimpleMasker;
 
 impl Masker for SimpleMasker {
@@ -46,12 +67,27 @@ impl Masker for SimpleMasker {
 
         if let Some(r) = rule {
             if r.kind == RuleKind::Mask {
-                // 掩码字符：取 replacement 首个字符；None/空 → 默认 `*`。
+                // 掩码字符优先级：replacement（临时覆盖）> template.mask_char > 默认 `*`。
                 let mask_char = r
                     .replacement
                     .as_deref()
                     .and_then(|s| s.chars().next())
+                    .or_else(|| r.template.as_ref().and_then(|t| t.mask_char))
                     .unwrap_or('*');
+
+                // v1.1.3 通用模板分支：rule.template 非空时走 keep_prefix/keep_suffix 模板。
+                if let Some(tpl) = &r.template {
+                    // T49：空模板（所有字段 None）→ 不脱敏（透传）。
+                    if tpl.is_empty() {
+                        return Ok(MaskResult {
+                            output: input.to_string(),
+                            rule_id: r.id.clone(),
+                        });
+                    }
+                    return Ok(apply_template(tpl, &chars, n, mask_char, &r.id));
+                }
+
+                // v1.1.0 旧逻辑（无模板）：保留首尾各 1，中间用掩码字符替换。
                 let mask_str = mask_char.to_string();
                 let output = if n == 0 {
                     String::new()
@@ -89,10 +125,77 @@ impl Masker for SimpleMasker {
     }
 }
 
+/// 应用通用模板脱敏（v1.1.3）。保留前 `keep_prefix` + 后 `keep_suffix` 字符，
+/// 中间替换为 `mask_char`（至少 `mask_min_len` 个）。
+///
+/// - `min_len`/`max_len` 为值总字符数 guard——不在区间内原样返回。
+/// - 保留段重叠（`keep_prefix + keep_suffix >= n`）→ 仅输出 `mask_min_len` 个 `mask_char`。
+///
+/// 对齐 v0.8.0 `apply_template`（仅去掉 cjk 分支——本实现用「无模板旧逻辑」承载姓名脱敏）。
+fn apply_template(
+    tpl: &TemplateParams,
+    chars: &[char],
+    n: usize,
+    mask_char: char,
+    rule_id: &str,
+) -> MaskResult {
+    let kp = tpl.keep_prefix.unwrap_or(0);
+    let ks = tpl.keep_suffix.unwrap_or(0);
+    let mml = tpl.mask_min_len.unwrap_or(1);
+
+    // guard：长度不在 [min_len, max_len] 区间原样返回。
+    if let Some(min) = tpl.min_len {
+        if n < min {
+            return MaskResult {
+                output: chars.iter().collect(),
+                rule_id: rule_id.to_string(),
+            };
+        }
+    }
+    if let Some(max) = tpl.max_len {
+        if n > max {
+            return MaskResult {
+                output: chars.iter().collect(),
+                rule_id: rule_id.to_string(),
+            };
+        }
+    }
+
+    let head_end = kp.min(n);
+    let tail_start = n.saturating_sub(ks);
+    // 保留段重叠（含 kp+ks==n 边界：中间段长度为 0）→ 仅输出 mask_min_len 个 mask_char。
+    if tail_start <= head_end {
+        let mask = mask_char.to_string().repeat(mml);
+        return MaskResult {
+            output: mask,
+            rule_id: rule_id.to_string(),
+        };
+    }
+    let mid_len = tail_start - head_end;
+    let mask_len = mid_len.max(mml);
+    let head: String = chars[..head_end].iter().collect();
+    let tail: String = chars[tail_start..].iter().collect();
+    let mask = mask_char.to_string().repeat(mask_len);
+    MaskResult {
+        output: format!("{head}{mask}{tail}"),
+        rule_id: rule_id.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::processor::rules::{Rule, RuleKind};
+    use crate::processor::rules::{
+        bankcard_preset, birthdate_preset, idcard_preset, phone_preset, Rule, RuleKind,
+        RuleRegistry, TemplateParams,
+    };
+
+    /// 构造 general-mask 规则 + 指定模板（T49：预设作为 general-mask 的子规则）。
+    fn general_with_template(tpl: TemplateParams) -> Rule {
+        let mut r = RuleRegistry::general_mask_rule();
+        r.template = Some(tpl);
+        r
+    }
 
     #[test]
     fn masks_long_value_keeps_ends() {
@@ -135,6 +238,7 @@ mod tests {
             replacement: Some("#".into()),
             enabled: true,
             description: String::new(),
+            template: None,
         };
         // "13812345678"（11 字符）→ "1" + 9 个 # + "8"
         let r = m.mask("13812345678", Some(&rule)).unwrap();
@@ -155,6 +259,7 @@ mod tests {
             replacement: Some(String::new()),
             enabled: true,
             description: String::new(),
+            template: None,
         };
         let r = m.mask("13812345678", Some(&rule)).unwrap();
         assert_eq!(r.output, "1*********8");
@@ -174,6 +279,7 @@ mod tests {
             replacement: None,
             enabled: true,
             description: String::new(),
+            template: None,
         };
         // "13812345678"（11 字符）→ "1" + 9 个 * + "8"
         let r = m.mask("13812345678", Some(&rule)).unwrap();
@@ -192,5 +298,150 @@ mod tests {
         assert_eq!(m.mask("司马相如", Some(&rule)).unwrap().output, "司**如");
         assert_eq!(m.mask("赵", Some(&rule)).unwrap().output, "*");
         assert_eq!(m.mask("", Some(&rule)).unwrap().output, "");
+    }
+
+    // ---- v1.1.3 通用模板脱敏测试（T49：预设作为 general-mask 的子规则）----
+
+    #[test]
+    fn template_empty_passthrough() {
+        // T49：general-mask 持空模板（TemplateParams::default()）→ 不脱敏（透传）。
+        let m = SimpleMasker;
+        let rule = RuleRegistry::general_mask_rule();
+        assert_eq!(
+            m.mask("110101199001011234", Some(&rule)).unwrap().output,
+            "110101199001011234"
+        );
+        assert_eq!(
+            m.mask("13812345678", Some(&rule)).unwrap().output,
+            "13812345678"
+        );
+        assert_eq!(m.mask("", Some(&rule)).unwrap().output, "");
+        assert_eq!(m.mask("张三丰", Some(&rule)).unwrap().output, "张三丰");
+    }
+
+    #[test]
+    fn template_idcard_keeps_6_4() {
+        // 18 位身份证 → 保留前 6 + 后 4，中间 8 位 *（idcard 预设）
+        let m = SimpleMasker;
+        let rule = general_with_template(idcard_preset());
+        assert_eq!(
+            m.mask("110101199001011234", Some(&rule)).unwrap().output,
+            "110101********1234"
+        );
+    }
+
+    #[test]
+    fn template_idcard_short_passthrough() {
+        // 15 位身份证 → 不在 [18,18] guard 区间，原样返回
+        let m = SimpleMasker;
+        let rule = general_with_template(idcard_preset());
+        assert_eq!(
+            m.mask("110101900101123", Some(&rule)).unwrap().output,
+            "110101900101123"
+        );
+    }
+
+    #[test]
+    fn template_phone_keeps_3_4() {
+        // 11 位手机号 → 保留前 3 + 后 4，中间 4 位 *（phone 预设）
+        let m = SimpleMasker;
+        let rule = general_with_template(phone_preset());
+        assert_eq!(
+            m.mask("13812345678", Some(&rule)).unwrap().output,
+            "138****5678"
+        );
+    }
+
+    #[test]
+    fn template_phone_short_passthrough() {
+        // 10 位手机号 → 不在 [11,11] guard 区间，原样返回
+        let m = SimpleMasker;
+        let rule = general_with_template(phone_preset());
+        assert_eq!(
+            m.mask("1381234567", Some(&rule)).unwrap().output,
+            "1381234567"
+        );
+    }
+
+    #[test]
+    fn template_birthdate_keeps_year_month() {
+        // YYYY-MM-DD（10 字符）→ 保留前 8（YYYY-MM-），后 2 位 *（birthdate 预设）
+        let m = SimpleMasker;
+        let rule = general_with_template(birthdate_preset());
+        assert_eq!(
+            m.mask("1990-01-15", Some(&rule)).unwrap().output,
+            "1990-01-**"
+        );
+        assert_eq!(
+            m.mask("1985-12-03", Some(&rule)).unwrap().output,
+            "1985-12-**"
+        );
+    }
+
+    #[test]
+    fn template_birthdate_short_passthrough() {
+        // 非 10 字符 → 原样返回
+        let m = SimpleMasker;
+        let rule = general_with_template(birthdate_preset());
+        assert_eq!(m.mask("1990-01", Some(&rule)).unwrap().output, "1990-01");
+    }
+
+    #[test]
+    fn template_bankcard_keeps_4_4_19_digits() {
+        // 19 位银行卡 → 保留前 4 + 后 4，中间 11 位 *（bankcard 预设，无长度 guard）
+        let m = SimpleMasker;
+        let rule = general_with_template(bankcard_preset());
+        assert_eq!(
+            m.mask("6222021234567890123", Some(&rule)).unwrap().output,
+            "6222***********0123"
+        );
+    }
+
+    #[test]
+    fn template_bankcard_keeps_4_4_16_digits() {
+        // 16 位银行卡 → 保留前 4 + 后 4，中间 8 位 *
+        let m = SimpleMasker;
+        let rule = general_with_template(bankcard_preset());
+        assert_eq!(
+            m.mask("4367421234567890", Some(&rule)).unwrap().output,
+            "4367********7890"
+        );
+    }
+
+    #[test]
+    fn template_replacement_overrides_mask_char() {
+        // idcard 预设 + replacement="#" → 掩码字符临时覆盖为 #
+        let m = SimpleMasker;
+        let mut rule = general_with_template(idcard_preset());
+        rule.replacement = Some("#".into());
+        assert_eq!(
+            m.mask("110101199001011234", Some(&rule)).unwrap().output,
+            "110101########1234"
+        );
+    }
+
+    #[test]
+    fn template_mask_char_in_preset_used() {
+        // 预设内 mask_char 优先于默认 *：idcard_preset().with_mask_char('#')
+        let m = SimpleMasker;
+        let mut rule = RuleRegistry::general_mask_rule();
+        rule.template = Some(idcard_preset().with_mask_char('#'));
+        assert_eq!(
+            m.mask("110101199001011234", Some(&rule)).unwrap().output,
+            "110101########1234"
+        );
+    }
+
+    #[test]
+    fn name_mask_no_template_unchanged() {
+        // name-mask 无 template → 仍走旧逻辑（保留首尾各 1），向后兼容
+        let m = SimpleMasker;
+        let rule = crate::processor::rules::RuleRegistry::name_mask_rule();
+        assert!(rule.template.is_none());
+        assert_eq!(m.mask("张三丰", Some(&rule)).unwrap().output, "张*丰");
+        assert_eq!(
+            m.mask("13812345678", Some(&rule)).unwrap().output,
+            "1*********8"
+        );
     }
 }

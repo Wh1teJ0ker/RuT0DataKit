@@ -7,8 +7,10 @@ import {
   Empty,
   Form,
   Input,
+  InputNumber,
   List,
   Row,
+  Select,
   Space,
   Spin,
   Switch,
@@ -21,7 +23,18 @@ import {
   listRules,
   toggleRule,
   updateRuleParams,
+  updateRuleTemplate,
 } from "../../tauri";
+import {
+  DEFAULT_MASK_CHAR,
+  EMPTY_TEMPLATE,
+  MASK_PRESETS,
+  buildTemplateForRun,
+  detectPreset,
+  normalizeTemplate,
+  previewMask,
+  templateFromPreset,
+} from "./maskTemplate";
 
 const { Title, Text } = Typography;
 
@@ -30,11 +43,13 @@ const { Title, Text } = Typography;
 // 内联测试：三种 kind 全部走前端内部输入 + 正则预览，不写 DB。
 //   - validate：new RegExp(pattern).test(input) → 通过/不通过
 //   - extract：new RegExp(pattern,'g').matchAll(input) → 命中列表
-//   - mask：按掩码字符（默认 *）对输入文本预览脱敏结果（≥3 保留首尾，2 保留首字符）
+//   - mask：按掩码字符（默认 *）对输入文本预览脱敏结果
+//     · general-mask（T51）：用 6 个模板参数走 apply_template 等价逻辑
+//       （keep_prefix/keep_suffix/mask_char/mask_min_len + min_len/max_len guard）
+//     · name-mask：旧逻辑（≥3 保留首尾，2 保留首字符）
 const KIND_LABEL = { mask: "脱敏", validate: "校验", extract: "提取" };
 const KIND_COLOR = { mask: "orange", validate: "red", extract: "blue" };
 const KIND_ORDER = ["mask", "validate", "extract"];
-const DEFAULT_MASK_CHAR = "*";
 
 export default function RulesPanel() {
   const { state } = useAppContext();
@@ -44,6 +59,9 @@ export default function RulesPanel() {
   // 可填参数本地编辑态（保存前不提交）。
   const [draftPattern, setDraftPattern] = useState(null);
   const [draftReplacement, setDraftReplacement] = useState(null);
+  // T51：general-mask 的 6 个模板参数草稿（camelCase，对齐后端 TemplateParams）。
+  const [draftTemplate, setDraftTemplate] = useState({ ...EMPTY_TEMPLATE });
+  const [presetKey, setPresetKey] = useState("empty");
   const [saving, setSaving] = useState(false);
   // 测试输入 + 结果。
   const [testInput, setTestInput] = useState("");
@@ -91,6 +109,15 @@ export default function RulesPanel() {
       } else {
         setDraftReplacement(selected.replacement ?? "");
       }
+      // T51：general-mask 初始化 6 个模板参数草稿（从 DB 读取的 template）。
+      if (selected.id === "general-mask") {
+        const t = normalizeTemplate(selected.template);
+        setDraftTemplate(t);
+        setPresetKey(detectPreset(t));
+      } else {
+        setDraftTemplate({ ...EMPTY_TEMPLATE });
+        setPresetKey("empty");
+      }
       setTestResult(null);
       setTestInput("");
     }
@@ -124,18 +151,42 @@ export default function RulesPanel() {
     if (!selected) return;
     setSaving(true);
     try {
-      const pattern = draftPattern ?? null;
-      const replacement = draftReplacement ?? null;
-      await updateRuleParams(selected.id, pattern, replacement);
+      // T51：general-mask 持久化 template（6 个模板参数）；
+      // 其他 mask 规则持久化 replacement（掩码字符）；validate/extract 持久化 pattern。
+      if (selected.id === "general-mask") {
+        const tpl = buildTemplateForRun(draftTemplate);
+        await updateRuleTemplate(selected.id, tpl);
+      } else {
+        const pattern = draftPattern ?? null;
+        const replacement = draftReplacement ?? null;
+        await updateRuleParams(selected.id, pattern, replacement);
+      }
       await refresh();
       message.success("参数已保存");
     } catch (e) {
       // eslint-disable-next-line no-console
-      console.error("updateRuleParams failed:", e);
+      console.error("save rule params failed:", e);
       message.error(`保存失败：${e}`);
     } finally {
       setSaving(false);
     }
+  };
+
+  // T51：选预设 → 填充 6 参数框（custom 不填充，保留当前用户输入）。
+  const handlePresetChange = (key) => {
+    setPresetKey(key);
+    const filled = templateFromPreset(key);
+    if (filled === null) return; // custom → 不填充
+    setDraftTemplate(filled);
+  };
+
+  // T51：编辑单个模板参数框 → 更新 draftTemplate + 重新检测匹配的预设。
+  const handleTemplateFieldChange = (field, value) => {
+    setDraftTemplate((prev) => {
+      const next = { ...prev, [field]: value };
+      setPresetKey(detectPreset(next));
+      return next;
+    });
   };
 
   // 内联测试：根据规则类型走不同路径（全部前端纯逻辑，不写 DB）。
@@ -202,11 +253,28 @@ export default function RulesPanel() {
     setTestResult({ ok: true, kind: "extract", hits });
   };
 
-  // mask：前端纯逻辑预览（不写 DB）。
-  // ≥3 字符：保留首尾，中间掩码字符替换；2 字符：保留首字符末位掩码字符；
-  // 1 字符：掩码字符；0 字符：空串。
+  // mask 预览（不写 DB）。
+  // T51：general-mask 走模板参数（keep_prefix/keep_suffix/mask_char/mask_min_len +
+  // min_len/max_len guard），与后端 apply_template 等价；name-mask 走旧逻辑
+  // （≥3 保留首尾，2 保留首字符，1 全掩码，0 空串）。
   const runMaskTest = () => {
     const input = testInput || "";
+    if (selected.id === "general-mask") {
+      const fallback = draftTemplate.maskChar || DEFAULT_MASK_CHAR;
+      const r = previewMask(draftTemplate, input, fallback);
+      setTestResult({
+        ok: true,
+        kind: "mask",
+        output: r.output,
+        input,
+        maskChar: fallback,
+        passthrough: r.passthrough || false,
+        skipped: r.skipped || false,
+        template: true,
+      });
+      return;
+    }
+    // name-mask（无模板）：旧逻辑。
     const draft = draftReplacement ?? "";
     const maskChar = draft.length > 0 ? draft[0] : DEFAULT_MASK_CHAR;
     const chars = [...input];
@@ -322,12 +390,6 @@ export default function RulesPanel() {
                       </Tag>
                     </Col>
                     <Col span={6}>
-                      <Text type="secondary">目标列</Text>
-                    </Col>
-                    <Col span={18}>
-                      <Text code>{selected.field || "（不限定）"}</Text>
-                    </Col>
-                    <Col span={6}>
                       <Text type="secondary">说明</Text>
                     </Col>
                     <Col span={18}>
@@ -354,7 +416,93 @@ export default function RulesPanel() {
                 >
                   <Form layout="vertical" size="small">
                     {selected.kind === "mask" ? (
-                      <>
+                      selected.id === "general-mask" ? (
+                        // T51：general-mask 暴露 6 个模板参数 + 预设下拉
+                        // （与脱敏面板一致，便于在规则管理里直接编辑/测试）。
+                        <>
+                          <Form.Item
+                            label="子规则（预设）"
+                            extra="选预设填充参数，可继续修改；空模板=不脱敏（透传）"
+                          >
+                            <Select
+                              value={presetKey}
+                              onChange={handlePresetChange}
+                              options={MASK_PRESETS.map((p) => ({
+                                label: p.label,
+                                value: p.key,
+                              }))}
+                            />
+                          </Form.Item>
+                          <Form.Item label="保留前缀字符数">
+                            <InputNumber
+                              value={draftTemplate.keepPrefix}
+                              onChange={(v) =>
+                                handleTemplateFieldChange("keepPrefix", v)
+                              }
+                              placeholder="0"
+                              min={0}
+                              style={{ width: "100%" }}
+                            />
+                          </Form.Item>
+                          <Form.Item label="保留后缀字符数">
+                            <InputNumber
+                              value={draftTemplate.keepSuffix}
+                              onChange={(v) =>
+                                handleTemplateFieldChange("keepSuffix", v)
+                              }
+                              placeholder="0"
+                              min={0}
+                              style={{ width: "100%" }}
+                            />
+                          </Form.Item>
+                          <Form.Item label="掩码字符" extra="默认 *；取首个字符">
+                            <Input
+                              value={draftTemplate.maskChar ?? ""}
+                              onChange={(e) =>
+                                handleTemplateFieldChange(
+                                  "maskChar",
+                                  e.target.value || null
+                                )
+                              }
+                              placeholder={DEFAULT_MASK_CHAR}
+                              allowClear
+                            />
+                          </Form.Item>
+                          <Form.Item label="最少掩码字符数">
+                            <InputNumber
+                              value={draftTemplate.maskMinLen}
+                              onChange={(v) =>
+                                handleTemplateFieldChange("maskMinLen", v)
+                              }
+                              placeholder="1"
+                              min={0}
+                              style={{ width: "100%" }}
+                            />
+                          </Form.Item>
+                          <Form.Item label="值长度下限（guard，空=不限）">
+                            <InputNumber
+                              value={draftTemplate.minLen}
+                              onChange={(v) =>
+                                handleTemplateFieldChange("minLen", v)
+                              }
+                              placeholder="不限"
+                              min={0}
+                              style={{ width: "100%" }}
+                            />
+                          </Form.Item>
+                          <Form.Item label="值长度上限（guard，空=不限）">
+                            <InputNumber
+                              value={draftTemplate.maxLen}
+                              onChange={(v) =>
+                                handleTemplateFieldChange("maxLen", v)
+                              }
+                              placeholder="不限"
+                              min={0}
+                              style={{ width: "100%" }}
+                            />
+                          </Form.Item>
+                        </>
+                      ) : (
                         <Form.Item label="掩码字符" extra="默认 *；取首个字符；保留首尾">
                           <Input
                             value={draftReplacement ?? ""}
@@ -364,7 +512,7 @@ export default function RulesPanel() {
                             placeholder={DEFAULT_MASK_CHAR}
                           />
                         </Form.Item>
-                      </>
+                      )
                     ) : (
                       <Form.Item label="正则模式">
                         <Input
@@ -388,7 +536,11 @@ export default function RulesPanel() {
                       </Button>
                       <Button
                         onClick={() => {
-                          if (selected.kind === "mask") {
+                          if (selected.id === "general-mask") {
+                            const t = normalizeTemplate(selected.template);
+                            setDraftTemplate(t);
+                            setPresetKey(detectPreset(t));
+                          } else if (selected.kind === "mask") {
                             setDraftReplacement(
                               selected.replacement &&
                                 selected.replacement.length > 0
@@ -479,6 +631,28 @@ export default function RulesPanel() {
                             脱敏后：
                           </Text>
                           <Text code>{testResult.output}</Text>
+                          {testResult.template && testResult.passthrough && (
+                            <>
+                              <br />
+                              <Alert
+                                type="info"
+                                showIcon
+                                style={{ marginTop: 8 }}
+                                message="空模板（透传）：原样返回，未脱敏"
+                              />
+                            </>
+                          )}
+                          {testResult.template && testResult.skipped && (
+                            <>
+                              <br />
+                              <Alert
+                                type="warning"
+                                showIcon
+                                style={{ marginTop: 8 }}
+                                message="长度不在 [下限, 上限] 区间内（guard 命中）：原样返回"
+                              />
+                            </>
+                          )}
                         </div>
                       ) : null}
                     </div>

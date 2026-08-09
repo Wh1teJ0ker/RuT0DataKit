@@ -9,6 +9,7 @@
 
 use serde::Serialize;
 
+use ruT0_data_kit_core::processor::rules::TemplateParams;
 use ruT0_data_kit_core::processor::{
     ExtractItem, Extractor, Masker, PiiExtractor, RegexValidator, Validator,
 };
@@ -68,6 +69,28 @@ pub fn update_rule_params(
         })
 }
 
+/// 更新规则的通用模板脱敏参数（`rules.template` 列）。v1.1.3 T49 新增。
+///
+/// `template` 为 `Some(tpl)` → 持久化到 DB；`None` → 清空模板（写 NULL）。
+/// 前端选预设 → 填充 6 个可编辑参数框 → 调本命令持久化到 `general-mask` 规则。
+/// SQL 全部用 `?N` + `params![]` 绑定，禁止字符串拼接。
+#[tauri::command]
+pub fn update_rule_template(
+    rule_id: String,
+    template: Option<TemplateParams>,
+    db: tauri::State<'_, crate::db::DbManager>,
+) -> Result<(), String> {
+    db.update_rule_template(&rule_id, template.as_ref())
+        .map_err(|e| e.to_string())
+        .and_then(|ok| {
+            if ok {
+                Ok(())
+            } else {
+                Err(format!("规则 `{rule_id}` 不存在"))
+            }
+        })
+}
+
 // ---------------------------------------------------------------------------
 // 脱敏 / 校验 / 提取命令
 // ---------------------------------------------------------------------------
@@ -104,14 +127,19 @@ pub struct RowExtract {
 ///   （保留首字符 + 其余用掩码字符替换）。
 /// - `replacement` 可选；非空字符串的首个字符会**临时覆盖**规则/默认的掩码字符
 ///   （仅本次调用，不写回 DB）。空串/`None` → 默认 `*`。
+/// - `template` 可选（v1.1.3 T49）；`Some(tpl)` 临时覆盖规则的 `template` 字段
+///   （仅本次调用，不写回 DB）。前端选预设 → 填充 6 参数 → 透传给本参数执行脱敏。
+///   `None` → 用规则自身的 `template`。空模板（所有字段 `None`）→ 不脱敏（透传）。
 ///
 /// Masker 优先级：临时 replacement > rule.replacement > 默认 `*`。
+/// Template 优先级：临时 template 参数 > rule.template。
 #[tauri::command]
 pub fn mask_column(
     sheet_id: i64,
     column: String,
     rule_id: Option<String>,
     replacement: Option<String>,
+    template: Option<TemplateParams>,
     db: tauri::State<'_, crate::db::DbManager>,
 ) -> Result<MaskResult, String> {
     let col_idx = db
@@ -138,7 +166,11 @@ pub fn mask_column(
             Some(s.to_string())
         }
     });
-    let rule_ref = if let Some(repl) = &rule_override {
+    // v1.1.3 T49：临时 template 参数非空 → 覆盖规则 template（不写回 DB）。
+    //   前端选预设 → 填充 6 参数 → 透传给本参数执行脱敏。`None` → 用规则自身 template。
+    //   空模板（TemplateParams::default()）→ SimpleMasker 视为不脱敏（透传）。
+    let template_override = template.as_ref().filter(|t| !t.is_empty()).cloned();
+    let rule_ref = if rule_override.is_some() || template_override.is_some() {
         // 临时 mask 规则：若 rule_id 存在则克隆覆盖，否则构造临时规则。
         let mut r = rule_owned
             .clone()
@@ -151,8 +183,14 @@ pub fn mask_column(
                 replacement: None,
                 enabled: true,
                 description: String::new(),
+                template: None,
             });
-        r.replacement = Some(repl.clone());
+        if let Some(repl) = &rule_override {
+            r.replacement = Some(repl.clone());
+        }
+        if let Some(tpl) = &template_override {
+            r.template = Some(tpl.clone());
+        }
         Some(r)
     } else {
         rule_owned.clone()
@@ -196,6 +234,7 @@ pub fn mask_column(
         "column": column,
         "ruleId": rule_id,
         "replacement": replacement,
+        "template": template,
         "affected": affected
     })
     .to_string();

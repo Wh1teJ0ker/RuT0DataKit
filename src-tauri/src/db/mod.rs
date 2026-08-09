@@ -25,7 +25,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use regex::Regex;
-use ruT0_data_kit_core::processor::rules::{Rule, RuleKind, RuleRegistry};
+use ruT0_data_kit_core::processor::rules::{Rule, RuleKind, RuleRegistry, TemplateParams};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
@@ -118,7 +118,8 @@ fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
-/// 把 DB 行（id/name/kind/field/pattern/replacement/enabled/description）映射为 `Rule`。
+/// 把 DB 行（id/name/kind/field/pattern/replacement/template/enabled/description）映射为 `Rule`。
+/// `template` 列存 `TemplateParams` JSON（v1.1.3 新增，旧库迁移后为 NULL）。
 fn row_to_rule(r: &rusqlite::Row<'_>) -> rusqlite::Result<Rule> {
     let kind_str: String = r.get::<_, String>(2)?;
     let kind = RuleKind::from_str_lowercase(&kind_str).ok_or_else(|| {
@@ -131,7 +132,13 @@ fn row_to_rule(r: &rusqlite::Row<'_>) -> rusqlite::Result<Rule> {
             )),
         )
     })?;
-    let enabled: i64 = r.get::<_, i64>(6)?;
+    let enabled: i64 = r.get::<_, i64>(7)?;
+    // template 列（index 6）存 TemplateParams JSON；NULL/空 → None。
+    let template_json: Option<String> = r.get::<_, Option<String>>(6)?;
+    let template = template_json
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .and_then(|s| serde_json::from_str::<TemplateParams>(s).ok());
     Ok(Rule {
         id: r.get::<_, String>(0)?,
         name: r.get::<_, String>(1)?,
@@ -139,8 +146,9 @@ fn row_to_rule(r: &rusqlite::Row<'_>) -> rusqlite::Result<Rule> {
         field: r.get::<_, Option<String>>(3)?,
         pattern: r.get::<_, Option<String>>(4)?,
         replacement: r.get::<_, Option<String>>(5)?,
+        template,
         enabled: enabled != 0,
-        description: r.get::<_, String>(7)?,
+        description: r.get::<_, String>(8)?,
     })
 }
 
@@ -438,17 +446,23 @@ impl DbManager {
     // ---- Rule CRUD（v1.1.0）----
 
     /// upsert 一条规则（按 id 冲突覆盖）。
+    /// `template` 列存 `TemplateParams` JSON（None → NULL）。
     pub fn upsert_rule(&self, rule: &Rule) -> Result<(), DbError> {
         let conn = self.conn.lock().expect("db mutex poisoned");
+        let template_json: Option<String> = rule
+            .template
+            .as_ref()
+            .map(|t| serde_json::to_string(t).unwrap_or_default());
         conn.execute(
-            "INSERT INTO rules (id, name, kind, field, pattern, replacement, enabled, description)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "INSERT INTO rules (id, name, kind, field, pattern, replacement, template, enabled, description)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(id) DO UPDATE SET
                 name=excluded.name,
                 kind=excluded.kind,
                 field=excluded.field,
                 pattern=excluded.pattern,
                 replacement=excluded.replacement,
+                template=excluded.template,
                 enabled=excluded.enabled,
                 description=excluded.description",
             params![
@@ -458,6 +472,7 @@ impl DbManager {
                 rule.field,
                 rule.pattern,
                 rule.replacement,
+                template_json,
                 rule.enabled as i64,
                 rule.description,
             ],
@@ -469,7 +484,7 @@ impl DbManager {
     pub fn list_rules(&self) -> Result<Vec<Rule>, DbError> {
         let conn = self.conn.lock().expect("db mutex poisoned");
         let mut stmt = conn.prepare(
-            "SELECT id, name, kind, field, pattern, replacement, enabled, description
+            "SELECT id, name, kind, field, pattern, replacement, template, enabled, description
              FROM rules
              ORDER BY id ASC",
         )?;
@@ -486,7 +501,7 @@ impl DbManager {
         let conn = self.conn.lock().expect("db mutex poisoned");
         let rule = conn
             .query_row(
-                "SELECT id, name, kind, field, pattern, replacement, enabled, description
+                "SELECT id, name, kind, field, pattern, replacement, template, enabled, description
                  FROM rules
                  WHERE id = ?1",
                 params![id],
@@ -549,16 +564,70 @@ impl DbManager {
         Ok(touched)
     }
 
-    /// 启动时若 DB 无规则，则 seed 三条内置姓名规则。
-    /// 已有规则则不动（保留用户参数修改）。
-    pub fn seed_builtin_rules(&self) -> Result<(), DbError> {
-        if self.count_rules()? > 0 {
-            return Ok(());
+    /// 更新规则的通用模板脱敏参数（`rules.template` 列）。v1.1.3 T49 新增。
+    ///
+    /// `template` 为 `Some(tpl)` → 序列化为 JSON 写入；`None` → 写 NULL（清空模板）。
+    /// 返回是否命中（id 存在）。SQL 全部用 `?N` + `params![]` 绑定，禁止字符串拼接。
+    pub fn update_rule_template(
+        &self,
+        id: &str,
+        template: Option<&TemplateParams>,
+    ) -> Result<bool, DbError> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let template_json: Option<String> =
+            template.map(|t| serde_json::to_string(t).unwrap_or_default());
+        let n = conn.execute(
+            "UPDATE rules SET template = ?1 WHERE id = ?2",
+            params![template_json, id],
+        )?;
+        if n > 0 {
+            Ok(true)
+        } else {
+            // 未命中 → 仅返回存在性。
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM rules WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )?;
+            Ok(count > 0)
         }
-        // 用 core 的 RuleRegistry::with_defaults() 拿到 3 条内置规则。
+    }
+
+    /// 启动时按 id upsert 缺失的内置规则。
+    /// v1.1.3 T49 起改为"遍历内置规则集，对每条 id 不存在的规则 upsert"：
+    /// 老用户升级时自动补 seed `general-mask` 规则（4 条原独立脱敏规则已收敛为
+    /// `general-mask` 的预设，不再单独 seed）。已存在规则（含用户修改过参数的）不动。
+    /// T50：upsert 之后清理 v1.1.3 T48 遗留的 4 条独立脱敏规则 id（`idcard-mask`/
+    /// `phone-mask`/`birthdate-mask`/`bankcard-mask`），从用户 DB 中删除。
+    pub fn seed_builtin_rules(&self) -> Result<(), DbError> {
+        // 用 core 的 RuleRegistry::with_defaults() 拿到全部内置规则（T49 起 4 条：
+        // 3 name + general-mask）。
         let reg = RuleRegistry::with_defaults();
         for rule in reg.list() {
-            self.upsert_rule(rule)?;
+            if self.get_rule(&rule.id)?.is_none() {
+                self.upsert_rule(rule)?;
+            }
+        }
+        // T50：清理 v1.1.3 T48 遗留的 4 条独立脱敏规则（T49 收敛为 general-mask 预设）。
+        self.cleanup_deprecated_rules()?;
+        Ok(())
+    }
+
+    /// 删除已废弃的内置规则 id（T50）。用参数绑定，不拼接 SQL。
+    ///
+    /// v1.1.3 T48 曾落地的 4 条独立脱敏规则（`idcard-mask`/`phone-mask`/
+    /// `birthdate-mask`/`bankcard-mask`）在 T49 收敛为 `general-mask` 的预设，
+    /// 不再单独 seed。本方法在 `seed_builtin_rules` 末尾调用，从用户 DB 中删除
+    /// 这 4 个遗留 id（幂等：id 不存在时 DELETE 影响 0 行，不报错）。
+    fn cleanup_deprecated_rules(&self) -> Result<(), DbError> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        for id in &[
+            "idcard-mask",
+            "phone-mask",
+            "birthdate-mask",
+            "bankcard-mask",
+        ] {
+            conn.execute("DELETE FROM rules WHERE id = ?1", params![id])?;
         }
         Ok(())
     }
@@ -1287,10 +1356,10 @@ mod tests {
     fn new_creates_tables_and_schema_version() {
         let dir = tempfile::tempdir().unwrap();
         let mgr = DbManager::new(dir.path()).unwrap();
-        // v1.1.1: schema_version=3
+        // v1.1.3: schema_version=4
         assert_eq!(
             mgr.get_setting("schema_version").unwrap().as_deref(),
-            Some("3")
+            Some("4")
         );
         // DB 文件已生成
         assert!(dir.path().join("ruT0datakit.db").exists());
@@ -1569,18 +1638,19 @@ mod tests {
     }
 
     #[test]
-    fn seed_builtin_rules_inserts_three_when_empty() {
+    fn seed_builtin_rules_inserts_four_when_empty() {
         let (_dir, mgr) = open();
         assert_eq!(mgr.count_rules().unwrap(), 0);
         mgr.seed_builtin_rules().unwrap();
-        assert_eq!(mgr.count_rules().unwrap(), 3);
+        // T49：3 name + general-mask = 4 条
+        assert_eq!(mgr.count_rules().unwrap(), 4);
         let kinds: Vec<RuleKind> = mgr.list_rules().unwrap().iter().map(|r| r.kind).collect();
         assert!(kinds.contains(&RuleKind::Mask));
         assert!(kinds.contains(&RuleKind::Validate));
         assert!(kinds.contains(&RuleKind::Extract));
-        // 再次 seed 不重复插入
+        // 再次 seed 不重复插入（已存在的 id 跳过）
         mgr.seed_builtin_rules().unwrap();
-        assert_eq!(mgr.count_rules().unwrap(), 3);
+        assert_eq!(mgr.count_rules().unwrap(), 4);
     }
 
     #[test]
@@ -1597,14 +1667,114 @@ mod tests {
     }
 
     #[test]
+    fn seed_builtin_rules_upserts_missing_on_existing_db() {
+        // v1.1.3 T49 语义：老用户已有 3 条 name 规则，再次 seed 应补 general-mask
+        // 规则（4 条原独立脱敏规则已收敛为 general-mask 的预设，不再单独 seed），
+        // 且已存在规则参数不丢。
+        let (_dir, mgr) = open();
+        // 模拟 v1.1.2 老 DB：只 seed 3 条 name 规则。
+        mgr.upsert_rule(&RuleRegistry::name_validate_rule())
+            .unwrap();
+        mgr.upsert_rule(&RuleRegistry::name_mask_rule()).unwrap();
+        mgr.upsert_rule(&RuleRegistry::name_extract_rule()).unwrap();
+        assert_eq!(mgr.count_rules().unwrap(), 3);
+        // 用户修改 name-validate pattern
+        mgr.update_rule_params("name-validate", Some(r"^[\u4e00-\u9fa5]{2,8}$"), None)
+            .unwrap();
+        // 再次 seed → 补 general-mask 规则，已存在的不动
+        mgr.seed_builtin_rules().unwrap();
+        assert_eq!(mgr.count_rules().unwrap(), 4);
+        // 用户修改的 pattern 仍在
+        let got = mgr.get_rule("name-validate").unwrap().unwrap();
+        assert_eq!(got.pattern.as_deref(), Some(r"^[\u4e00-\u9fa5]{2,8}$"));
+        // 新规则已 seed（general-mask 持空模板）
+        let gm = mgr.get_rule("general-mask").unwrap().unwrap();
+        assert!(gm.template.is_some());
+        assert!(gm.template.as_ref().unwrap().is_empty());
+        // 旧 id 不应出现（T49：4 条原独立规则已收敛为预设）
+        assert!(mgr.get_rule("idcard-mask").unwrap().is_none());
+        assert!(mgr.get_rule("phone-mask").unwrap().is_none());
+        assert!(mgr.get_rule("birthdate-mask").unwrap().is_none());
+        assert!(mgr.get_rule("bankcard-mask").unwrap().is_none());
+    }
+
+    #[test]
+    fn cleanup_deprecated_rules_removes_legacy_ids() {
+        // T50：模拟 v1.1.3 T48 老 DB（含 4 条已废弃独立脱敏规则），seed 后应被清理。
+        let (_dir, mgr) = open();
+        // 手动 upsert 4 条废弃 id（模拟 T48 落地的老 DB）
+        for id in &[
+            "idcard-mask",
+            "phone-mask",
+            "birthdate-mask",
+            "bankcard-mask",
+        ] {
+            let rule = Rule {
+                id: (*id).into(),
+                name: format!("遗留-{id}"),
+                kind: RuleKind::Mask,
+                field: None,
+                pattern: None,
+                replacement: None,
+                enabled: true,
+                description: String::new(),
+                template: None,
+            };
+            mgr.upsert_rule(&rule).unwrap();
+        }
+        assert_eq!(mgr.count_rules().unwrap(), 4);
+        // seed → 补 4 条内置规则 + 清理 4 条废弃 id = 4 条
+        mgr.seed_builtin_rules().unwrap();
+        assert_eq!(mgr.count_rules().unwrap(), 4);
+        // 4 条废弃 id 已删除
+        assert!(mgr.get_rule("idcard-mask").unwrap().is_none());
+        assert!(mgr.get_rule("phone-mask").unwrap().is_none());
+        assert!(mgr.get_rule("birthdate-mask").unwrap().is_none());
+        assert!(mgr.get_rule("bankcard-mask").unwrap().is_none());
+        // 4 条内置规则仍在
+        assert!(mgr.get_rule("name-validate").unwrap().is_some());
+        assert!(mgr.get_rule("name-mask").unwrap().is_some());
+        assert!(mgr.get_rule("name-extract").unwrap().is_some());
+        assert!(mgr.get_rule("general-mask").unwrap().is_some());
+    }
+
+    #[test]
+    fn update_rule_template_persists_and_reads_back() {
+        // T49：update_rule_template 写入 template JSON，list_rules / get_rule 读回。
+        let (_dir, mgr) = open();
+        mgr.seed_builtin_rules().unwrap();
+        // general-mask 初始持空模板
+        let gm0 = mgr.get_rule("general-mask").unwrap().unwrap();
+        assert!(gm0.template.as_ref().unwrap().is_empty());
+        // 更新为 idcard 预设
+        let tpl = TemplateParams::new(6, 4, 8).with_len_range(18, 18);
+        assert!(mgr
+            .update_rule_template("general-mask", Some(&tpl))
+            .unwrap());
+        let gm1 = mgr.get_rule("general-mask").unwrap().unwrap();
+        let got = gm1.template.expect("template should be Some");
+        assert_eq!(got.keep_prefix, Some(6));
+        assert_eq!(got.keep_suffix, Some(4));
+        assert_eq!(got.mask_min_len, Some(8));
+        assert_eq!(got.min_len, Some(18));
+        assert_eq!(got.max_len, Some(18));
+        // 清空模板 → 写 NULL
+        assert!(mgr.update_rule_template("general-mask", None).unwrap());
+        let gm2 = mgr.get_rule("general-mask").unwrap().unwrap();
+        assert!(gm2.template.is_none());
+        // 不存在的 id → false
+        assert!(!mgr.update_rule_template("nope", Some(&tpl)).unwrap());
+    }
+
+    #[test]
     fn rule_kind_round_trip_through_db() {
         let (_dir, mgr) = open();
         for r in RuleRegistry::with_defaults().list() {
             mgr.upsert_rule(r).unwrap();
         }
         let list = mgr.list_rules().unwrap();
-        // 确保三种 kind 都能正确反序列化
-        assert_eq!(list.len(), 3);
+        // T49 起 4 条内置规则（3 name + general-mask）
+        assert_eq!(list.len(), 4);
         for r in &list {
             // 确认 kind 字符串化 + 反序列化闭环
             let s = r.kind.to_string();

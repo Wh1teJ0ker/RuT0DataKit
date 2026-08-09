@@ -114,15 +114,20 @@ export function installUpdate() {
 // v1.1.0 数据处理原型 IPC 封装（脱敏 / 校验 / 提取 / 规则管理）。
 
 /**
- * 调用 `mask_column` IPC：对指定列就地脱敏（保留首字符，其余用掩码字符替换）。
+ * 调用 `mask_column` IPC：对指定列就地脱敏。
+ * v1.1.3 T49：新增 `template` 参数（临时覆盖规则的模板，不写回 DB）。
+ *   前端选预设 → 填充 6 个可编辑参数框 → 透传给本参数执行脱敏。
+ *   `null` → 用规则自身的 template。空模板（所有字段 null）→ 不脱敏（透传）。
  * @param {number} sheetId      Sheet ID
  * @param {string} column       列名（headers 中的值）
  * @param {string|null} [ruleId] 规则 ID（可选；指向 DB mask 规则）
  * @param {string|null} [replacement] 掩码字符（取首个字符；空/null → 默认 `*`；不写回 DB）
+ * @param {object|null} [template] 通用模板参数（camelCase：keepPrefix/keepSuffix/
+ *   maskChar/maskMinLen/minLen/maxLen，全 null = 不脱敏；不写回 DB）
  * @returns {Promise<{affected: number}>} 受影响行数
  */
-export function maskColumn(sheetId, column, ruleId, replacement) {
-  return invoke("mask_column", { sheetId, column, ruleId, replacement });
+export function maskColumn(sheetId, column, ruleId, replacement, template) {
+  return invoke("mask_column", { sheetId, column, ruleId, replacement, template });
 }
 
 /**
@@ -175,6 +180,20 @@ export function toggleRule(ruleId, enabled) {
  */
 export function updateRuleParams(ruleId, pattern, replacement) {
   return invoke("update_rule_params", { ruleId, pattern, replacement });
+}
+
+/**
+ * 调用 `update_rule_template` IPC：更新规则的通用模板脱敏参数（`rules.template` 列）。
+ * v1.1.3 T49 新增。前端选预设 → 填充 6 个可编辑参数框 → 调本命令持久化到
+ * `general-mask` 规则。
+ * @param {string} ruleId      规则 ID（通常为 `general-mask`）
+ * @param {object|null} template 通用模板参数（camelCase：keepPrefix/keepSuffix/
+ *   maskChar/maskMinLen/minLen/maxLen）。`null` → 清空模板（写 NULL）。
+ *   空模板（所有字段 null）→ 不脱敏。
+ * @returns {Promise<void>}
+ */
+export function updateRuleTemplate(ruleId, template) {
+  return invoke("update_rule_template", { ruleId, template });
 }
 
 // v1.1.1 撤销 / 搜索 / 列操作 IPC 封装。

@@ -1,5 +1,7 @@
 //! 数据库迁移逻辑。
 //!
+//! v1.1.3: `schema_version=4`，`rules` 表新增 `template TEXT` 列存通用模板
+//! 脱敏参数（TemplateParams JSON）（v3→v4 增量迁移）。
 //! v1.1.1: `schema_version=3`，`operations` 表新增 `before_snapshot_json` 列
 //! 存撤销前置快照；新增 `idx_cells_sheet_col` 复合索引（v2→v3 增量迁移）。
 //! v1.1.0: `schema_version=2`，新增 `rules` 表（v1→v2 增量迁移）。
@@ -13,6 +15,9 @@
 //! v2→v3 迁移：`operations` 表 `ADD COLUMN before_snapshot_json TEXT`（先
 //! `PRAGMA table_info` 检查列是否存在再 ALTER，保证幂等）+ `idx_cells_sheet_col`
 //! 复合索引（`IF NOT EXISTS` 幂等），不影响历史数据。
+//!
+//! v3→v4 迁移：`rules` 表 `ADD COLUMN template TEXT`（先 `PRAGMA table_info`
+//! 检查列是否存在再 ALTER，保证幂等），不影响历史数据。
 
 use std::path::{Path, PathBuf};
 
@@ -130,7 +135,45 @@ pub fn migrate_v2_to_v3(conn: &Connection) -> Result<(), DbError> {
     Ok(())
 }
 
-/// 初始化迁移：首次建表；版本不兼容则备份旧 DB 重建；v1→v2 / v2→v3 增量迁移。
+/// v3→v4 增量迁移：`rules` 表 `ADD COLUMN template TEXT`（幂等），
+/// 更新 `schema_version=4`。不影响历史数据。
+///
+/// 幂等保证：先用 `PRAGMA table_info(rules)` 查 `template` 列是否存在，
+/// 不存在才 ALTER。`template` 列存通用模板脱敏参数（`TemplateParams` JSON）。
+pub fn migrate_v3_to_v4(conn: &Connection) -> Result<(), DbError> {
+    // 检查 template 列是否已存在。
+    let col_exists: bool = {
+        let mut stmt = conn
+            .prepare("PRAGMA table_info(rules)")
+            .map_err(DbError::Sqlite)?;
+        let mut rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+        let mut found = false;
+        for row_res in rows.by_ref() {
+            match row_res {
+                Ok(name) if name == "template" => {
+                    found = true;
+                    break;
+                }
+                Ok(_) => continue,
+                Err(e) => return Err(DbError::Sqlite(e)),
+            }
+        }
+        found
+    };
+    if !col_exists {
+        conn.execute("ALTER TABLE rules ADD COLUMN template TEXT", [])
+            .map_err(DbError::Sqlite)?;
+    }
+    conn.execute(
+        "INSERT INTO app_settings(key, value) VALUES('schema_version', ?1)
+         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        rusqlite::params![SCHEMA_VERSION.to_string()],
+    )
+    .map_err(DbError::Sqlite)?;
+    Ok(())
+}
+
+/// 初始化迁移：首次建表；版本不兼容则备份旧 DB 重建；v1→v2 / v2→v3 / v3→v4 增量迁移。
 ///
 /// - `db_path`: DB 文件路径（`app_config_dir/ruT0datakit.db`）。
 /// - `conn`: 已打开的连接。
@@ -156,6 +199,20 @@ pub fn migrate(db_path: &Path, conn: &Connection) -> Result<String, DbError> {
             // v2→v3 增量迁移：operations 表加 before_snapshot_json 列 + 复合索引。
             migrate_v2_to_v3(conn)?;
             Ok("migrated v2→v3 (before_snapshot_json column + idx_cells_sheet_col added)".into())
+        }
+        Some(2) if SCHEMA_VERSION == 4 => {
+            // v2→v4 链式增量迁移：先 v2→v3 再 v3→v4。
+            migrate_v2_to_v3(conn)?;
+            migrate_v3_to_v4(conn)?;
+            Ok(
+                "migrated v2→v4 (before_snapshot_json + idx_cells_sheet_col + rules.template)"
+                    .into(),
+            )
+        }
+        Some(3) if SCHEMA_VERSION == 4 => {
+            // v3→v4 增量迁移：rules 表加 template 列。
+            migrate_v3_to_v4(conn)?;
+            Ok("migrated v3→v4 (rules.template column added)".into())
         }
         Some(v) => {
             // 版本不兼容（高于当前或无法增量迁移）：备份旧 DB 后重建。
@@ -346,8 +403,9 @@ mod tests {
         assert!(!column_exists(&conn, "operations", "before_snapshot_json"));
         assert_eq!(read_schema_version(&conn).unwrap(), Some(2));
         let note = migrate(&db_path, &conn).unwrap();
-        assert!(note.contains("v2→v3"), "note={}", note);
-        assert_eq!(read_schema_version(&conn).unwrap(), Some(3));
+        // v2 现走链式 v2→v4 迁移（先 v2→v3 再 v3→v4）。
+        assert!(note.contains("v2→v4"), "note={}", note);
+        assert_eq!(read_schema_version(&conn).unwrap(), Some(SCHEMA_VERSION));
         assert!(column_exists(&conn, "operations", "before_snapshot_json"));
     }
 
@@ -358,10 +416,10 @@ mod tests {
         let conn = Connection::open(&db_path).unwrap();
         build_v2_db(&conn);
         migrate(&db_path, &conn).unwrap();
-        // 第二次：版本已是 3，走幂等补建分支（execute_batch SCHEMA_DDL）。
+        // 第二次：版本已是 SCHEMA_VERSION，走幂等补建分支（execute_batch SCHEMA_DDL）。
         let note = migrate(&db_path, &conn).unwrap();
         assert!(note.contains("ok"));
-        assert_eq!(read_schema_version(&conn).unwrap(), Some(3));
+        assert_eq!(read_schema_version(&conn).unwrap(), Some(SCHEMA_VERSION));
         assert!(column_exists(&conn, "operations", "before_snapshot_json"));
         // 直接调 migrate_v2_to_v3 也应幂等（不报 duplicate column）。
         migrate_v2_to_v3(&conn).unwrap();
@@ -411,5 +469,90 @@ mod tests {
             )
             .unwrap();
         assert_eq!(bs, None);
+    }
+
+    /// v3 DB（含 before_snapshot_json + idx_cells_sheet_col，但 rules 无 template 列）。
+    fn build_v3_db(conn: &Connection) {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
+                source_path TEXT, source_type TEXT NOT NULL,
+                row_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS sheets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id INTEGER NOT NULL, name TEXT NOT NULL,
+                position INTEGER NOT NULL DEFAULT 0,
+                column_order TEXT, column_visibility TEXT,
+                created_at TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS cells (
+                sheet_id INTEGER NOT NULL, row_idx INTEGER NOT NULL,
+                col_idx INTEGER NOT NULL, value TEXT,
+                PRIMARY KEY (sheet_id, row_idx, col_idx));
+             CREATE TABLE IF NOT EXISTS operations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sheet_id INTEGER, kind TEXT NOT NULL,
+                params_json TEXT, before_snapshot_json TEXT, result_snapshot_json TEXT,
+                created_at TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT);
+             CREATE TABLE IF NOT EXISTS rules (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL,
+                field TEXT, pattern TEXT, replacement TEXT,
+                enabled INTEGER NOT NULL DEFAULT 1, description TEXT NOT NULL DEFAULT '');
+             CREATE INDEX IF NOT EXISTS idx_cells_sheet_row ON cells(sheet_id, row_idx);
+             CREATE INDEX IF NOT EXISTS idx_cells_sheet_col ON cells(sheet_id, col_idx);
+             CREATE INDEX IF NOT EXISTS idx_operations_sheet ON operations(sheet_id);
+             CREATE INDEX IF NOT EXISTS idx_sheets_session ON sheets(session_id);
+             CREATE INDEX IF NOT EXISTS idx_rules_kind ON rules(kind);
+             INSERT INTO app_settings(key, value) VALUES('schema_version', '3');",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn migrate_v3_to_v4_adds_template_column() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("ruT0datakit.db");
+        let conn = Connection::open(&db_path).unwrap();
+        build_v3_db(&conn);
+        assert!(!column_exists(&conn, "rules", "template"));
+        assert_eq!(read_schema_version(&conn).unwrap(), Some(3));
+        let note = migrate(&db_path, &conn).unwrap();
+        assert!(note.contains("v3→v4"), "note={}", note);
+        assert_eq!(read_schema_version(&conn).unwrap(), Some(SCHEMA_VERSION));
+        assert!(column_exists(&conn, "rules", "template"));
+    }
+
+    #[test]
+    fn migrate_v3_to_v4_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("ruT0datakit.db");
+        let conn = Connection::open(&db_path).unwrap();
+        build_v3_db(&conn);
+        migrate(&db_path, &conn).unwrap();
+        // 第二次：版本已是 4，走幂等补建分支。
+        let note = migrate(&db_path, &conn).unwrap();
+        assert!(note.contains("ok"));
+        assert_eq!(read_schema_version(&conn).unwrap(), Some(SCHEMA_VERSION));
+        assert!(column_exists(&conn, "rules", "template"));
+        // 直接调 migrate_v3_to_v4 也应幂等（不报 duplicate column）。
+        migrate_v3_to_v4(&conn).unwrap();
+        assert!(column_exists(&conn, "rules", "template"));
+    }
+
+    #[test]
+    fn migrate_v2_to_v4_chain_adds_template_column() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("ruT0datakit.db");
+        let conn = Connection::open(&db_path).unwrap();
+        build_v2_db(&conn);
+        assert!(!column_exists(&conn, "operations", "before_snapshot_json"));
+        assert!(!column_exists(&conn, "rules", "template"));
+        assert_eq!(read_schema_version(&conn).unwrap(), Some(2));
+        let note = migrate(&db_path, &conn).unwrap();
+        assert!(note.contains("v2→v4"), "note={}", note);
+        assert_eq!(read_schema_version(&conn).unwrap(), Some(SCHEMA_VERSION));
+        assert!(column_exists(&conn, "operations", "before_snapshot_json"));
+        assert!(column_exists(&conn, "rules", "template"));
     }
 }

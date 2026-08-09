@@ -19,5 +19,5 @@ pub mod validator;
 
 pub use extractor::{ExtractItem, Extractor, PiiExtractor};
 pub use masker::{MaskResult, Masker, SimpleMasker};
-pub use rules::{Rule, RuleKind, RuleRegistry};
+pub use rules::{Rule, RuleKind, RuleRegistry, TemplateParams};
 pub use validator::{RegexValidator, ValidationResult, Validator};
