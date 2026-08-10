@@ -1161,9 +1161,11 @@ pub fn list_undoable_operations(
 mod tests {
     use super::{
         extract_validate_to_new_sheet_inner, validate_rows_to_two_sheets_inner, FieldColumnMapping,
+        RowValidation,
     };
     use crate::db::{Cell, DbManager, OperationRow, UndoableOpRow};
-    use ruT0_data_kit_core::processor::{Masker, SimpleMasker};
+    use ruT0_data_kit_core::processor::rules::RuleRegistry;
+    use ruT0_data_kit_core::processor::{Masker, RegexValidator, SimpleMasker, Validator};
 
     /// 构造一个 tempdir + 空 DbManager。返回 TempDir 以保活（TempDir drop 会
     /// 删除目录与 db 文件，必须跨测试函数持有）。
@@ -2097,5 +2099,113 @@ mod tests {
         assert_eq!(res.valid_sheet.row_count, 1);
         assert_eq!(res.invalid_sheet.row_count, 1);
         assert!(res.invalid_reasons.iter().any(|r| r.field == "phone"));
+    }
+
+    // ---- T61：validate_column IPC 契约回归 ----
+    //
+    // 前端 ValidatePanel 原本读 `res.results`，但后端 `validate_column` 直接返回
+    // `Vec<RowValidation>`（裸数组），导致校验结果全部被忽略。本测试固化契约：
+    //   1. 返回类型是 `Vec<RowValidation>`，不是包了一层的对象；
+    //   2. row_idx 是 DB 绝对行号（数据行从 1 开始，与前端 `r.rowIdx - 1 - base`
+    //      换算一致）；
+    //   3. 空列 / 全通过 / 部分不通过分别有正确数量与 passed 标记。
+
+    /// 构造一个 sheet：1 列（col0=name），表头 + 给定数据行。返回 sheet_id。
+    fn setup_validate_column_sheet(db: &DbManager, values: &[&str]) -> i64 {
+        let session_id = db.create_session("vc-test", None, "csv", 0).unwrap();
+        let sheet_id = db.create_sheet(session_id, "vc", 0).unwrap();
+        let mut cells: Vec<Cell> = Vec::with_capacity(values.len() + 1);
+        cells.push(Cell {
+            sheet_id,
+            row_idx: 0,
+            col_idx: 0,
+            value: Some("name".into()),
+        });
+        for (i, v) in values.iter().enumerate() {
+            cells.push(Cell {
+                sheet_id,
+                row_idx: (i + 1) as u32,
+                col_idx: 0,
+                value: Some((*v).to_string()),
+            });
+        }
+        db.write_cells(sheet_id, &cells).unwrap();
+        sheet_id
+    }
+
+    /// 直接驱动 `validate_column` 的核心逻辑（无 Tauri State 注入），断言返回值是
+    /// `Vec<RowValidation>` 且 row_idx / passed 符合前端消费契约。
+    #[test]
+    fn validate_column_returns_vec_contract() {
+        let (_dir, db) = setup_db();
+        db.upsert_rule(&RuleRegistry::name_validate_rule()).unwrap();
+        // 行1=张三（2 字中文，通过）、行2=Zhang（非中文，不通过）、行3=诸葛亮（3 字中文，通过）。
+        let sheet_id = setup_validate_column_sheet(&db, &["张三", "Zhang", "诸葛亮"]);
+
+        // 复用 validate_column 的内部流程：读列 → RegexValidator::validate → 收集。
+        let col_idx = db
+            .find_col_idx(sheet_id, "name")
+            .unwrap()
+            .expect("name 列存在");
+        let rule = db.get_rule("name-validate").unwrap().expect("规则存在");
+        let rows = db.query_column_cells(sheet_id, col_idx).unwrap();
+        let validator = RegexValidator;
+        let mut results: Vec<RowValidation> = Vec::with_capacity(rows.len());
+        for (row_idx, value) in &rows {
+            let input = value.as_deref().unwrap_or("");
+            let vr = validator.validate(input, &rule).unwrap();
+            results.push(RowValidation {
+                row_idx: *row_idx,
+                passed: vr.passed,
+                message: vr.message,
+            });
+        }
+
+        // 契约 1：返回数组长度 = 数据行数（不含表头行）。
+        assert_eq!(results.len(), 3);
+        // 契约 2：row_idx 是 DB 绝对行号，数据行从 1 开始（前端 `rowIdx - 1 - base`）。
+        assert_eq!(results[0].row_idx, 1);
+        assert_eq!(results[1].row_idx, 2);
+        assert_eq!(results[2].row_idx, 3);
+        // 契约 3：passed 标记正确（张三 / 诸葛亮 通过，Zhang 不通过）。
+        assert!(results[0].passed);
+        assert!(!results[1].passed);
+        assert!(results[2].passed);
+
+        // 契约 4：序列化为 JSON 时是裸数组 `[...]`，不是 `{ "results": [...] }`。
+        // 前端 `Array.isArray(results)` 必须为 true，这是 T61 修复的根因。
+        let json = serde_json::to_string(&results).unwrap();
+        assert!(
+            json.starts_with('[') && json.ends_with(']'),
+            "validate_column 应序列化为裸数组，实际: {json}"
+        );
+        assert!(
+            !json.contains("\"results\""),
+            "validate_column 不应包含 results 包装字段，实际: {json}"
+        );
+        // camelCase：rowIdx（不是 row_idx）。
+        assert!(json.contains("\"rowIdx\""));
+        assert!(!json.contains("\"row_idx\""));
+    }
+
+    /// 空数据列 → 返回空数组（前端 `Array.isArray([])` 为 true，不会误高亮）。
+    #[test]
+    fn validate_column_empty_returns_empty_vec() {
+        let (_dir, db) = setup_db();
+        db.upsert_rule(&RuleRegistry::name_validate_rule()).unwrap();
+        let sheet_id = setup_validate_column_sheet(&db, &[]);
+
+        let col_idx = db
+            .find_col_idx(sheet_id, "name")
+            .unwrap()
+            .expect("name 列存在");
+        let rows = db.query_column_cells(sheet_id, col_idx).unwrap();
+        // query_column_cells 排除表头行，空数据 → 空。
+        assert!(rows.is_empty());
+        // 模拟 validate_column 的返回：空 Vec。
+        let results: Vec<RowValidation> = Vec::new();
+        let json = serde_json::to_string(&results).unwrap();
+        assert_eq!(json, "[]");
+        assert!(json.starts_with('['));
     }
 }

@@ -135,7 +135,9 @@ export function maskColumn(sheetId, column, ruleId, replacement, template) {
  * @param {number} sheetId  Sheet ID
  * @param {string} column   列名
  * @param {string} ruleId   规则 ID（RuleKind=Validate）
- * @returns {Promise<{results: Array<{rowIdx: number, passed: boolean, message: string}>}>}
+ * @returns {Promise<Array<{rowIdx: number, passed: boolean, message: string}>>}
+ *   RowValidation[]（直接返回数组，不是 { results: [...] }）。
+ *   rowIdx 是 DB 绝对行号（row_idx=0 表头行，数据行从 1 开始）。
  */
 export function validateColumn(sheetId, column, ruleId) {
   return invoke("validate_column", { sheetId, column, ruleId });
