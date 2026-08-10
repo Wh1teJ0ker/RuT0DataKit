@@ -1,7 +1,7 @@
 # RuT0DataKit v1.1.3
 
 > Git tag：`v1.1.3`（待推送）
-> 状态：待发布（T48 + T49 verified_complete；E2E 全绿）
+> 状态：qa_passed（T48~T57 全部完成 + Release QA 审计通过，见 [`docs/qa/versions/1.1.3/QA-审计报告.md`](../../qa/versions/1.1.3/QA-审计报告.md)）
 > 前置：v1.1.2 已发布 tag `v1.1.2`
 
 ## 这是什么

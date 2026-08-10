@@ -1,5 +1,7 @@
 //! SQLite schema DDL。
 //!
+//! v1.1.3 T55: `rules` 表新增 `params TEXT` 列存提取规则函数式校验参数
+//! （`ExtractParams` JSON），`SCHEMA_VERSION=5`。
 //! v1.1.3: `rules` 表新增 `template TEXT` 列存通用模板脱敏参数（JSON），
 //! `SCHEMA_VERSION=4`。
 //! v1.1.1: 6 表 + 5 索引（`operations` 表新增 `before_snapshot_json` 列存撤销前置快照，
@@ -8,9 +10,9 @@
 //! v1.0.0: 5 表 + 3 索引，严格对齐 `docs/02-技术设计文档.md` §3。
 //! 全部用 `IF NOT EXISTS`，保证重复启动幂等。
 
-/// 当前 schema 版本。v1.1.3 起为 `4`（`rules` 表加 `template TEXT` 列存
-/// 通用模板脱敏参数 JSON）。
-pub const SCHEMA_VERSION: i64 = 4;
+/// 当前 schema 版本。v1.1.3 T55 起为 `5`（`rules` 表加 `params TEXT` 列存
+/// 提取规则函数式校验参数 JSON）。
+pub const SCHEMA_VERSION: i64 = 5;
 
 /// 6 表 + 5 索引 DDL。`CREATE ... IF NOT EXISTS` 幂等。
 pub const SCHEMA_DDL: &str = r#"
@@ -64,6 +66,7 @@ CREATE TABLE IF NOT EXISTS app_settings (
 
 -- rules：规则定义（v1.1.0 新增，持久化脱敏/校验/提取规则）
 -- v1.1.3：新增 `template TEXT` 列存通用模板脱敏参数（TemplateParams JSON）
+-- v1.1.3 T55：新增 `params TEXT` 列存提取规则函数式校验参数（ExtractParams JSON）
 CREATE TABLE IF NOT EXISTS rules (
     id          TEXT PRIMARY KEY,
     name        TEXT NOT NULL,
@@ -72,6 +75,7 @@ CREATE TABLE IF NOT EXISTS rules (
     pattern     TEXT,
     replacement TEXT,
     template    TEXT,
+    params      TEXT,
     enabled     INTEGER NOT NULL DEFAULT 1,
     description TEXT NOT NULL DEFAULT ''
 );

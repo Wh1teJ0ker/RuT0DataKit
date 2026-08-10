@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Button, Form, Input, InputNumber, Select, Space, message } from "antd";
+import { Button, Card, Col, Form, Input, InputNumber, Row, Select, Space, Switch, message } from "antd";
 import { useAppContext } from "../../state";
 import {
   maskColumn,
@@ -11,27 +11,32 @@ import {
 import { PAGE_SIZE } from "../../constants";
 import {
   DEFAULT_MASK_CHAR,
+  EMPTY_SEGMENT_TEMPLATE,
   EMPTY_TEMPLATE,
   MASK_PRESETS,
   buildTemplateForRun,
   detectPreset,
+  isSegmentTemplate,
   normalizeTemplate,
   resolveMaskChar,
   templateFromPreset,
 } from "./maskTemplate";
 
-// v1.1.3 T49 脱敏面板：
-//   - 脱敏规则下拉：姓名脱敏（name-mask）+ 通用脱敏（general-mask）。
-//     4 条原独立规则（身份证/手机/出生日期/银行卡）收敛为 general-mask 的**预设**
-//     （子规则），不再单独列出。
-//   - 选 general-mask → 显示「子规则（预设）」下拉 + 6 个可编辑参数框。
-//     选预设即填充参数，用户可继续修改；空模板（不选/全清）= 不脱敏（透传）。
+// v1.1.3 T49 脱敏面板（T54 拆分后）：
+//   - 脱敏规则下拉：姓名脱敏（name-mask）+ 整段脱敏（simple-mask）+ 分段脱敏
+//     （segment-mask）。4 条原独立规则（身份证/手机/出生日期/银行卡）收敛为
+//     simple-mask 的**预设**，不再单独列出。
+//   - 选 simple-mask → 显示「子规则（预设）」下拉 + 7 个可编辑参数框（含 T53
+//     反向脱敏开关）。选预设即填充参数，用户可继续修改；空模板=不脱敏（透传）。
+//   - 选 segment-mask → 显示分隔符 + 段配置（按分隔符拆分后对指定段脱敏）。
 //   - 选 name-mask → 仅显示掩码字符输入（旧逻辑，保留首尾各 1）。
-//   - 执行脱敏：general-mask 把当前 6 参数框组装成 template 透传给 mask_column
-//     （临时覆盖，不写回 DB）；name-mask 走旧逻辑。
-//   - 保存设置：general-mask → updateRuleTemplate 持久化 template；name-mask →
-//     updateRuleParams 持久化 replacement。
+//   - 执行脱敏：simple-mask/segment-mask 把当前参数组装成 template 透传给
+//     mask_column（临时覆盖，不写回 DB）；name-mask 走旧逻辑。
+//   - 保存设置：simple-mask/segment-mask → updateRuleTemplate 持久化 template；
+//     name-mask → updateRuleParams 持久化 replacement。
 //   - T51：预设表 / 模板组装 / 透传判定抽到 ./maskTemplate.js，与 RulesPanel 共享。
+//   - T54：原 general-mask 一条规则拆为 simple-mask + segment-mask 两条独立规则，
+//     每条规则固定一种模板类型，移除「模板类型」Select 切换。
 
 export default function MaskPanel() {
   const { state, dispatch, applyRowStatuses } = useAppContext();
@@ -40,7 +45,8 @@ export default function MaskPanel() {
   const [saving, setSaving] = useState(false);
   const [maskRuleId, setMaskRuleId] = useState(null);
   const [maskRules, setMaskRules] = useState([]);
-  // general-mask 的 6 个模板参数（camelCase，对齐后端 TemplateParams）
+  // simple-mask 的 7 个模板参数（camelCase，对齐后端 TemplateParams::Simple）
+  // segment-mask 的分段参数（delimiter + segments[]，对齐 Segment 变体）
   const [presetKey, setPresetKey] = useState("empty");
   const [template, setTemplate] = useState({ ...EMPTY_TEMPLATE });
   // name-mask 的掩码字符（replacement）
@@ -48,7 +54,9 @@ export default function MaskPanel() {
 
   const sheet = state.sheets.find((s) => s.id === state.activeSheetId);
   const headers = sheet?.headers || [];
-  const isGeneralMask = maskRuleId === "general-mask";
+  const isSimpleMask = maskRuleId === "simple-mask";
+  const isSegmentMask = maskRuleId === "segment-mask";
+  const isTemplateMask = isSimpleMask || isSegmentMask;
 
   // 加载全部 mask 规则供下拉选择；默认选中首条 mask 规则。
   useEffect(() => {
@@ -63,7 +71,7 @@ export default function MaskPanel() {
         const first = masks[0];
         setMaskRuleId(first.id);
         form.setFieldValue("maskRuleId", first.id);
-        if (first.id === "general-mask" && first.template) {
+        if ((first.id === "simple-mask" || first.id === "segment-mask") && first.template) {
           initTemplateFromRule(first.template);
         } else if (first.id === "name-mask") {
           const ch = resolveMaskChar(first);
@@ -81,18 +89,58 @@ export default function MaskPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 从规则 template 初始化参数框（general-mask 从 DB 读取的 template）。
+  // 从规则 template 初始化参数框（simple-mask/segment-mask 从 DB 读取的 template）。
   const initTemplateFromRule = (tpl) => {
     const t = normalizeTemplate(tpl);
     setTemplate(t);
     setPresetKey(detectPreset(t));
   };
 
+  // 编辑 Segment 段配置单字段（index/keepPrefix/keepSuffix/maskMinLen）。
+  const handleSegmentFieldChange = (segIdx, field, value) => {
+    setTemplate((prev) => {
+      if (!isSegmentTemplate(prev)) return prev;
+      const segments = prev.segments.map((s, i) =>
+        i === segIdx ? { ...s, [field]: value } : s,
+      );
+      return { ...prev, segments };
+    });
+  };
+
+  // 新增一段段配置（默认 index=0, keepPrefix=1, keepSuffix=1, maskMinLen=1）。
+  const handleAddSegment = () => {
+    setTemplate((prev) => {
+      if (!isSegmentTemplate(prev)) return prev;
+      const nextIdx =
+        prev.segments.length > 0
+          ? Math.max(...prev.segments.map((s) => Number(s.index) || 0)) + 1
+          : 0;
+      return {
+        ...prev,
+        segments: [
+          ...prev.segments,
+          { index: nextIdx, keepPrefix: 1, keepSuffix: 1, maskMinLen: 1 },
+        ],
+      };
+    });
+  };
+
+  // 删除指定段配置。
+  const handleRemoveSegment = (segIdx) => {
+    setTemplate((prev) => {
+      if (!isSegmentTemplate(prev)) return prev;
+      return {
+        ...prev,
+        segments: prev.segments.filter((_, i) => i !== segIdx),
+      };
+    });
+  };
+
   const handleRuleChange = (id) => {
     const rule = maskRules.find((r) => r.id === id);
     if (!rule) return;
     setMaskRuleId(id);
-    if (id === "general-mask" && rule.template) {
+    if ((id === "simple-mask" || id === "segment-mask") && rule.template) {
       initTemplateFromRule(rule.template);
     } else if (id === "name-mask") {
       const ch = resolveMaskChar(rule);
@@ -101,7 +149,7 @@ export default function MaskPanel() {
     }
   };
 
-  // 选预设 → 填充 6 参数框（custom 不填充，保留当前用户输入）。
+  // 选预设 → 填充 7 参数框（custom 不填充，保留当前用户输入）。
   const handlePresetChange = (key) => {
     setPresetKey(key);
     const filled = templateFromPreset(key);
@@ -134,9 +182,9 @@ export default function MaskPanel() {
     setLoading(true);
     try {
       let res;
-      if (isGeneralMask) {
+      if (isTemplateMask) {
         const tpl = buildForRun();
-        // general-mask：template 透传（临时覆盖），replacement 用 maskChar 或默认 *。
+        // simple-mask/segment-mask：template 透传（临时覆盖），replacement 用 maskChar 或默认 *。
         const ch = template.maskChar || DEFAULT_MASK_CHAR;
         res = await maskColumn(sheet.id, column, maskRuleId, ch, tpl);
       } else {
@@ -172,8 +220,8 @@ export default function MaskPanel() {
     }
     setSaving(true);
     try {
-      if (isGeneralMask) {
-        // 持久化 template 到 general-mask 规则（rules.template 列）。
+      if (isTemplateMask) {
+        // 持久化 template 到 simple-mask/segment-mask 规则（rules.template 列）。
         const tpl = buildForRun();
         await updateRuleTemplate(maskRuleId, tpl);
         message.success("脱敏参数已保存");
@@ -193,9 +241,12 @@ export default function MaskPanel() {
   };
 
   const handleReset = () => {
-    if (isGeneralMask) {
+    if (isSimpleMask) {
       setTemplate({ ...EMPTY_TEMPLATE });
       setPresetKey("empty");
+    } else if (isSegmentMask) {
+      setTemplate({ ...EMPTY_SEGMENT_TEMPLATE });
+      setPresetKey("custom");
     } else {
       setNameMaskChar(DEFAULT_MASK_CHAR);
       form.setFieldValue("nameMaskChar", DEFAULT_MASK_CHAR);
@@ -216,7 +267,7 @@ export default function MaskPanel() {
         <Form.Item
           label="脱敏规则"
           name="maskRuleId"
-          extra="姓名脱敏（保留首尾）或通用脱敏（模板参数）"
+          extra="姓名脱敏（保留首尾）/ 整段脱敏（模板参数）/ 分段脱敏（按分隔符拆分）"
         >
           <Select
             placeholder="选择脱敏规则"
@@ -227,7 +278,111 @@ export default function MaskPanel() {
             optionFilterProp="label"
           />
         </Form.Item>
-        {isGeneralMask ? (
+        {isSegmentMask ? (
+          <>
+            <Form.Item label="分隔符" extra="如 @ . - / 等单字符或多字符">
+              <Input
+                value={template.delimiter}
+                onChange={(e) =>
+                  setTemplate((prev) => ({ ...prev, delimiter: e.target.value }))
+                }
+                placeholder="@ / . 等"
+                allowClear
+              />
+            </Form.Item>
+            <Form.Item label="掩码字符" extra="默认 *；取首个字符">
+              <Input
+                value={template.maskChar ?? ""}
+                onChange={(e) =>
+                  setTemplate((prev) => ({
+                    ...prev,
+                    maskChar: e.target.value || null,
+                  }))
+                }
+                placeholder={DEFAULT_MASK_CHAR}
+                allowClear
+              />
+            </Form.Item>
+            <Form.Item label="段配置">
+              <Space direction="vertical" style={{ width: "100%" }}>
+                {(template.segments || []).map((seg, i) => (
+                  <Card
+                    key={i}
+                    size="small"
+                    title={`段 #${i}`}
+                    headStyle={{ minHeight: 32, padding: "0 8px" }}
+                    bodyStyle={{ padding: 8 }}
+                    extra={
+                      <Button
+                        size="small"
+                        type="text"
+                        onClick={() => handleRemoveSegment(i)}
+                      >
+                        删除
+                      </Button>
+                    }
+                  >
+                    <Row gutter={8}>
+                      <Col span={6}>
+                        <Form.Item label="段索引" style={{ marginBottom: 8 }}>
+                          <InputNumber
+                            value={seg.index}
+                            onChange={(v) => handleSegmentFieldChange(i, "index", v)}
+                            min={0}
+                            style={{ width: "100%" }}
+                            size="small"
+                          />
+                        </Form.Item>
+                      </Col>
+                      <Col span={6}>
+                        <Form.Item label="保留前" style={{ marginBottom: 8 }}>
+                          <InputNumber
+                            value={seg.keepPrefix}
+                            onChange={(v) =>
+                              handleSegmentFieldChange(i, "keepPrefix", v)
+                            }
+                            min={0}
+                            style={{ width: "100%" }}
+                            size="small"
+                          />
+                        </Form.Item>
+                      </Col>
+                      <Col span={6}>
+                        <Form.Item label="保留后" style={{ marginBottom: 8 }}>
+                          <InputNumber
+                            value={seg.keepSuffix}
+                            onChange={(v) =>
+                              handleSegmentFieldChange(i, "keepSuffix", v)
+                            }
+                            min={0}
+                            style={{ width: "100%" }}
+                            size="small"
+                          />
+                        </Form.Item>
+                      </Col>
+                      <Col span={6}>
+                        <Form.Item label="最少掩码" style={{ marginBottom: 8 }}>
+                          <InputNumber
+                            value={seg.maskMinLen}
+                            onChange={(v) =>
+                              handleSegmentFieldChange(i, "maskMinLen", v)
+                            }
+                            min={0}
+                            style={{ width: "100%" }}
+                            size="small"
+                          />
+                        </Form.Item>
+                      </Col>
+                    </Row>
+                  </Card>
+                ))}
+                <Button size="small" onClick={handleAddSegment}>
+                  添加段配置
+                </Button>
+              </Space>
+            </Form.Item>
+          </>
+        ) : isSimpleMask ? (
           <>
             <Form.Item
               label="子规则（预设）"
@@ -274,6 +429,18 @@ export default function MaskPanel() {
                 placeholder="1"
                 min={0}
                 style={{ width: "100%" }}
+              />
+            </Form.Item>
+            <Form.Item
+              label="反向脱敏"
+              extra="开启后保留中间，对首 N 位和后 N 位脱敏（上方前后缀位数变为首尾脱码位数）"
+            >
+              <Switch
+                size="small"
+                checked={template.reverse === true}
+                onChange={(checked) =>
+                  handleTemplateFieldChange("reverse", checked || null)
+                }
               />
             </Form.Item>
             <Form.Item label="值长度下限（guard，空=不限）">

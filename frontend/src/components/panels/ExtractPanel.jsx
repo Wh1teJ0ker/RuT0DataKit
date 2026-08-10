@@ -1,16 +1,29 @@
 import { useEffect, useMemo, useState } from "react";
 import { Button, Form, List, Select, Space, Tag, Typography, message } from "antd";
 import { useAppContext } from "../../state";
-import { listRules } from "../../tauri";
+import {
+  extractValidateToNewSheet,
+  getSheetData,
+  listRules,
+} from "../../tauri";
+import { PAGE_SIZE } from "../../constants";
 
 const { Text } = Typography;
 
 // v1.1.0 提取面板：选择列 + 多选提取规则 → 按规则 pattern 对当前页数据
 // 做正则提取 → 命中行高亮 hit + 命中列表。前端纯逻辑，不写 DB。
+// v1.1.3 T55：新增「提取并校验到新 Tab」按钮 → 后端提取 + 函数式严格校验
+// （Luhn/IPv4/IPv6/手机前缀）→ 结果落到新 Tab。
+// v1.1.3 T55c：idcard-extract 规则支持性别联合校验——用户在提取时从当前 sheet
+// headers 选择一个性别列，后端比对身份证第 17 位推断性别与该列值，矛盾判无效。
+// v1.1.3 T56：移除「仅支持单条规则」限制——多选若干 extract 规则一次批量提取
+// 到同一个新 Tab；新 Tab 输出改为纯两列 [类型, 数据值]（类型标签 = 规则名去掉
+// 「提取」后缀），只写有效候选。性别列在批量含 idcard-extract 时仍显示。
 export default function ExtractPanel() {
-  const { state, applyRowStatuses } = useAppContext();
+  const { state, applyRowStatuses, dispatch, addSheetFromParse } = useAppContext();
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
+  const [extracting, setExtracting] = useState(false);
   const [rules, setRules] = useState([]);
   const [hits, setHits] = useState([]);
 
@@ -37,6 +50,13 @@ export default function ExtractPanel() {
   const ruleById = useMemo(
     () => Object.fromEntries(rules.map((r) => [r.id, r])),
     [rules]
+  );
+
+  // T55c：当前选中的规则里是否含 idcard-extract（用于显示性别列下拉）。
+  // T56：改为 .some() 批量判定（去掉 length === 1 限制）。
+  const selectedRuleIds = Form.useWatch("ruleIds", form) || [];
+  const isIdcardExtract = selectedRuleIds.some(
+    (id) => ruleById[id]?.params?.validator === "idcard"
   );
 
   const handleRun = async () => {
@@ -108,6 +128,64 @@ export default function ExtractPanel() {
     }
   };
 
+  // v1.1.3 T55：提取 + 函数式严格校验 → 新 Tab（[类型, 数据值]，只写有效候选）。
+  // 与「执行提取」（当前页预览高亮）互补：本按钮把全列候选 + 校验结果落到新 Tab，
+  // 用户可在新 Tab 里筛选后导出。T56：支持批量多规则，不再限制单条。
+  const handleExtractValidate = async () => {
+    if (!sheet) {
+      message.warning("请先导入数据");
+      return;
+    }
+    const column = form.getFieldValue("column");
+    const ruleIds = form.getFieldValue("ruleIds") || [];
+    if (!column) {
+      message.warning("请选择要提取的列");
+      return;
+    }
+    if (!ruleIds.length) {
+      message.warning("请至少选择一条提取规则");
+      return;
+    }
+    // T55c/T56：性别列仅在批量含 idcard-extract 时使用。
+    const genderCol = isIdcardExtract
+      ? form.getFieldValue("genderCol") || null
+      : null;
+    setExtracting(true);
+    try {
+      const res = await extractValidateToNewSheet(
+        sheet.id,
+        column,
+        ruleIds,
+        sheet.sessionId,
+        genderCol
+      );
+      addSheetFromParse({
+        newSheetId: res.newSheetId,
+        headers: res.headers,
+        rowCount: res.rowCount,
+        skipped: res.skipped,
+        sessionId: sheet.sessionId,
+        column,
+        name: `${column}_提取`,
+      });
+      // 拉取新 Sheet 首页数据
+      const data = await getSheetData(res.newSheetId, 1, PAGE_SIZE);
+      dispatch({
+        type: "SET_SHEET_DATA",
+        payload: { ...data, sheetId: res.newSheetId },
+      });
+      message.success(
+        `批量提取完成：${res.rowCount} 条有效结果，无候选行 ${res.skipped ?? 0}`
+      );
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error("extract_validate_to_new_sheet failed:", e);
+      message.error(`提取并校验失败：${e}`);
+    } finally {
+      setExtracting(false);
+    }
+  };
+
   return (
     <div style={{ padding: 4 }}>
       <Form form={form} layout="vertical" size="small">
@@ -127,18 +205,42 @@ export default function ExtractPanel() {
             notFoundContent="无可用规则"
           />
         </Form.Item>
+        {isIdcardExtract && (
+          <Form.Item
+            label="性别列（联合校验）"
+            name="genderCol"
+            extra="可选：选一个性别列，后端比对身份证第 17 位推断的性别（奇=男/偶=女）与该列值，矛盾判无效"
+          >
+            <Select
+              placeholder="选择性别列（可选，留空则跳过性别联合校验）"
+              options={headers.map((h) => ({ label: h, value: h }))}
+              allowClear
+              showSearch
+              optionFilterProp="label"
+            />
+          </Form.Item>
+        )}
         <Form.Item>
-          <Space>
-            <Button type="primary" loading={loading} onClick={handleRun}>
-              执行提取
-            </Button>
+          <Space direction="vertical" style={{ width: "100%" }}>
+            <Space>
+              <Button type="primary" loading={loading} onClick={handleRun}>
+                执行提取
+              </Button>
+              <Button
+                onClick={() => {
+                  form.resetFields();
+                  setHits([]);
+                }}
+              >
+                重置
+              </Button>
+            </Space>
             <Button
-              onClick={() => {
-                form.resetFields();
-                setHits([]);
-              }}
+              block
+              loading={extracting}
+              onClick={handleExtractValidate}
             >
-              重置
+              提取并校验到新 Tab
             </Button>
           </Space>
         </Form.Item>

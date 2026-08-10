@@ -5,9 +5,11 @@
 //! 启动时若 DB 无规则则 seed 这三条内置规则。
 //! v1.1.3：`Rule` 新增 `template: Option<TemplateParams>` 字段（通用模板脱敏参数，
 //! JSON 存储到 `rules.template` 列）。T49 子规则化：4 条原独立脱敏规则
-//! （身份证 / 手机 / 出生日期 / 银行卡）收敛为**通用脱敏规则** `general-mask`
-//! 的 4 个预设（`TemplateParams` 常量），不再单独 seed。`with_defaults()`
-//! 共 4 条（3 name + general-mask）。
+//! （身份证 / 手机 / 出生日期 / 银行卡）收敛为预设（`TemplateParams` 常量），
+//! 不再单独 seed。T54 拆分：原 `general-mask` 一条规则拆为**两条独立规则**
+//! `simple-mask`（整段脱敏，持 Simple 模板）+ `segment-mask`（分段脱敏，
+//! 持 Segment 模板），`with_defaults()` 共 5 条（3 name + simple-mask + segment-mask）。
+//! 旧 `general-mask` 由 `cleanup_deprecated_rules()` 删除。
 //!
 //! `Rule` 经 serde camelCase 序列化与前端对齐：
 //! ```json
@@ -15,12 +17,37 @@
 //!   "field": "name", "pattern": "^[\\u4e00-\\u9fa5]{2,4}$",
 //!   "replacement": null, "enabled": true, "description": "..." }
 //! ```
-//! v1.1.3 `general-mask` 规则带**空模板**（`template` 为空 `TemplateParams`，
-//! 所有字段 `None`）→ 前端选预设填充参数，不选则不脱敏（透传）。预设示例：
+//! v1.1.3 `simple-mask` / `segment-mask` 规则各持**空模板**（对应变体的
+//! `default()`，所有字段 `None` / 空）→ 前端选预设填充参数，不选则不脱敏（透传）。
+//! 预设示例（仅 `simple-mask` 适用，`segment-mask` 不内置预设）：
 //! ```json
-//! { "id": "general-mask", ..., "template": { "keepPrefix": 6, "keepSuffix": 4,
+//! { "id": "simple-mask", ..., "template": { "keepPrefix": 6, "keepSuffix": 4,
 //!   "maskChar": "*", "maskMinLen": 8, "minLen": 18, "maxLen": 18 } }
 //! ```
+//! v1.1.3 T52：`TemplateParams` 改为 untagged enum（`Simple` / `Segment`）。
+//! - `Simple` = 原 6 字段 flat 结构（向后兼容旧 DB JSON）。
+//! - `Segment` = 按 `delimiter` 拆分值，对 `segments` 中列出的段做保留首尾脱敏
+//!   （如 `zhangsan@example.com` 按 `@` 拆分，对第 0 段保留首尾各 1）。
+//!
+//! v1.1.3 T53：`SimpleTemplate` 新增 `reverse: Option<bool>`（反向脱敏：
+//!   保留中间，对首 N 位和后 N 位脱敏）。
+//!
+//! v1.1.3 T55：新增 3 条**提取规则**（`phone-extract` / `bankcard-extract` /
+//! `ip-extract`），每条持 `params: Option<ExtractParams>` 描述函数式校验器
+//! （Luhn / IPv4+IPv6 / 手机号前缀列表）。提取正则宽松（召回优先），严格性
+//! 由 `func_validator::validate_extracted` 兜底。工作流 = 提取候选 → 函数式
+//! 校验 → 结果落新 Tab → 导出。`with_defaults()` 由 5 条 → 8 条。
+//!
+//! v1.1.3 T55b：拆分 `ip-extract` 为 `ip4-extract` + `ip6-extract` 两条独立
+//! 规则，删除 `IpFamily` 枚举，`ExtractParams` 新增 `Ipv4` / `Ipv6` unit 变体。
+//! `with_defaults()` 由 8 条 → 9 条。旧 `ip-extract` 由
+//! `cleanup_deprecated_rules()` 删除。
+//!
+//! v1.1.3 T55c：新增 `idcard-extract` 规则（18 位身份证号提取 + 校验码严格
+//! 校验），`ExtractParams` 新增 `IdCard` unit 变体。校验码算法（GB 11643-1999）
+//! 由 `func_validator::is_valid_idcard` 实现。性别联合校验（手动指定性别列）
+//! 在 `extract_validate_to_new_sheet_inner` 中进行，不存规则配置。`with_defaults()`
+//! 由 9 条 → 10 条。
 
 use serde::{Deserialize, Serialize};
 
@@ -60,40 +87,203 @@ impl RuleKind {
     }
 }
 
-/// 通用模板脱敏参数（v1.1.3 新增）。
+/// 通用模板脱敏参数（v1.1.3 新增，T52 改为 untagged enum）。
 ///
-/// 对齐 v0.8.0 `TemplateOp` 的「通用替换模版」语义：保留前 `keep_prefix`
-/// 字符 + 后 `keep_suffix` 字符，中间替换为 `mask_char`（至少
-/// `mask_min_len` 个）。`min_len` / `max_len` 为值总字符数的 guard——
-/// 不在区间内原样返回。所有字段 `Option`，`None` 取语义默认值（0/0/*/1/None/None）。
+/// 两种变体：
+/// - `Simple`：整段脱敏（原 v1.1.3 T48 逻辑）。保留前 `keep_prefix` 字符 +
+///   后 `keep_suffix` 字符，中间替换为 `mask_char`（至少 `mask_min_len` 个）。
+///   `min_len` / `max_len` 为值总字符数 guard。所有字段 `Option`，`None` 取语义
+///   默认值（0/0/*/1/None/None）。
+/// - `Segment`：分段脱敏（T52 新增）。按 `delimiter` 拆分值，对 `segments` 中
+///   列出的段（按 0-based `index`）做保留首尾脱敏，其余段原样保留。
 ///
-/// DB 存为 `rules.template TEXT`（JSON 串），`row_to_rule` 读取后
-/// `serde_json::from_str` 反序列化。`Rule.template == None` → 走 `SimpleMasker`
-/// 旧逻辑（保留首尾各 1），向后兼容 v1.1.0~v1.1.2 的 name-mask 规则。
+/// serde untagged：旧 DB 里的 flat JSON（无 `delimiter` 字段）反序列化为 `Simple`，
+/// 新 JSON（含 `delimiter`）反序列化为 `Segment`。`SimpleTemplate` 所有字段
+/// `Option` + `SegmentTemplate` 需要 `delimiter: String`（非 Option）→ serde
+/// 先尝试 `Simple`（命中旧 JSON），再尝试 `Segment`（命中含 `delimiter` 的新 JSON）。
 ///
-/// T49 子规则化：`general-mask` 规则持有**空模板**（`TemplateParams` 所有字段
-/// `None`，即 `TemplateParams::default()`）→ `SimpleMasker` 视为不脱敏（透传，
-/// 原样返回）。前端选预设（`idcard_preset()` 等）把参数填充到 `template`，
-/// 再经 `mask_column` 的 `template` 临时参数覆盖，或经 `update_rule_template`
-/// 持久化到 DB。
+/// T49 子规则化：`general-mask` 规则持有**空模板**（`TemplateParams::default()`，
+/// 即 `Simple` 全 `None`）→ `SimpleMasker` 视为不脱敏（透传）。前端选预设
+/// （`idcard_preset()` 等）或配置分段模板后填充 `template`，再经 `mask_column`
+/// 的 `template` 临时参数覆盖，或经 `update_rule_template` 持久化到 DB。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", untagged)]
+pub enum TemplateParams {
+    /// 整段脱敏（v1.1.3 T48 原逻辑）。
+    Simple(SimpleTemplate),
+    /// 分段脱敏（v1.1.3 T52）：按 `delimiter` 拆分，对指定段做保留首尾脱敏。
+    Segment(SegmentTemplate),
+}
+
+/// 整段脱敏模板参数（v1.1.3 T48，T52 从 `TemplateParams` 拆出作为 `Simple` 变体）。
+///
+/// `#[serde(deny_unknown_fields)]`：untagged enum 反序列化时，含 `delimiter` /
+/// `segments` 字段的 Segment JSON 不会误匹配 Simple（否则 Simple 全 Option 字段
+/// 会"吞掉"额外字段，导致 Segment 永远不被尝试）。
+///
+/// T53：`reverse: Option<bool>` 反向脱敏标志。`None`/`false` = 正向（保留首尾、
+/// 掩码中间）；`true` = 反向（掩码首尾、保留中间）。反向时 `keep_prefix` /
+/// `keep_suffix` 语义变为「首部脱码位数」/「尾部脱码位数」。旧 JSON 无此字段 →
+/// `None` → 正向，向后兼容。
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct TemplateParams {
-    /// 保留前缀字符数（默认 0）。
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SimpleTemplate {
+    /// 保留前缀字符数（默认 0）。`reverse=true` 时变为「首部脱码位数」。
     pub keep_prefix: Option<usize>,
-    /// 保留后缀字符数（默认 0）。
+    /// 保留后缀字符数（默认 0）。`reverse=true` 时变为「尾部脱码位数」。
     pub keep_suffix: Option<usize>,
     /// 掩码字符（默认 `*`）。
     pub mask_char: Option<char>,
-    /// 脱敏段至少插入多少个掩码字符（默认 1）。
+    /// 脱敏段至少插入多少个掩码字符（默认 1）。正向 = 中间段最小掩码长度；
+    /// 反向 = 重叠全脱敏时的最小长度兜底。
     pub mask_min_len: Option<usize>,
     /// 值总字符数下限 guard（默认 None = 不限制）。
     pub min_len: Option<usize>,
     /// 值总字符数上限 guard（默认 None = 不限制）。
     pub max_len: Option<usize>,
+    /// 反向脱敏标志（T53）。`None`/`false` = 正向（保留首尾、掩码中间）；
+    /// `true` = 反向（掩码首尾、保留中间）。旧 JSON 无此字段 → `None` → 正向。
+    pub reverse: Option<bool>,
+}
+
+/// 分段脱敏模板参数（v1.1.3 T52）。
+///
+/// 按 `delimiter` 把值拆成多段，对 `segments` 中列出的段（按 0-based `index`）
+/// 做保留首尾脱敏；不在列表中的段原样保留。例：
+/// - `zhangsan@example.com` + delimiter=`@` + segments=[{0,1,1,4}]
+///   → `z*****n@example.com`
+/// - `192.168.11.1` + delimiter=`.` + segments=[{3,0,0,2}]
+///   → `192.168.**.1`
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SegmentTemplate {
+    /// 掩码字符（默认 `*`）。
+    pub mask_char: Option<char>,
+    /// 分隔符（如 `@` / `.` / `-`）。空 → 透传（不脱敏）。
+    pub delimiter: String,
+    /// 段配置列表。按 `index`（0-based）匹配拆分后的段。
+    pub segments: Vec<SegmentMask>,
+}
+
+/// 单段脱敏配置（v1.1.3 T52，`SegmentTemplate.segments` 元素）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SegmentMask {
+    /// 段下标（0-based，对应 `input.split(delimiter)` 后的位置）。
+    pub index: usize,
+    /// 该段保留前缀字符数（默认 0）。
+    pub keep_prefix: Option<usize>,
+    /// 该段保留后缀字符数（默认 0）。
+    pub keep_suffix: Option<usize>,
+    /// 该段至少插入多少个掩码字符（默认 1）。
+    pub mask_min_len: Option<usize>,
+}
+
+/// 提取规则的函数式校验参数（v1.1.3 T55 新增）。
+///
+/// 提取正则宽松（召回优先），严格性由 [`crate::processor::func_validator`]
+/// 的对应函数兜底。serde 用 `tag = "validator"` 内部标签，DB 存为 `params TEXT`
+/// JSON 列。现有非提取规则（name-extract 等）`params = None`，行为不变。
+///
+/// JSON 示例：
+/// - 银行卡 Luhn：`{"validator":"luhn"}`
+/// - 手机号前缀：`{"validator":"phonePrefix","allowedPrefixes":["134","159"]}`
+/// - IPv4 地址：`{"validator":"ipv4"}`
+/// - IPv6 地址：`{"validator":"ipv6"}`
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "validator", rename_all = "camelCase")]
+pub enum ExtractParams {
+    /// 手机号前缀校验。`allowed_prefixes` 空 = 默认（提取正则已保证 1 开头，
+    /// 直接通过）；非空 = 提取值前 3 位必须在列表内。
+    PhonePrefix { allowed_prefixes: Vec<String> },
+    /// 银行卡 Luhn 严格校验（右起偶数位 ×2，>9 则数位和，总和 %10==0）。
+    Luhn,
+    /// IPv4 地址严格解析（4 段 0-255 + 禁前导零）。
+    Ipv4,
+    /// IPv6 地址严格解析（走 `std::net::Ipv6Addr::from_str`）。
+    Ipv6,
+    /// 身份证号校验码严格校验（GB 11643-1999：前 17 位加权求和 mod 11 查表）。
+    /// 性别（第 17 位奇=男/偶=女）由 `validate_extracted` 返回，性别联合校验
+    /// （比对指定性别列）在 `extract_validate_to_new_sheet_inner` 中进行。
+    #[serde(rename = "idcard")]
+    IdCard,
+}
+
+impl Default for TemplateParams {
+    /// 默认 = 空 Simple 模板（全 `None`，透传）。
+    fn default() -> Self {
+        TemplateParams::Simple(SimpleTemplate::default())
+    }
 }
 
 impl TemplateParams {
+    /// 构造一个 Simple 模板（keep_prefix/keep_suffix/mask_min_len 显式给定）。
+    pub fn new(keep_prefix: usize, keep_suffix: usize, mask_min_len: usize) -> Self {
+        TemplateParams::Simple(SimpleTemplate {
+            keep_prefix: Some(keep_prefix),
+            keep_suffix: Some(keep_suffix),
+            mask_char: None,
+            mask_min_len: Some(mask_min_len),
+            min_len: None,
+            max_len: None,
+            reverse: None,
+        })
+    }
+
+    /// 链式设置 mask_char（仅对 Simple 变体有效；Segment 变体忽略）。
+    pub fn with_mask_char(self, c: char) -> Self {
+        match self {
+            TemplateParams::Simple(mut s) => {
+                s.mask_char = Some(c);
+                TemplateParams::Simple(s)
+            }
+            other => other,
+        }
+    }
+
+    /// 链式设置 min_len / max_len guard（仅对 Simple 变体有效）。
+    pub fn with_len_range(self, min: usize, max: usize) -> Self {
+        match self {
+            TemplateParams::Simple(mut s) => {
+                s.min_len = Some(min);
+                s.max_len = Some(max);
+                TemplateParams::Simple(s)
+            }
+            other => other,
+        }
+    }
+
+    /// 是否为空模板（透传，不脱敏）。
+    ///
+    /// - `Simple` → 6 字段全 `None`。
+    /// - `Segment` → `delimiter` 为空 或 `segments` 为空。
+    ///
+    /// T49：`general-mask` 规则默认持空模板 → `SimpleMasker` 视为不脱敏（透传）。
+    /// 前端选预设后填充字段 → `is_empty()` 返回 `false` → 走模板脱敏逻辑。
+    pub fn is_empty(&self) -> bool {
+        match self {
+            TemplateParams::Simple(s) => {
+                s.keep_prefix.is_none()
+                    && s.keep_suffix.is_none()
+                    && s.mask_char.is_none()
+                    && s.mask_min_len.is_none()
+                    && s.min_len.is_none()
+                    && s.max_len.is_none()
+            }
+            TemplateParams::Segment(s) => s.delimiter.is_empty() || s.segments.is_empty(),
+        }
+    }
+
+    /// 取模板的掩码字符（Simple / Segment 共用）。
+    pub fn mask_char(&self) -> Option<char> {
+        match self {
+            TemplateParams::Simple(s) => s.mask_char,
+            TemplateParams::Segment(s) => s.mask_char,
+        }
+    }
+}
+
+impl SimpleTemplate {
     /// 构造一个 keep_prefix/keep_suffix/mask_min_len 都显式给定、其余默认的模板。
     pub fn new(keep_prefix: usize, keep_suffix: usize, mask_min_len: usize) -> Self {
         Self {
@@ -103,6 +293,7 @@ impl TemplateParams {
             mask_min_len: Some(mask_min_len),
             min_len: None,
             max_len: None,
+            reverse: None,
         }
     }
 
@@ -119,17 +310,44 @@ impl TemplateParams {
         self
     }
 
-    /// 是否为空模板（所有字段 `None`）。
-    ///
-    /// T49：`general-mask` 规则默认持空模板 → `SimpleMasker` 视为不脱敏（透传）。
-    /// 前端选预设后填充字段 → `is_empty()` 返回 `false` → 走模板脱敏逻辑。
-    pub fn is_empty(&self) -> bool {
-        self.keep_prefix.is_none()
-            && self.keep_suffix.is_none()
-            && self.mask_char.is_none()
-            && self.mask_min_len.is_none()
-            && self.min_len.is_none()
-            && self.max_len.is_none()
+    /// 链式设置反向脱敏标志（T53）。`true` = 掩码首尾、保留中间。
+    pub fn with_reverse(mut self, reverse: bool) -> Self {
+        self.reverse = Some(reverse);
+        self
+    }
+}
+
+impl SegmentTemplate {
+    /// 构造一个指定分隔符的空分段模板（无段配置 → 透传）。
+    pub fn new(delimiter: impl Into<String>) -> Self {
+        Self {
+            mask_char: None,
+            delimiter: delimiter.into(),
+            segments: Vec::new(),
+        }
+    }
+
+    /// 链式添加一段脱敏配置。
+    pub fn with_segment(
+        mut self,
+        index: usize,
+        keep_prefix: usize,
+        keep_suffix: usize,
+        mask_min_len: usize,
+    ) -> Self {
+        self.segments.push(SegmentMask {
+            index,
+            keep_prefix: Some(keep_prefix),
+            keep_suffix: Some(keep_suffix),
+            mask_min_len: Some(mask_min_len),
+        });
+        self
+    }
+
+    /// 链式设置 mask_char。
+    pub fn with_mask_char(mut self, c: char) -> Self {
+        self.mask_char = Some(c);
+        self
     }
 }
 
@@ -196,6 +414,13 @@ pub struct Rule {
     /// 前端拿到的 name-mask 规则 JSON 形态不变。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub template: Option<TemplateParams>,
+    /// 提取规则的函数式校验参数（v1.1.3 T55 新增）。`None` = 仅正则提取，
+    /// 不做额外校验（向后兼容 name-extract 等老规则）。
+    /// serde `default` + `skip_serializing_if = "Option::is_none"` 保证旧 Rule JSON
+    /// （无 params 字段）反序列化时 `params=None`，且序列化时不输出空字段。
+    /// DB 存为 `params TEXT`（`ExtractParams` 的 JSON 串）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub params: Option<ExtractParams>,
 }
 
 /// 规则注册表。应用启动时从 DB 加载，内置规则集 seed 到 DB。
@@ -213,15 +438,32 @@ impl RuleRegistry {
     /// 加载内置规则集。
     /// v1.1.0 三条姓名相关规则（脱敏/校验/提取各一条）。
     /// v1.1.3 T49：4 条原独立脱敏规则（身份证 / 手机 / 出生日期 / 银行卡）
-    /// 收敛为**通用脱敏规则** `general-mask` 的 4 个预设（`idcard_preset()` 等，
-    /// 不再单独 seed）。`with_defaults()` 共 4 条（3 name + general-mask）。
+    /// 收敛为预设（`idcard_preset()` 等，不再单独 seed）。T54 拆分：原
+    /// `general-mask` 一条规则拆为 `simple-mask`（整段脱敏）+ `segment-mask`
+    /// （分段脱敏）两条独立规则。`with_defaults()` 共 5 条（3 name +
+    /// simple-mask + segment-mask）。旧 `general-mask` 由
+    /// `cleanup_deprecated_rules()` 删除。
+    /// v1.1.3 T55：新增 3 条提取规则（`phone-extract` / `bankcard-extract` /
+    /// `ip-extract`），各持 `params` 函数式校验器。`with_defaults()` 共 8 条。
+    /// v1.1.3 T55b：拆分 `ip-extract` 为 `ip4-extract`（IPv4）+ `ip6-extract`
+    /// （IPv6）两条独立规则，`with_defaults()` 共 9 条。旧 `ip-extract` 由
+    /// `cleanup_deprecated_rules()` 删除。
     pub fn with_defaults() -> Self {
         let mut reg = Self::new();
         reg.register(Self::name_validate_rule());
         reg.register(Self::name_mask_rule());
         reg.register(Self::name_extract_rule());
-        // v1.1.3 T49 通用脱敏规则（持空模板，前端选预设填充参数）
-        reg.register(Self::general_mask_rule());
+        // v1.1.3 T54：整段脱敏 + 分段脱敏拆为两条独立规则（各持空模板）
+        reg.register(Self::simple_mask_rule());
+        reg.register(Self::segment_mask_rule());
+        // v1.1.3 T55：3 条提取规则（手机号 / 银行卡 / IP），各持函数式校验参数
+        reg.register(Self::phone_extract_rule());
+        reg.register(Self::bankcard_extract_rule());
+        // v1.1.3 T55b：原 ip-extract 拆为 ipv4 / ipv6 两条独立规则
+        reg.register(Self::ip4_extract_rule());
+        reg.register(Self::ip6_extract_rule());
+        // v1.1.3 T55c：身份证号提取 + 校验码严格校验
+        reg.register(Self::idcard_extract_rule());
         reg
     }
 
@@ -237,6 +479,7 @@ impl RuleRegistry {
             enabled: true,
             description: "校验姓名为 2-4 位中文字符".into(),
             template: None,
+            params: None,
         }
     }
 
@@ -254,6 +497,7 @@ impl RuleRegistry {
             enabled: true,
             description: "保留首尾字符，中间以 * 替换".into(),
             template: None,
+            params: None,
         }
     }
 
@@ -270,30 +514,167 @@ impl RuleRegistry {
             enabled: true,
             description: "提取姓名候选：2-4 位连续中文字符".into(),
             template: None,
+            params: None,
         }
     }
 
-    /// 通用脱敏内置规则（v1.1.3 T49）：持**空模板**（`TemplateParams::default()`，
-    /// 所有字段 `None`）→ `SimpleMasker` 视为不脱敏（透传，原样返回）。
+    /// 整段脱敏内置规则（v1.1.3 T54 由原 `general-mask` 拆分而来）：持**空 Simple
+    /// 模板**（`TemplateParams::Simple(SimpleTemplate::default())`，所有字段
+    /// `None`）→ 视为不脱敏（透传，原样返回）。
     ///
-    /// 前端选预设（身份证 / 手机 / 出生日期 / 银行卡 / 自定义）→ 填充 6 个可编辑
-    /// 参数框 → 执行脱敏时把模板透传给 `mask_column(template=...)` 临时覆盖，
-    /// 或经 `update_rule_template` 持久化到 DB。不选预设 → 空模板 → 不脱敏。
+    /// 前端选预设（身份证 / 手机 / 出生日期 / 银行卡 / 自定义）→ 填充 7 个可编辑
+    /// 参数框（含 T53 反向脱敏开关）→ 执行脱敏时把模板透传给
+    /// `mask_column(template=...)` 临时覆盖，或经 `update_rule_template`
+    /// 持久化到 DB。不选预设 → 空模板 → 不脱敏。
     ///
-    /// 取代 v1.1.3 原先的 4 条独立规则（`idcard-mask`/`phone-mask`/
-    /// `birthdate-mask`/`bankcard-mask`），改为 `general-mask` 的 4 个预设
-    /// （`idcard_preset()` 等）。
-    pub fn general_mask_rule() -> Rule {
+    /// 4 个预设（`idcard_preset()` 等）仍由 `TemplateParams::Simple` 承载，
+    /// 仅适用于本规则。
+    pub fn simple_mask_rule() -> Rule {
         Rule {
-            id: "general-mask".into(),
-            name: "通用脱敏".into(),
+            id: "simple-mask".into(),
+            name: "整段脱敏".into(),
             kind: RuleKind::Mask,
             field: None,
             pattern: None,
             replacement: None,
             enabled: true,
-            description: "通用模板脱敏：选预设（身份证/手机/出生日期/银行卡）或自定义参数".into(),
-            template: Some(TemplateParams::default()),
+            description: "整段模板脱敏：选预设（身份证/手机/出生日期/银行卡）或自定义参数".into(),
+            template: Some(TemplateParams::Simple(SimpleTemplate::default())),
+            params: None,
+        }
+    }
+
+    /// 分段脱敏内置规则（v1.1.3 T54 由原 `general-mask` 拆分而来）：持**空
+    /// Segment 模板**（`TemplateParams::Segment(SegmentTemplate::default())`，
+    /// `delimiter` 空 + `segments` 空）→ 视为不脱敏（透传，原样返回）。
+    ///
+    /// 前端配置分隔符 + 段配置（每段 `index` + `keep_prefix`/`keep_suffix`/
+    /// `mask_min_len`）→ 执行脱敏时把模板透传给 `mask_column(template=...)`
+    /// 临时覆盖，或经 `update_rule_template` 持久化到 DB。空分隔符 / 空段列表
+    /// → 不脱敏。不内置预设。
+    pub fn segment_mask_rule() -> Rule {
+        Rule {
+            id: "segment-mask".into(),
+            name: "分段脱敏".into(),
+            kind: RuleKind::Mask,
+            field: None,
+            pattern: None,
+            replacement: None,
+            enabled: true,
+            description: "分段模板脱敏：按分隔符拆分值，对指定段保留首尾脱敏".into(),
+            template: Some(TemplateParams::Segment(SegmentTemplate::default())),
+            params: None,
+        }
+    }
+
+    /// 手机号提取内置规则（v1.1.3 T55）：11 位纯数字，首位 1。
+    ///
+    /// 提取正则 `\b1\d{10}\b`（宽松召回，严格校验由 `func_validator` 的
+    /// `check_phone_prefix` 兜底）。`params = PhonePrefix{[]}` →
+    /// 空前缀列表 = 默认（正则已保证 1 开头，直接通过）。前端可在
+    /// RulesPanel 配置 `allowedPrefixes`（如 `["134","159"]`）→
+    /// 仅前 3 位在列表内的提取值才算有效。
+    pub fn phone_extract_rule() -> Rule {
+        Rule {
+            id: "phone-extract".into(),
+            name: "手机号提取".into(),
+            kind: RuleKind::Extract,
+            field: None,
+            pattern: Some(r"\b1\d{10}\b".into()),
+            replacement: None,
+            enabled: true,
+            description: "提取 11 位手机号（1 开头），可选前缀白名单校验".into(),
+            template: None,
+            params: Some(ExtractParams::PhonePrefix {
+                allowed_prefixes: Vec::new(),
+            }),
+        }
+    }
+
+    /// 银行卡号提取内置规则（v1.1.3 T55）：13-19 位数字，首位非 0。
+    ///
+    /// 提取正则 `\b[1-9]\d{12,18}\b`（宽松召回），严格校验由 `func_validator`
+    /// 的 `luhn_check` 兜底（右起偶数位 ×2，>9 则数位和，总和 %10==0）。
+    /// 有效例：`6222021234567890123`；无效例：`6222021234567890124`。
+    pub fn bankcard_extract_rule() -> Rule {
+        Rule {
+            id: "bankcard-extract".into(),
+            name: "银行卡号提取".into(),
+            kind: RuleKind::Extract,
+            field: None,
+            pattern: Some(r"\b[1-9]\d{12,18}\b".into()),
+            replacement: None,
+            enabled: true,
+            description: "提取 13-19 位银行卡号（首位非 0），Luhn 严格校验".into(),
+            template: None,
+            params: Some(ExtractParams::Luhn),
+        }
+    }
+
+    /// IPv4 地址提取内置规则（v1.1.3 T55b，由原 `ip-extract` 拆分）。
+    ///
+    /// 提取正则 `\b(?:\d{1,3}\.){3}\d{1,3}\b` 宽松召回 4 段点分数字，严格校验
+    /// 由 `func_validator::is_valid_ipv4` 兜底（段范围 0-255 + 禁前导零）。
+    /// `params = Ipv4`。有效例：`192.168.1.1` / `10.0.0.1` / `255.255.255.255`；
+    /// 无效例：`256.1.1.1`（超范围）/ `192.168.01.1`（前导零）。
+    pub fn ip4_extract_rule() -> Rule {
+        Rule {
+            id: "ip4-extract".into(),
+            name: "IPv4地址提取".into(),
+            kind: RuleKind::Extract,
+            field: None,
+            pattern: Some(r"\b(?:\d{1,3}\.){3}\d{1,3}\b".into()),
+            replacement: None,
+            enabled: true,
+            description: "提取 IPv4 地址，段范围+前导零严格校验".into(),
+            template: None,
+            params: Some(ExtractParams::Ipv4),
+        }
+    }
+
+    /// IPv6 地址提取内置规则（v1.1.3 T55b，由原 `ip-extract` 拆分）。
+    ///
+    /// 提取正则 `(?:[0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}` 宽松召回冒号分隔
+    /// 的 hex 段，严格校验由 `func_validator::is_valid_ipv6` 兜底（走
+    /// `std::net::Ipv6Addr::from_str`，RFC 4291 严格）。
+    /// `params = Ipv6`。有效例：`::1` / `2001:db8::1`；无效例：`1:2:3:4:5:6:7:8:9`
+    /// （段数超 8）。
+    pub fn ip6_extract_rule() -> Rule {
+        Rule {
+            id: "ip6-extract".into(),
+            name: "IPv6地址提取".into(),
+            kind: RuleKind::Extract,
+            field: None,
+            pattern: Some(r"(?:[0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}".into()),
+            replacement: None,
+            enabled: true,
+            description: "提取 IPv6 地址，RFC 4291 严格校验".into(),
+            template: None,
+            params: Some(ExtractParams::Ipv6),
+        }
+    }
+
+    /// 身份证号提取内置规则（v1.1.3 T55c 新增）。
+    ///
+    /// 提取正则 `\b\d{17}[\dXx]\b` 宽松召回 18 位身份证号（末位可为 X/x），
+    /// 严格校验由 `func_validator::is_valid_idcard` 兜底（GB 11643-1999 校验码
+    /// 算法：前 17 位乘系数 `[7,9,10,5,8,4,2,1,6,3,7,9,10,5,8,4,2]`，加权和
+    /// mod 11 查表 `[1,0,X,9,8,7,6,5,4,3,2]` 得第 18 位校验码）。性别（第 17 位
+    /// 奇=男/偶=女）由 `validate_extracted` 返回到说明列；性别联合校验（比对
+    /// 手动指定的性别列）在 `extract_validate_to_new_sheet_inner` 中进行，不存
+    /// 规则配置。`params = IdCard`。
+    pub fn idcard_extract_rule() -> Rule {
+        Rule {
+            id: "idcard-extract".into(),
+            name: "身份证号提取".into(),
+            kind: RuleKind::Extract,
+            field: None,
+            pattern: Some(r"\b\d{17}[\dXx]\b".into()),
+            replacement: None,
+            enabled: true,
+            description: "提取 18 位身份证号，校验码 + 性别严格校验".into(),
+            template: None,
+            params: Some(ExtractParams::IdCard),
         }
     }
 
@@ -338,20 +719,32 @@ impl Default for RuleRegistry {
 mod tests {
     use super::*;
 
+    /// 测试辅助：断言模板是 Simple 变体并返回内部 `&SimpleTemplate`。
+    fn expect_simple(tpl: &TemplateParams) -> &SimpleTemplate {
+        match tpl {
+            TemplateParams::Simple(s) => s,
+            TemplateParams::Segment(_) => panic!("expected Simple, got Segment"),
+        }
+    }
+
     #[test]
-    fn with_defaults_loads_four_rules() {
+    fn with_defaults_loads_ten_rules() {
         let reg = RuleRegistry::with_defaults();
         let rules = reg.list();
-        // v1.1.3 T49：3 条姓名 + 1 条通用脱敏 = 4 条
-        assert_eq!(rules.len(), 4);
+        // v1.1.3 T55c：3 条姓名 + simple-mask + segment-mask + 5 条 extract
+        // （name-extract + phone/bankcard/ip4/ip6/idcard）= 10 条
+        assert_eq!(rules.len(), 10);
         // 脱敏 / 校验 / 提取 三种 kind 都存在
         let kinds: Vec<RuleKind> = rules.iter().map(|r| r.kind).collect();
         assert!(kinds.contains(&RuleKind::Mask));
         assert!(kinds.contains(&RuleKind::Validate));
         assert!(kinds.contains(&RuleKind::Extract));
-        // 2 条 mask 规则（name-mask + general-mask）
+        // 3 条 mask 规则（name-mask + simple-mask + segment-mask）
         let mask_count = kinds.iter().filter(|k| **k == RuleKind::Mask).count();
-        assert_eq!(mask_count, 2);
+        assert_eq!(mask_count, 3);
+        // T55c：6 条 extract 规则（name-extract + phone/bankcard/ip4/ip6/idcard）
+        let extract_count = kinds.iter().filter(|k| **k == RuleKind::Extract).count();
+        assert_eq!(extract_count, 6);
     }
 
     #[test]
@@ -362,8 +755,9 @@ mod tests {
         assert_eq!(r.field.as_deref(), Some("name"));
         assert!(r.pattern.is_some());
         assert!(r.enabled);
-        // name 规则无 template
+        // name 规则无 template / params
         assert!(r.template.is_none());
+        assert!(r.params.is_none());
     }
 
     #[test]
@@ -374,8 +768,9 @@ mod tests {
         assert_eq!(r.field.as_deref(), Some("name"));
         // replacement=None → SimpleMasker 默认掩码字符 `*`
         assert!(r.replacement.is_none());
-        // 无 template → 走 SimpleMasker 旧逻辑
+        // 无 template / params → 走 SimpleMasker 旧逻辑
         assert!(r.template.is_none());
+        assert!(r.params.is_none());
     }
 
     #[test]
@@ -385,58 +780,208 @@ mod tests {
         assert_eq!(r.kind, RuleKind::Extract);
         assert_eq!(r.field.as_deref(), Some("name"));
         assert!(r.pattern.is_some());
+        // T55：name-extract 无 params（仅正则提取，不做函数式校验）
+        assert!(r.params.is_none());
     }
 
     #[test]
-    fn general_mask_rule_has_empty_template() {
-        let r = RuleRegistry::general_mask_rule();
-        assert_eq!(r.id, "general-mask");
+    fn simple_mask_rule_has_empty_template() {
+        let r = RuleRegistry::simple_mask_rule();
+        assert_eq!(r.id, "simple-mask");
         assert_eq!(r.kind, RuleKind::Mask);
-        // 持空模板（TemplateParams::default()）→ is_empty()==true
-        let tpl = r.template.expect("general-mask must have template");
+        // 持空 Simple 模板 → is_empty()==true
+        let tpl = r.template.expect("simple-mask must have template");
+        assert!(matches!(tpl, TemplateParams::Simple(_)));
         assert!(tpl.is_empty());
+        assert!(r.params.is_none());
+    }
+
+    #[test]
+    fn segment_mask_rule_has_empty_template() {
+        let r = RuleRegistry::segment_mask_rule();
+        assert_eq!(r.id, "segment-mask");
+        assert_eq!(r.kind, RuleKind::Mask);
+        // 持空 Segment 模板 → is_empty()==true
+        let tpl = r.template.expect("segment-mask must have template");
+        assert!(matches!(tpl, TemplateParams::Segment(_)));
+        assert!(tpl.is_empty());
+        assert!(r.params.is_none());
+    }
+
+    #[test]
+    fn phone_extract_rule_has_phone_prefix_params() {
+        let r = RuleRegistry::phone_extract_rule();
+        assert_eq!(r.id, "phone-extract");
+        assert_eq!(r.kind, RuleKind::Extract);
+        assert!(r.pattern.is_some());
+        // T55：params = PhonePrefix{[]}（空前缀列表 = 默认 1 开头）
+        let params = r.params.as_ref().expect("phone-extract must have params");
+        match params {
+            ExtractParams::PhonePrefix { allowed_prefixes } => {
+                assert!(allowed_prefixes.is_empty());
+            }
+            _ => panic!("expected PhonePrefix, got {params:?}"),
+        }
+    }
+
+    #[test]
+    fn bankcard_extract_rule_has_luhn_params() {
+        let r = RuleRegistry::bankcard_extract_rule();
+        assert_eq!(r.id, "bankcard-extract");
+        assert_eq!(r.kind, RuleKind::Extract);
+        assert!(r.pattern.is_some());
+        // T55：params = Luhn
+        let params = r
+            .params
+            .as_ref()
+            .expect("bankcard-extract must have params");
+        assert!(matches!(params, ExtractParams::Luhn));
+    }
+
+    #[test]
+    fn ip4_extract_rule_has_ipv4_params() {
+        let r = RuleRegistry::ip4_extract_rule();
+        assert_eq!(r.id, "ip4-extract");
+        assert_eq!(r.kind, RuleKind::Extract);
+        assert!(r.pattern.is_some());
+        // T55b：params = Ipv4
+        let params = r.params.as_ref().expect("ip4-extract must have params");
+        assert!(matches!(params, ExtractParams::Ipv4));
+    }
+
+    #[test]
+    fn ip6_extract_rule_has_ipv6_params() {
+        let r = RuleRegistry::ip6_extract_rule();
+        assert_eq!(r.id, "ip6-extract");
+        assert_eq!(r.kind, RuleKind::Extract);
+        assert!(r.pattern.is_some());
+        // T55b：params = Ipv6
+        let params = r.params.as_ref().expect("ip6-extract must have params");
+        assert!(matches!(params, ExtractParams::Ipv6));
+    }
+
+    #[test]
+    fn idcard_extract_rule_has_idcard_params() {
+        let r = RuleRegistry::idcard_extract_rule();
+        assert_eq!(r.id, "idcard-extract");
+        assert_eq!(r.kind, RuleKind::Extract);
+        assert!(r.pattern.is_some());
+        // T55c：params = IdCard
+        let params = r.params.as_ref().expect("idcard-extract must have params");
+        assert!(matches!(params, ExtractParams::IdCard));
+    }
+
+    #[test]
+    fn extract_params_serde_roundtrip() {
+        // T55c：ExtractParams 五变体 serde 闭环
+        let cases = vec![
+            ExtractParams::PhonePrefix {
+                allowed_prefixes: vec!["134".into(), "159".into()],
+            },
+            ExtractParams::Luhn,
+            ExtractParams::Ipv4,
+            ExtractParams::Ipv6,
+            ExtractParams::IdCard,
+        ];
+        for p in &cases {
+            let json = serde_json::to_string(p).unwrap();
+            let back: ExtractParams = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, *p, "roundtrip failed for {json}");
+        }
+        // 验证内部标签格式
+        assert!(serde_json::to_string(&ExtractParams::Luhn)
+            .unwrap()
+            .contains("\"validator\":\"luhn\""));
+        assert!(serde_json::to_string(&ExtractParams::PhonePrefix {
+            allowed_prefixes: vec![]
+        })
+        .unwrap()
+        .contains("\"validator\":\"phonePrefix\""));
+        assert!(serde_json::to_string(&ExtractParams::Ipv4)
+            .unwrap()
+            .contains("\"validator\":\"ipv4\""));
+        assert!(serde_json::to_string(&ExtractParams::Ipv6)
+            .unwrap()
+            .contains("\"validator\":\"ipv6\""));
+        assert!(serde_json::to_string(&ExtractParams::IdCard)
+            .unwrap()
+            .contains("\"validator\":\"idcard\""));
+    }
+
+    #[test]
+    fn rule_params_field_serde_skip_when_none() {
+        // name-mask 无 params → JSON 不输出 params 字段（向后兼容）
+        let r = RuleRegistry::name_mask_rule();
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(!json.contains("params"));
+    }
+
+    #[test]
+    fn rule_params_field_serde_present_when_some() {
+        // phone-extract 有 params → JSON 输出 params 字段
+        let r = RuleRegistry::phone_extract_rule();
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(json.contains("params"));
+    }
+
+    #[test]
+    fn rule_params_field_deserialize_missing_as_none() {
+        // 模拟 v1.1.4 旧 JSON（无 params 字段）→ 反序列化 params=None
+        let old_json = r#"{"id":"name-mask","name":"姓名脱敏","kind":"mask","field":"name","pattern":null,"replacement":null,"enabled":true,"description":"保留首尾字符，中间以 * 替换"}"#;
+        let r: Rule = serde_json::from_str(old_json).unwrap();
+        assert_eq!(r.id, "name-mask");
+        assert!(r.params.is_none());
     }
 
     #[test]
     fn idcard_preset_params() {
         let tpl = idcard_preset();
-        assert_eq!(tpl.keep_prefix, Some(6));
-        assert_eq!(tpl.keep_suffix, Some(4));
-        assert_eq!(tpl.mask_min_len, Some(8));
-        assert_eq!(tpl.min_len, Some(18));
-        assert_eq!(tpl.max_len, Some(18));
+        let s = expect_simple(&tpl);
+        assert_eq!(s.keep_prefix, Some(6));
+        assert_eq!(s.keep_suffix, Some(4));
+        assert_eq!(s.mask_min_len, Some(8));
+        assert_eq!(s.min_len, Some(18));
+        assert_eq!(s.max_len, Some(18));
+        // T53：预设不反转（正向）
+        assert_eq!(s.reverse, None);
         assert!(!tpl.is_empty());
     }
 
     #[test]
     fn phone_preset_params() {
         let tpl = phone_preset();
-        assert_eq!(tpl.keep_prefix, Some(3));
-        assert_eq!(tpl.keep_suffix, Some(4));
-        assert_eq!(tpl.mask_min_len, Some(4));
-        assert_eq!(tpl.min_len, Some(11));
-        assert_eq!(tpl.max_len, Some(11));
+        let s = expect_simple(&tpl);
+        assert_eq!(s.keep_prefix, Some(3));
+        assert_eq!(s.keep_suffix, Some(4));
+        assert_eq!(s.mask_min_len, Some(4));
+        assert_eq!(s.min_len, Some(11));
+        assert_eq!(s.max_len, Some(11));
+        assert_eq!(s.reverse, None);
     }
 
     #[test]
     fn birthdate_preset_params() {
         let tpl = birthdate_preset();
-        assert_eq!(tpl.keep_prefix, Some(8));
-        assert_eq!(tpl.keep_suffix, Some(0));
-        assert_eq!(tpl.mask_min_len, Some(2));
-        assert_eq!(tpl.min_len, Some(10));
-        assert_eq!(tpl.max_len, Some(10));
+        let s = expect_simple(&tpl);
+        assert_eq!(s.keep_prefix, Some(8));
+        assert_eq!(s.keep_suffix, Some(0));
+        assert_eq!(s.mask_min_len, Some(2));
+        assert_eq!(s.min_len, Some(10));
+        assert_eq!(s.max_len, Some(10));
+        assert_eq!(s.reverse, None);
     }
 
     #[test]
     fn bankcard_preset_params() {
         let tpl = bankcard_preset();
-        assert_eq!(tpl.keep_prefix, Some(4));
-        assert_eq!(tpl.keep_suffix, Some(4));
-        assert_eq!(tpl.mask_min_len, Some(1));
+        let s = expect_simple(&tpl);
+        assert_eq!(s.keep_prefix, Some(4));
+        assert_eq!(s.keep_suffix, Some(4));
+        assert_eq!(s.mask_min_len, Some(1));
         // 银行卡不设长度 guard（15~19 位不等）
-        assert_eq!(tpl.min_len, None);
-        assert_eq!(tpl.max_len, None);
+        assert_eq!(s.min_len, None);
+        assert_eq!(s.max_len, None);
+        assert_eq!(s.reverse, None);
     }
 
     #[test]
@@ -454,6 +999,62 @@ mod tests {
     }
 
     #[test]
+    fn reverse_template_serde_roundtrip() {
+        // T53：reverse=true 的 Simple 模板序列化/反序列化闭环
+        let tpl = TemplateParams::Simple(SimpleTemplate::new(3, 4, 1).with_reverse(true));
+        let json = serde_json::to_string(&tpl).unwrap();
+        assert!(json.contains("reverse"));
+        assert!(json.contains("\"reverse\":true"));
+        let back: TemplateParams = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, tpl);
+        let s = expect_simple(&back);
+        assert_eq!(s.reverse, Some(true));
+    }
+
+    #[test]
+    fn segment_template_serde_roundtrip() {
+        let tpl = TemplateParams::Segment(
+            SegmentTemplate::new("@")
+                .with_segment(0, 1, 1, 4)
+                .with_mask_char('*'),
+        );
+        let json = serde_json::to_string(&tpl).unwrap();
+        assert!(json.contains("delimiter"));
+        assert!(json.contains("segments"));
+        let back: TemplateParams = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, tpl);
+        assert!(!tpl.is_empty());
+    }
+
+    #[test]
+    fn old_flat_json_deserializes_to_simple() {
+        // 旧 DB 里的 flat JSON（无 delimiter/reverse 字段）→ 反序列化为 Simple
+        let old = r#"{"keepPrefix":6,"keepSuffix":4,"maskChar":"*","maskMinLen":8,"minLen":18,"maxLen":18}"#;
+        let tpl: TemplateParams = serde_json::from_str(old).unwrap();
+        match tpl {
+            TemplateParams::Simple(s) => {
+                assert_eq!(s.keep_prefix, Some(6));
+                assert_eq!(s.keep_suffix, Some(4));
+                // T53：旧 JSON 无 reverse 字段 → None → 正向
+                assert_eq!(s.reverse, None);
+            }
+            TemplateParams::Segment(_) => panic!("expected Simple, got Segment"),
+        }
+    }
+
+    #[test]
+    fn segment_is_empty_when_no_segments() {
+        let tpl = TemplateParams::Segment(SegmentTemplate::new("@"));
+        assert!(tpl.is_empty());
+    }
+
+    #[test]
+    fn segment_is_empty_when_empty_delimiter() {
+        let tpl = TemplateParams::Segment(SegmentTemplate::new("").with_segment(0, 1, 1, 1));
+        assert!(tpl.is_empty());
+    }
+
+    #[test]
     fn rule_template_field_serde_skip_when_none() {
         // name-mask 无 template → JSON 不输出 template 字段（向后兼容 v1.1.2 前端）
         let r = RuleRegistry::name_mask_rule();
@@ -463,8 +1064,8 @@ mod tests {
 
     #[test]
     fn rule_template_field_serde_present_when_some() {
-        // general-mask 有 template（空模板）→ JSON 输出 template 字段
-        let r = RuleRegistry::general_mask_rule();
+        // simple-mask 有 template（空 Simple 模板）→ JSON 输出 template 字段
+        let r = RuleRegistry::simple_mask_rule();
         let json = serde_json::to_string(&r).unwrap();
         assert!(json.contains("template"));
     }
@@ -484,7 +1085,19 @@ mod tests {
         assert!(reg.get("name-validate").is_some());
         assert!(reg.get("name-mask").is_some());
         assert!(reg.get("name-extract").is_some());
-        assert!(reg.get("general-mask").is_some());
+        assert!(reg.get("simple-mask").is_some());
+        assert!(reg.get("segment-mask").is_some());
+        // T55b：4 条新 extract 规则（phone / bankcard / ip4 / ip6）
+        assert!(reg.get("phone-extract").is_some());
+        assert!(reg.get("bankcard-extract").is_some());
+        assert!(reg.get("ip4-extract").is_some());
+        assert!(reg.get("ip6-extract").is_some());
+        // T55c：idcard-extract
+        assert!(reg.get("idcard-extract").is_some());
+        // T55b：旧 ip-extract id 已不存在（拆分后由 cleanup_deprecated_rules 删除）
+        assert!(reg.get("ip-extract").is_none());
+        // T54：旧 general-mask id 已不存在（由 cleanup_deprecated_rules 删除）
+        assert!(reg.get("general-mask").is_none());
         // 旧 id 已不存在
         assert!(reg.get("idcard-mask").is_none());
         assert!(reg.get("phone-mask").is_none());
@@ -513,7 +1126,7 @@ mod tests {
         let mut r = RuleRegistry::name_validate_rule();
         r.description = "updated".into();
         reg.register(r);
-        assert_eq!(reg.list().len(), 4);
+        assert_eq!(reg.list().len(), 10);
         assert_eq!(reg.get("name-validate").unwrap().description, "updated");
     }
 

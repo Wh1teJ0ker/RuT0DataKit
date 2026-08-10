@@ -10,6 +10,7 @@ import {
   ColumnHeightOutlined,
   KeyOutlined,
   SettingOutlined,
+  SafetyOutlined,
 } from "@ant-design/icons";
 import { open } from "@tauri-apps/plugin-dialog";
 import { importFile } from "../../tauri";
@@ -21,6 +22,7 @@ const CAPABILITIES = [
   { id: "mask", label: "脱敏", icon: <SafetyCertificateOutlined /> },
   { id: "validate", label: "校验", icon: <CheckCircleOutlined /> },
   { id: "extract", label: "提取", icon: <FileSearchOutlined /> },
+  { id: "rowValidate", label: "行级校验", icon: <SafetyOutlined /> },
   { id: "columnOps", label: "列操作", icon: <ColumnHeightOutlined /> },
   { id: "crypto", label: "加解密", icon: <KeyOutlined /> },
   { id: "rules", label: "规则管理", icon: <ControlOutlined /> },

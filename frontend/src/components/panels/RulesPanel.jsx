@@ -22,15 +22,18 @@ import { useAppContext } from "../../state";
 import {
   listRules,
   toggleRule,
+  updateRuleExtractConfig,
   updateRuleParams,
   updateRuleTemplate,
 } from "../../tauri";
 import {
   DEFAULT_MASK_CHAR,
+  EMPTY_SEGMENT_TEMPLATE,
   EMPTY_TEMPLATE,
   MASK_PRESETS,
   buildTemplateForRun,
   detectPreset,
+  isSegmentTemplate,
   normalizeTemplate,
   previewMask,
   templateFromPreset,
@@ -44,9 +47,12 @@ const { Title, Text } = Typography;
 //   - validate：new RegExp(pattern).test(input) → 通过/不通过
 //   - extract：new RegExp(pattern,'g').matchAll(input) → 命中列表
 //   - mask：按掩码字符（默认 *）对输入文本预览脱敏结果
-//     · general-mask（T51）：用 6 个模板参数走 apply_template 等价逻辑
-//       （keep_prefix/keep_suffix/mask_char/mask_min_len + min_len/max_len guard）
+//     · simple-mask（T51/T54）：整段脱敏，用 7 个模板参数走 apply_template 等价逻辑
+//       （keep_prefix/keep_suffix/mask_char/mask_min_len + min_len/max_len guard + T53 reverse）
+//     · segment-mask（T52/T54）：分段脱敏，按分隔符拆分后对指定段脱敏。
 //     · name-mask：旧逻辑（≥3 保留首尾，2 保留首字符）
+//   - T54：原 general-mask 拆为 simple-mask（整段）+ segment-mask（分段）两条独立规则，
+//     各承载一种模板类型，不再需要「模板类型」Select 切换。
 const KIND_LABEL = { mask: "脱敏", validate: "校验", extract: "提取" };
 const KIND_COLOR = { mask: "orange", validate: "red", extract: "blue" };
 const KIND_ORDER = ["mask", "validate", "extract"];
@@ -59,9 +65,13 @@ export default function RulesPanel() {
   // 可填参数本地编辑态（保存前不提交）。
   const [draftPattern, setDraftPattern] = useState(null);
   const [draftReplacement, setDraftReplacement] = useState(null);
-  // T51：general-mask 的 6 个模板参数草稿（camelCase，对齐后端 TemplateParams）。
+  // T51：模板脱敏（simple-mask/segment-mask）的模板参数草稿（camelCase，对齐后端 TemplateParams）。
+  // T54：原 general-mask 拆为 simple-mask（整段，Simple 模板）+ segment-mask（分段，Segment 模板），
+  //   每条规则固定一种模板类型，草稿态用对应空模板初始化。
   const [draftTemplate, setDraftTemplate] = useState({ ...EMPTY_TEMPLATE });
   const [presetKey, setPresetKey] = useState("empty");
+  // T55：提取规则编辑态。phonePrefix 的允许前缀草稿（空数组=默认1开头）。
+  const [draftAllowedPrefixes, setDraftAllowedPrefixes] = useState([]);
   const [saving, setSaving] = useState(false);
   // 测试输入 + 结果。
   const [testInput, setTestInput] = useState("");
@@ -109,14 +119,33 @@ export default function RulesPanel() {
       } else {
         setDraftReplacement(selected.replacement ?? "");
       }
-      // T51：general-mask 初始化 6 个模板参数草稿（从 DB 读取的 template）。
-      if (selected.id === "general-mask") {
+      // T51/T54：模板脱敏规则（simple-mask/segment-mask）初始化模板参数草稿（从 DB 读取的 template）。
+      // simple-mask 走 Simple 模板（EMPTY_TEMPLATE），segment-mask 走 Segment 模板（EMPTY_SEGMENT_TEMPLATE）。
+      if (selected.id === "simple-mask") {
         const t = normalizeTemplate(selected.template);
         setDraftTemplate(t);
         setPresetKey(detectPreset(t));
+      } else if (selected.id === "segment-mask") {
+        const t = normalizeTemplate(selected.template);
+        setDraftTemplate(t);
+        setPresetKey("custom");
       } else {
         setDraftTemplate({ ...EMPTY_TEMPLATE });
         setPresetKey("empty");
+      }
+      // T55：提取规则带 params 时初始化允许前缀草稿。
+      // phonePrefix 的 allowedPrefixes 空 = 默认（正则保证 1 开头）。
+      if (
+        selected.kind === "extract" &&
+        selected.params?.validator === "phonePrefix"
+      ) {
+        setDraftAllowedPrefixes(
+          Array.isArray(selected.params.allowedPrefixes)
+            ? selected.params.allowedPrefixes.slice()
+            : []
+        );
+      } else {
+        setDraftAllowedPrefixes([]);
       }
       setTestResult(null);
       setTestInput("");
@@ -151,11 +180,27 @@ export default function RulesPanel() {
     if (!selected) return;
     setSaving(true);
     try {
-      // T51：general-mask 持久化 template（6 个模板参数）；
-      // 其他 mask 规则持久化 replacement（掩码字符）；validate/extract 持久化 pattern。
-      if (selected.id === "general-mask") {
+      // T51/T54：模板脱敏规则（simple-mask/segment-mask）持久化 template；
+      // 其他 mask 规则持久化 replacement（掩码字符）；
+      // T55：extract 规则带 params 时持久化 pattern + params；普通 validate 持久化 pattern。
+      if (
+        selected.id === "simple-mask" ||
+        selected.id === "segment-mask"
+      ) {
         const tpl = buildTemplateForRun(draftTemplate);
         await updateRuleTemplate(selected.id, tpl);
+      } else if (selected.kind === "extract" && selected.params) {
+        // T55：提取规则走专用的 extract config 命令（写 pattern + params）。
+        const pattern = draftPattern ?? null;
+        // phonePrefix 用允许前缀草稿；其他 validator 原样回写。
+        let params = selected.params;
+        if (params.validator === "phonePrefix") {
+          params = {
+            validator: "phonePrefix",
+            allowedPrefixes: draftAllowedPrefixes.slice(),
+          };
+        }
+        await updateRuleExtractConfig(selected.id, pattern, params);
       } else {
         const pattern = draftPattern ?? null;
         const replacement = draftReplacement ?? null;
@@ -186,6 +231,46 @@ export default function RulesPanel() {
       const next = { ...prev, [field]: value };
       setPresetKey(detectPreset(next));
       return next;
+    });
+  };
+
+  // T52：编辑 Segment 段配置单字段（index/keepPrefix/keepSuffix/maskMinLen）。
+  const handleSegmentFieldChange = (segIdx, field, value) => {
+    setDraftTemplate((prev) => {
+      if (!isSegmentTemplate(prev)) return prev;
+      const segments = prev.segments.map((s, i) =>
+        i === segIdx ? { ...s, [field]: value } : s,
+      );
+      return { ...prev, segments };
+    });
+  };
+
+  // T52：新增段配置（默认 index 自增、keepPrefix=1、keepSuffix=1、maskMinLen=1）。
+  const handleAddSegment = () => {
+    setDraftTemplate((prev) => {
+      if (!isSegmentTemplate(prev)) return prev;
+      const nextIdx =
+        prev.segments.length > 0
+          ? Math.max(...prev.segments.map((s) => Number(s.index) || 0)) + 1
+          : 0;
+      return {
+        ...prev,
+        segments: [
+          ...prev.segments,
+          { index: nextIdx, keepPrefix: 1, keepSuffix: 1, maskMinLen: 1 },
+        ],
+      };
+    });
+  };
+
+  // T52：删除段配置。
+  const handleRemoveSegment = (segIdx) => {
+    setDraftTemplate((prev) => {
+      if (!isSegmentTemplate(prev)) return prev;
+      return {
+        ...prev,
+        segments: prev.segments.filter((_, i) => i !== segIdx),
+      };
     });
   };
 
@@ -254,12 +339,16 @@ export default function RulesPanel() {
   };
 
   // mask 预览（不写 DB）。
-  // T51：general-mask 走模板参数（keep_prefix/keep_suffix/mask_char/mask_min_len +
-  // min_len/max_len guard），与后端 apply_template 等价；name-mask 走旧逻辑
+  // T51/T54：simple-mask 走模板参数（keep_prefix/keep_suffix/mask_char/mask_min_len +
+  // min_len/max_len guard + T53 reverse），与后端 apply_template 等价；
+  // segment-mask 走分段脱敏（按分隔符拆分后对指定段脱敏）；name-mask 走旧逻辑
   // （≥3 保留首尾，2 保留首字符，1 全掩码，0 空串）。
   const runMaskTest = () => {
     const input = testInput || "";
-    if (selected.id === "general-mask") {
+    if (
+      selected.id === "simple-mask" ||
+      selected.id === "segment-mask"
+    ) {
       const fallback = draftTemplate.maskChar || DEFAULT_MASK_CHAR;
       const r = previewMask(draftTemplate, input, fallback);
       setTestResult({
@@ -416,9 +505,120 @@ export default function RulesPanel() {
                 >
                   <Form layout="vertical" size="small">
                     {selected.kind === "mask" ? (
-                      selected.id === "general-mask" ? (
-                        // T51：general-mask 暴露 6 个模板参数 + 预设下拉
-                        // （与脱敏面板一致，便于在规则管理里直接编辑/测试）。
+                      selected.id === "segment-mask" ? (
+                        // T52/T54：segment-mask 分段脱敏配置（按分隔符拆分后对指定段脱敏）。
+                        // 与脱敏面板一致，便于在规则管理里直接编辑/测试。
+                        <>
+                          <Form.Item label="分隔符" extra="如 @ . - / 等单字符或多字符">
+                            <Input
+                              value={draftTemplate.delimiter}
+                              onChange={(e) =>
+                                setDraftTemplate((prev) => ({
+                                  ...prev,
+                                  delimiter: e.target.value,
+                                }))
+                              }
+                              placeholder="@ / . 等"
+                              allowClear
+                            />
+                          </Form.Item>
+                          <Form.Item label="掩码字符" extra="默认 *；取首个字符">
+                            <Input
+                              value={draftTemplate.maskChar ?? ""}
+                              onChange={(e) =>
+                                setDraftTemplate((prev) => ({
+                                  ...prev,
+                                  maskChar: e.target.value || null,
+                                }))
+                              }
+                              placeholder={DEFAULT_MASK_CHAR}
+                              allowClear
+                            />
+                          </Form.Item>
+                          <Form.Item label="段配置">
+                            <Space direction="vertical" style={{ width: "100%" }}>
+                              {(draftTemplate.segments || []).map((seg, i) => (
+                                <Card
+                                  key={i}
+                                  size="small"
+                                  title={`段 #${i}`}
+                                  headStyle={{ minHeight: 32, padding: "0 8px" }}
+                                  bodyStyle={{ padding: 8 }}
+                                  extra={
+                                    <Button
+                                      size="small"
+                                      type="text"
+                                      onClick={() => handleRemoveSegment(i)}
+                                    >
+                                      删除
+                                    </Button>
+                                  }
+                                >
+                                  <Row gutter={8}>
+                                    <Col span={6}>
+                                      <Form.Item label="段索引" style={{ marginBottom: 8 }}>
+                                        <InputNumber
+                                          value={seg.index}
+                                          onChange={(v) =>
+                                            handleSegmentFieldChange(i, "index", v)
+                                          }
+                                          min={0}
+                                          style={{ width: "100%" }}
+                                          size="small"
+                                        />
+                                      </Form.Item>
+                                    </Col>
+                                    <Col span={6}>
+                                      <Form.Item label="保留前" style={{ marginBottom: 8 }}>
+                                        <InputNumber
+                                          value={seg.keepPrefix}
+                                          onChange={(v) =>
+                                            handleSegmentFieldChange(i, "keepPrefix", v)
+                                          }
+                                          min={0}
+                                          style={{ width: "100%" }}
+                                          size="small"
+                                        />
+                                      </Form.Item>
+                                    </Col>
+                                    <Col span={6}>
+                                      <Form.Item label="保留后" style={{ marginBottom: 8 }}>
+                                        <InputNumber
+                                          value={seg.keepSuffix}
+                                          onChange={(v) =>
+                                            handleSegmentFieldChange(i, "keepSuffix", v)
+                                          }
+                                          min={0}
+                                          style={{ width: "100%" }}
+                                          size="small"
+                                        />
+                                      </Form.Item>
+                                    </Col>
+                                    <Col span={6}>
+                                      <Form.Item label="最少掩码" style={{ marginBottom: 8 }}>
+                                        <InputNumber
+                                          value={seg.maskMinLen}
+                                          onChange={(v) =>
+                                            handleSegmentFieldChange(i, "maskMinLen", v)
+                                          }
+                                          min={0}
+                                          style={{ width: "100%" }}
+                                          size="small"
+                                        />
+                                      </Form.Item>
+                                    </Col>
+                                  </Row>
+                                </Card>
+                              ))}
+                              <Button size="small" onClick={handleAddSegment}>
+                                添加段配置
+                              </Button>
+                            </Space>
+                          </Form.Item>
+                        </>
+                      ) : selected.id === "simple-mask" ? (
+                        // T51/T54：simple-mask 整段脱敏暴露预设下拉 + 7 个模板参数
+                        // （keepPrefix/keepSuffix/maskChar/maskMinLen + minLen/maxLen + T53 reverse）。
                         <>
                           <Form.Item
                             label="子规则（预设）"
@@ -479,6 +679,21 @@ export default function RulesPanel() {
                               style={{ width: "100%" }}
                             />
                           </Form.Item>
+                          <Form.Item
+                            label="反向脱敏"
+                            extra="开启后保留中间，对首 N 位和后 N 位脱敏（上方前后缀位数变为首尾脱码位数）"
+                          >
+                            <Switch
+                              size="small"
+                              checked={draftTemplate.reverse === true}
+                              onChange={(checked) =>
+                                handleTemplateFieldChange(
+                                  "reverse",
+                                  checked || null
+                                )
+                              }
+                            />
+                          </Form.Item>
                           <Form.Item label="值长度下限（guard，空=不限）">
                             <InputNumber
                               value={draftTemplate.minLen}
@@ -513,6 +728,48 @@ export default function RulesPanel() {
                           />
                         </Form.Item>
                       )
+                    ) : selected.kind === "extract" && selected.params ? (
+                      // T55/T55b/T55c：提取规则带 params 时展示校验类型只读 Tag + phone 前缀编辑。
+                      <>
+                        <Form.Item label="校验类型">
+                          <Tag color="blue" style={{ margin: 0 }}>
+                            {selected.params.validator === "phonePrefix"
+                              ? "手机前缀"
+                              : selected.params.validator === "luhn"
+                                ? "Luhn"
+                                : selected.params.validator === "ipv4"
+                                  ? "IPv4"
+                                  : selected.params.validator === "ipv6"
+                                    ? "IPv6"
+                                    : selected.params.validator === "idcard"
+                                      ? "身份证"
+                                      : selected.params.validator}
+                          </Tag>
+                        </Form.Item>
+                        {selected.params.validator === "phonePrefix" && (
+                          <Form.Item
+                            label="允许前缀"
+                            extra="输入 3 位前缀回车添加；空列表=默认 1 开头"
+                          >
+                            <Select
+                              mode="tags"
+                              value={draftAllowedPrefixes}
+                              onChange={(v) => setDraftAllowedPrefixes(v)}
+                              placeholder="留空=默认 1 开头"
+                              tokenSeparators={[",", " ", "\n"]}
+                              open={false}
+                              style={{ width: "100%" }}
+                            />
+                          </Form.Item>
+                        )}
+                        <Form.Item label="正则模式">
+                          <Input
+                            value={draftPattern ?? ""}
+                            onChange={(e) => setDraftPattern(e.target.value)}
+                            placeholder="提取正则（宽松召回，严格校验交给校验函数）"
+                          />
+                        </Form.Item>
+                      </>
                     ) : (
                       <Form.Item label="正则模式">
                         <Input
@@ -536,16 +793,30 @@ export default function RulesPanel() {
                       </Button>
                       <Button
                         onClick={() => {
-                          if (selected.id === "general-mask") {
+                          if (selected.id === "simple-mask") {
                             const t = normalizeTemplate(selected.template);
                             setDraftTemplate(t);
                             setPresetKey(detectPreset(t));
+                          } else if (selected.id === "segment-mask") {
+                            const t = normalizeTemplate(selected.template);
+                            setDraftTemplate(t);
+                            setPresetKey("custom");
                           } else if (selected.kind === "mask") {
                             setDraftReplacement(
                               selected.replacement &&
                                 selected.replacement.length > 0
                                 ? selected.replacement
                                 : DEFAULT_MASK_CHAR
+                            );
+                          } else if (
+                            selected.kind === "extract" &&
+                            selected.params?.validator === "phonePrefix"
+                          ) {
+                            setDraftPattern(selected.pattern ?? "");
+                            setDraftAllowedPrefixes(
+                              Array.isArray(selected.params.allowedPrefixes)
+                                ? selected.params.allowedPrefixes.slice()
+                                : []
                             );
                           } else {
                             setDraftPattern(selected.pattern ?? "");
