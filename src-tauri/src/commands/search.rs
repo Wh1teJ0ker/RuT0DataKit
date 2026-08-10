@@ -231,8 +231,11 @@ pub fn replace_all(
 ///
 /// - `use_regex=false`（关键字）：`search_matched_row_ids` + `count_matched_rows`，
 ///   `LIKE '%kw%'` + `ESCAPE '\'`；命中区间由 `compute_keyword_matches` 计算。
-/// - `use_regex=true`（正则）：`search_matched_row_ids_regex` +
-///   `count_matched_rows_regex`；命中区间由 `regex::find_iter` 计算。
+/// - `use_regex=true`（正则）：`search_matched_rows_regex_with_total`（单次扫描
+///   同时返回分页 row_idx + total，不再二次重扫）；命中区间由 `regex::find_iter` 计算。
+///
+/// 两种模式的整行 cells 均通过 `query_row_cells_batch` 批量获取（一次 SQL，
+/// 替代逐行 `query_row_cells` 的 N+1 查询）。
 ///
 /// `page` 从 1 开始；`col_idx=None` 搜全表所有列；空 `query` 返回空结果。
 #[tauri::command]
@@ -265,13 +268,9 @@ pub fn search_rows(
 
     // 1. 取本页命中的 row_idx 列表 + total。
     let (row_ids, total) = if use_regex {
-        let ids = db
-            .search_matched_row_ids_regex(sheet_id, col_idx, &query, offset, page_size)
-            .map_err(|e| e.to_string())?;
-        let total = db
-            .count_matched_rows_regex(sheet_id, col_idx, &query)
-            .map_err(|e| e.to_string())?;
-        (ids, total)
+        // 正则路径：单次扫描同时返回分页结果与 total，避免二次重扫。
+        db.search_matched_rows_regex_with_total(sheet_id, col_idx, &query, offset, page_size)
+            .map_err(|e| e.to_string())?
     } else {
         let ids = db
             .search_matched_row_ids(sheet_id, col_idx, &query, offset, page_size)
@@ -282,17 +281,23 @@ pub fn search_rows(
         (ids, total)
     };
 
-    // 2. 为每个 row_idx 取整行 cells，组装成 SearchRow。
+    // 2. 批量取本页所有行的整行 cells（一次 SQL，替代逐行 N+1 查询）。
+    //    结果按 row_idx ASC, col_idx ASC 排序，与逐行 query_row_cells 组合结果一致。
+    let cells_raw = db
+        .query_row_cells_batch(sheet_id, &row_ids)
+        .map_err(|e| e.to_string())?;
+    let mut cells_iter = cells_raw.into_iter().peekable();
+
+    // 3. 按 row_ids 顺序逐行组装 SearchRow（cells_raw 已排序，可顺序消费 cells_iter）。
     let mut rows: Vec<SearchRow> = Vec::with_capacity(row_ids.len());
-    for rid in row_ids {
-        let cells_raw = db
-            .query_row_cells(sheet_id, rid)
-            .map_err(|e| e.to_string())?;
-        // 对齐成定长 Vec<Option<String>>（按 col_idx 升序，缺失列用 None 占位）。
+    for &rid in &row_ids {
         let mut cells: Vec<Option<String>> = vec![None; col_count];
-        // 同时收集命中区间：col_idx -> Vec<(start, end)>
         let mut hits: Vec<RowCellMatch> = Vec::new();
-        for c in &cells_raw {
+        while let Some(c) = cells_iter.peek() {
+            if c.row_idx != rid {
+                break;
+            }
+            let c = cells_iter.next().unwrap();
             let ci = c.col_idx as usize;
             if ci < col_count {
                 cells[ci] = c.value.clone();

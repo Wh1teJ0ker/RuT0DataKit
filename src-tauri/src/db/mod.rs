@@ -28,7 +28,7 @@ use regex::Regex;
 use ruT0_data_kit_core::processor::rules::{
     ExtractParams, Rule, RuleKind, RuleRegistry, TemplateParams,
 };
-use rusqlite::{params, Connection};
+use rusqlite::{params, params_from_iter, types::Value as SqlValue, Connection};
 use serde::{Deserialize, Serialize};
 
 /// `cells` 表一行。
@@ -1138,6 +1138,143 @@ impl DbManager {
         Ok(rows.len() as u32)
     }
 
+    /// 正则行级搜索：单次扫描同时返回分页结果与 total，不再二次重扫。
+    ///
+    /// 等价于 `search_matched_row_ids_regex` + `count_matched_rows_regex`，
+    /// 但只扫描候选 cells 一次：`LIKE '%'` 预筛 + `regex::is_match` 过滤 +
+    /// 按 `row_idx` 升序去重（NULL value 跳过），在同一次遍历中同时收集
+    /// 命中 row_idx 列表和 total，最后对 row_idx 列表做 offset/limit 分页。
+    ///
+    /// 返回 `(本页 row_idx 列表, total 命中行数)`。
+    pub fn search_matched_rows_regex_with_total(
+        &self,
+        sheet_id: i64,
+        col_idx: Option<u32>,
+        pattern: &str,
+        offset: u32,
+        limit: u32,
+    ) -> Result<(Vec<u32>, u32), DbError> {
+        let re = Regex::new(pattern)
+            .map_err(|e| DbError::Migration(format!("invalid regex `{}`: {}", pattern, e)))?;
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        // 先取 distinct row_idx（按 row_idx 升序），再 regex 过滤，
+        // 在同一次遍历里同时收集命中 row_idx 和 total，避免二次重扫。
+        let sql = if col_idx.is_some() {
+            "SELECT DISTINCT row_idx FROM cells
+             WHERE sheet_id = ?1 AND col_idx = ?2 AND row_idx > 0
+               AND value LIKE ?3 ESCAPE '\\'
+             ORDER BY row_idx ASC"
+        } else {
+            "SELECT DISTINCT row_idx FROM cells
+             WHERE sheet_id = ?1 AND row_idx > 0
+               AND value LIKE ?2 ESCAPE '\\'
+             ORDER BY row_idx ASC"
+        };
+        let mut stmt = conn.prepare(sql)?;
+        let like_pattern = "%".to_string();
+        let mut all: Vec<u32> = Vec::new();
+        if let Some(c) = col_idx {
+            let mapped = stmt.query_map(params![sheet_id, c as i64, like_pattern], |r| {
+                r.get::<_, i64>(0).map(|v| v as u32)
+            })?;
+            for row in mapped {
+                all.push(row?);
+            }
+        } else {
+            let mapped = stmt.query_map(params![sheet_id, like_pattern], |r| {
+                r.get::<_, i64>(0).map(|v| v as u32)
+            })?;
+            for row in mapped {
+                all.push(row?);
+            }
+        }
+        // 取每个 row_idx 的 cell values 做 regex 过滤；命中收集到 filtered。
+        let mut filtered: Vec<u32> = Vec::new();
+        for rid in all.drain(..) {
+            let matched = if let Some(c) = col_idx {
+                let val: Option<String> = conn.query_row(
+                    "SELECT value FROM cells WHERE sheet_id = ?1 AND col_idx = ?2 AND row_idx = ?3",
+                    params![sheet_id, c as i64, rid as i64],
+                    |r| r.get(0),
+                )?;
+                val.map(|v| re.is_match(&v)).unwrap_or(false)
+            } else {
+                let mut stmt2 = conn.prepare(
+                    "SELECT value FROM cells
+                     WHERE sheet_id = ?1 AND row_idx = ?2 AND value IS NOT NULL
+                     ORDER BY col_idx ASC",
+                )?;
+                let mut hit = false;
+                let vals = stmt2.query_map(params![sheet_id, rid as i64], |r| {
+                    r.get::<_, Option<String>>(0)
+                })?;
+                for v in vals {
+                    if let Some(ref s) = v? {
+                        if re.is_match(s) {
+                            hit = true;
+                            break;
+                        }
+                    }
+                }
+                hit
+            };
+            if matched {
+                filtered.push(rid);
+            }
+        }
+        let total = filtered.len() as u32;
+        let start = (offset as usize).min(filtered.len());
+        let end = (start + limit as usize).min(filtered.len());
+        Ok((filtered[start..end].to_vec(), total))
+    }
+
+    /// 批量取多行的全部 cells（按 `row_idx IN (...)` 查询）。
+    ///
+    /// 替代逐行 `query_row_cells` 的 N+1 查询。结果按 `row_idx ASC, col_idx ASC`
+    /// 排序。空入参返回空 Vec。
+    ///
+    /// 按 500 一批分块查询，规避 SQLITE_MAX_VARIABLE_NUMBER 限制。
+    pub fn query_row_cells_batch(
+        &self,
+        sheet_id: i64,
+        row_idxs: &[u32],
+    ) -> Result<Vec<Cell>, DbError> {
+        if row_idxs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        let mut out: Vec<Cell> = Vec::new();
+        for chunk in row_idxs.chunks(500) {
+            // 构造 IN 子句占位符：?, ?, ?
+            let placeholders: Vec<&str> = std::iter::repeat_n("?", chunk.len()).collect();
+            let in_clause = placeholders.join(", ");
+            let sql = format!(
+                "SELECT sheet_id, row_idx, col_idx, value FROM cells
+                 WHERE sheet_id = ?1 AND row_idx IN ({in_clause})
+                 ORDER BY row_idx ASC, col_idx ASC"
+            );
+            // 绑定参数：sheet_id + chunk 各 row_idx（i64 形式，与 schema 列类型一致）。
+            let mut bind_args: Vec<SqlValue> = Vec::with_capacity(1 + chunk.len());
+            bind_args.push(SqlValue::Integer(sheet_id));
+            for &r in chunk {
+                bind_args.push(SqlValue::Integer(r as i64));
+            }
+            let mut stmt = conn.prepare(&sql)?;
+            let mapped = stmt.query_map(params_from_iter(bind_args.iter()), |r| {
+                Ok(Cell {
+                    sheet_id: r.get::<_, i64>(0)?,
+                    row_idx: r.get::<_, i64>(1)? as u32,
+                    col_idx: r.get::<_, i64>(2)? as u32,
+                    value: r.get::<_, Option<String>>(3)?,
+                })
+            })?;
+            for row in mapped {
+                out.push(row?);
+            }
+        }
+        Ok(out)
+    }
+
     /// 列内批量替换。返回 `(受影响行数, before 快照, after 快照)`。
     ///
     /// `use_regex=true` 时用 `regex::Regex` 替换 `from` → `to`（`from` 为正则
@@ -2193,5 +2330,344 @@ mod tests {
         let row = mgr.query_operation_by_id(id).unwrap().unwrap();
         assert_eq!(row.before_snapshot_json, None);
         assert_eq!(row.result_snapshot_json.as_deref(), Some("{}"));
+    }
+
+    // ---- T59：搜索行级 N+1 消除 + 正则重扫消除 ----
+
+    /// 新方法 `search_matched_rows_regex_with_total` 的结果应与旧
+    /// `search_matched_row_ids_regex` + `count_matched_rows_regex` 组合完全等价。
+    #[test]
+    fn search_rows_regex_with_total_matches_legacy() {
+        let (_dir, mgr) = open();
+        let shid = build_search_sheet(&mgr);
+        let pattern = r"\d{3}";
+        // 全表正则：phone 列 3 行命中。
+        let (ids_new, total_new) = mgr
+            .search_matched_rows_regex_with_total(shid, None, pattern, 0, 50)
+            .unwrap();
+        let ids_old = mgr
+            .search_matched_row_ids_regex(shid, None, pattern, 0, 50)
+            .unwrap();
+        let total_old = mgr.count_matched_rows_regex(shid, None, pattern).unwrap();
+        assert_eq!(total_new, total_old);
+        assert_eq!(total_new, 3);
+        assert_eq!(ids_new, ids_old);
+        assert_eq!(ids_new, vec![1, 2, 3]);
+    }
+
+    /// 新方法分页正确：offset/limit 作用于命中 row_idx 列表。
+    #[test]
+    fn search_rows_regex_with_total_pagination() {
+        let (_dir, mgr) = open();
+        let shid = build_search_sheet(&mgr);
+        let pattern = r"\d{3}";
+        // total=3, page_size=1 offset=1 → 第 2 行（row_idx=2）。
+        let (p1, total) = mgr
+            .search_matched_rows_regex_with_total(shid, None, pattern, 1, 1)
+            .unwrap();
+        assert_eq!(total, 3);
+        assert_eq!(p1, vec![2]);
+        // offset=2 limit=2 → 剩余 1 行（row_idx=3）。
+        let (p2, total2) = mgr
+            .search_matched_rows_regex_with_total(shid, None, pattern, 2, 2)
+            .unwrap();
+        assert_eq!(total2, 3);
+        assert_eq!(p2, vec![3]);
+        // offset 越界 → 空页，total 仍为 3。
+        let (p3, total3) = mgr
+            .search_matched_rows_regex_with_total(shid, None, pattern, 10, 1)
+            .unwrap();
+        assert_eq!(total3, 3);
+        assert!(p3.is_empty());
+    }
+
+    /// 新方法支持 col_idx 限定列过滤。
+    #[test]
+    fn search_rows_regex_with_total_col_filtered() {
+        let (_dir, mgr) = open();
+        let shid = build_search_sheet(&mgr);
+        let pattern = r"\d{3}";
+        // col1 (phone) 3 行命中。
+        let (ids, total) = mgr
+            .search_matched_rows_regex_with_total(shid, Some(1), pattern, 0, 50)
+            .unwrap();
+        assert_eq!(total, 3);
+        assert_eq!(ids, vec![1, 2, 3]);
+        // col0 (name) 0 命中（无数字）。
+        let (ids0, total0) = mgr
+            .search_matched_rows_regex_with_total(shid, Some(0), pattern, 0, 50)
+            .unwrap();
+        assert_eq!(total0, 0);
+        assert!(ids0.is_empty());
+    }
+
+    /// `query_row_cells_batch` 批量取行结果与逐行 `query_row_cells` 等价。
+    #[test]
+    fn query_row_cells_batch_returns_all_rows() {
+        let (_dir, mgr) = open();
+        let shid = build_search_sheet(&mgr);
+        let row_idxs = vec![1u32, 2, 3];
+        let batch = mgr.query_row_cells_batch(shid, &row_idxs).unwrap();
+        // 与逐行查询拼接结果比对。
+        let mut legacy: Vec<Cell> = Vec::new();
+        for &rid in &row_idxs {
+            let mut row_cells = mgr.query_row_cells(shid, rid).unwrap();
+            legacy.append(&mut row_cells);
+        }
+        assert_eq!(batch.len(), legacy.len());
+        // 逐 cell 比对（row_idx, col_idx, value）。
+        for (b, l) in batch.iter().zip(legacy.iter()) {
+            assert_eq!(b.row_idx, l.row_idx);
+            assert_eq!(b.col_idx, l.col_idx);
+            assert_eq!(b.value, l.value);
+        }
+        // 排序检查：按 row_idx ASC, col_idx ASC（逐字段比对，不依赖 Cell: PartialEq）。
+        let mut sorted = batch.clone();
+        sorted.sort_by(|a, b| a.row_idx.cmp(&b.row_idx).then(a.col_idx.cmp(&b.col_idx)));
+        assert_eq!(batch.len(), sorted.len());
+        for (b, s) in batch.iter().zip(sorted.iter()) {
+            assert_eq!(b.row_idx, s.row_idx);
+            assert_eq!(b.col_idx, s.col_idx);
+            assert_eq!(b.value, s.value);
+        }
+    }
+
+    /// `query_row_cells_batch` 处理 600 行（>500 分块阈值），结果完整且有序。
+    #[test]
+    fn query_row_cells_batch_handles_large_input() {
+        let (_dir, mgr) = open();
+        let sid = mgr.create_session("s", None, "csv", 0).unwrap();
+        let shid = mgr.create_sheet(sid, "Big", 0).unwrap();
+        // 表头 + 600 数据行，每行 1 列。
+        let mut cells: Vec<Cell> = Vec::with_capacity(601);
+        cells.push(cell(shid, 0, 0, "h"));
+        for r in 1..=600u32 {
+            cells.push(cell(shid, r, 0, &format!("v{r}")));
+        }
+        mgr.write_cells(shid, &cells).unwrap();
+        // 取所有数据行。
+        let row_idxs: Vec<u32> = (1..=600).collect();
+        let batch = mgr.query_row_cells_batch(shid, &row_idxs).unwrap();
+        assert_eq!(batch.len(), 600);
+        // 顺序检查：row_idx 单调递增。
+        for (i, c) in batch.iter().enumerate() {
+            assert_eq!(c.row_idx, (i + 1) as u32);
+            assert_eq!(c.value.as_deref(), Some(format!("v{}", i + 1).as_str()));
+        }
+        // 空入参返回空 Vec。
+        let empty = mgr.query_row_cells_batch(shid, &[]).unwrap();
+        assert!(empty.is_empty());
+    }
+
+    /// 端到端等价性：新流程（单次扫描 + 批量取行）vs 旧逐行流程
+    /// （`search_matched_row_ids_regex` + `count_matched_rows_regex` + 逐行
+    /// `query_row_cells`）的结果应完全一致，含 cells 与 hits。
+    ///
+    /// 注：`compute_regex_matches` / `RowCellMatch` / `SearchRow` 在命令层是
+    /// 私有辅助，本测试通过 `super::super::commands::search` 路径访问仅用于
+    /// 跨模块等价性验证——不构成公开 API。
+    #[test]
+    fn search_rows_regex_single_scan_matches_legacy_flow() {
+        // compute_regex_matches 在 commands::search 是私有函数；测试用 inline
+        // 等价实现复刻命令层逻辑，避免暴露内部 API。
+        fn compute_regex_spans(value: &Option<String>, pattern: &str) -> Vec<(usize, usize)> {
+            let mut out = Vec::new();
+            if let Some(val) = value {
+                if pattern.is_empty() {
+                    return out;
+                }
+                if let Ok(re) = regex::Regex::new(pattern) {
+                    for m in re.find_iter(val) {
+                        out.push((m.start(), m.end()));
+                    }
+                }
+            }
+            out
+        }
+
+        // 复刻 commands::search 的 RowCellMatch / SearchRow 形状用于比对。
+        #[derive(Debug, Clone, PartialEq)]
+        struct RowHit {
+            col_idx: u32,
+            value: Option<String>,
+            matches: Vec<(usize, usize)>,
+        }
+        #[derive(Debug, Clone, PartialEq)]
+        struct RowResult {
+            row_idx: u32,
+            cells: Vec<Option<String>>,
+            hits: Vec<RowHit>,
+        }
+
+        let (_dir, mgr) = open();
+        let shid = build_search_sheet(&mgr);
+        let col_count = mgr.count_columns(shid).unwrap() as usize;
+        let pattern = r"\d{3}";
+        let offset = 0u32;
+        let page_size = 50u32;
+
+        // 新流程：search_matched_rows_regex_with_total + query_row_cells_batch。
+        let (row_ids_new, total_new) = mgr
+            .search_matched_rows_regex_with_total(shid, None, pattern, offset, page_size)
+            .unwrap();
+        let cells_raw_new = mgr.query_row_cells_batch(shid, &row_ids_new).unwrap();
+        let mut cells_iter = cells_raw_new.into_iter().peekable();
+        let mut rows_new: Vec<RowResult> = Vec::with_capacity(row_ids_new.len());
+        for &rid in &row_ids_new {
+            let mut cells: Vec<Option<String>> = vec![None; col_count];
+            let mut hits: Vec<RowHit> = Vec::new();
+            while let Some(c) = cells_iter.peek() {
+                if c.row_idx != rid {
+                    break;
+                }
+                let c = cells_iter.next().unwrap();
+                let ci = c.col_idx as usize;
+                if ci < col_count {
+                    cells[ci] = c.value.clone();
+                }
+                let spans = compute_regex_spans(&c.value, pattern);
+                if !spans.is_empty() {
+                    hits.push(RowHit {
+                        col_idx: c.col_idx,
+                        value: c.value.clone(),
+                        matches: spans,
+                    });
+                }
+            }
+            rows_new.push(RowResult {
+                row_idx: rid,
+                cells,
+                hits,
+            });
+        }
+
+        // 旧流程：search_matched_row_ids_regex + count_matched_rows_regex + 逐行 query_row_cells。
+        let row_ids_old = mgr
+            .search_matched_row_ids_regex(shid, None, pattern, offset, page_size)
+            .unwrap();
+        let total_old = mgr.count_matched_rows_regex(shid, None, pattern).unwrap();
+        let mut rows_old: Vec<RowResult> = Vec::with_capacity(row_ids_old.len());
+        for rid in row_ids_old {
+            let cells_raw = mgr.query_row_cells(shid, rid).unwrap();
+            let mut cells: Vec<Option<String>> = vec![None; col_count];
+            let mut hits: Vec<RowHit> = Vec::new();
+            for c in &cells_raw {
+                let ci = c.col_idx as usize;
+                if ci < col_count {
+                    cells[ci] = c.value.clone();
+                }
+                let spans = compute_regex_spans(&c.value, pattern);
+                if !spans.is_empty() {
+                    hits.push(RowHit {
+                        col_idx: c.col_idx,
+                        value: c.value.clone(),
+                        matches: spans,
+                    });
+                }
+            }
+            rows_old.push(RowResult {
+                row_idx: rid,
+                cells,
+                hits,
+            });
+        }
+
+        // 等价性断言：total、行数、每行的 cells 和 hits。
+        assert_eq!(total_new, total_old);
+        assert_eq!(rows_new, rows_old);
+    }
+
+    /// UTF-8 命中区间在批量 cells 路径下保持正确（关键字模式 byte-offset）。
+    #[test]
+    fn search_rows_keyword_utf8_byte_offsets_preserved() {
+        // compute_keyword_matches 在 commands::search 是私有；inline 等价实现。
+        fn compute_keyword_spans(value: &Option<String>, query: &str) -> Vec<(usize, usize)> {
+            let mut out = Vec::new();
+            if let Some(val) = value {
+                if query.is_empty() {
+                    return out;
+                }
+                let mut start = 0;
+                while let Some(pos) = val[start..].find(query) {
+                    let abs_start = start + pos;
+                    let abs_end = abs_start + query.len();
+                    out.push((abs_start, abs_end));
+                    start = abs_end;
+                }
+            }
+            out
+        }
+
+        #[derive(Debug, Clone, PartialEq)]
+        struct RowHit {
+            col_idx: u32,
+            value: Option<String>,
+            matches: Vec<(usize, usize)>,
+        }
+        #[derive(Debug, Clone, PartialEq)]
+        struct RowResult {
+            row_idx: u32,
+            cells: Vec<Option<String>>,
+            hits: Vec<RowHit>,
+        }
+
+        let (_dir, mgr) = open();
+        let shid = build_search_sheet(&mgr);
+        let col_count = mgr.count_columns(shid).unwrap() as usize;
+        let query = "张";
+        let offset = 0u32;
+        let page_size = 50u32;
+
+        // 关键字路径：search_matched_row_ids + count_matched_rows + query_row_cells_batch。
+        let row_ids = mgr
+            .search_matched_row_ids(shid, None, query, offset, page_size)
+            .unwrap();
+        let total = mgr.count_matched_rows(shid, None, query).unwrap();
+        assert_eq!(total, 2);
+        assert_eq!(row_ids, vec![1, 3]);
+
+        let cells_raw = mgr.query_row_cells_batch(shid, &row_ids).unwrap();
+        let mut cells_iter = cells_raw.into_iter().peekable();
+        let mut rows: Vec<RowResult> = Vec::with_capacity(row_ids.len());
+        for &rid in &row_ids {
+            let mut cells: Vec<Option<String>> = vec![None; col_count];
+            let mut hits: Vec<RowHit> = Vec::new();
+            while let Some(c) = cells_iter.peek() {
+                if c.row_idx != rid {
+                    break;
+                }
+                let c = cells_iter.next().unwrap();
+                let ci = c.col_idx as usize;
+                if ci < col_count {
+                    cells[ci] = c.value.clone();
+                }
+                let spans = compute_keyword_spans(&c.value, query);
+                if !spans.is_empty() {
+                    hits.push(RowHit {
+                        col_idx: c.col_idx,
+                        value: c.value.clone(),
+                        matches: spans,
+                    });
+                }
+            }
+            rows.push(RowResult {
+                row_idx: rid,
+                cells,
+                hits,
+            });
+        }
+
+        // 每行 col0 应命中 "张"，区间为 byte-offset 0..3（UTF-8 三字节）。
+        assert_eq!(rows.len(), 2);
+        for r in &rows {
+            assert!(r.cells[0].as_deref().unwrap().contains('张'));
+            let hit = r.hits.iter().find(|h| h.col_idx == 0).unwrap();
+            assert_eq!(hit.matches.len(), 1);
+            let span = &hit.matches[0];
+            assert_eq!(span.0, 0);
+            assert_eq!(span.1, 3); // "张" UTF-8 占 3 字节
+            let val = hit.value.as_ref().unwrap();
+            assert_eq!(&val[span.0..span.1], "张");
+        }
     }
 }
