@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { Layout } from "antd";
 import TopToolbar from "./components/layout/TopToolbar";
 import SidePanel from "./components/layout/SidePanel";
@@ -40,48 +40,71 @@ function AppShell() {
     })();
   }, [dispatch]);
 
+  // T64：sheetId → 单调递增 generation token。每次发起新请求前自增；
+  // 异步响应返回时若 token 不等于最新值，说明用户已翻页/切换 Sheet，丢弃响应。
+  const pageReqGenRef = useRef({});
+  const nextGen = useCallback((sheetId) => {
+    const m = pageReqGenRef.current;
+    const next = (m[sheetId] ?? 0) + 1;
+    m[sheetId] = next;
+    return next;
+  }, []);
+  const isStale = useCallback((sheetId, gen) => {
+    return pageReqGenRef.current[sheetId] !== gen;
+  }, []);
+
   // 导入成功后：dispatch IMPORT_SUCCESS 填充 Sheet，并拉取首页数据。
   // v1.1.2：首页 pageSize 用全局 state.pageSize。
+  // T64：导入为新 Sheet，理论上无竞态；仍用 generation token 保护一致。
   const handleImport = useCallback(
     async (payload) => {
       dispatch({ type: ACTION.IMPORT_SUCCESS, payload });
+      const gen = nextGen(payload.sheetId);
       try {
         const data = await getSheetData(payload.sheetId, 1, state.pageSize);
+        if (isStale(payload.sheetId, gen)) return;
         dispatch({
           type: ACTION.SET_SHEET_DATA,
           payload: { ...data, sheetId: payload.sheetId },
         });
       } catch (e) {
+        if (isStale(payload.sheetId, gen)) return;
         // 首页拉取失败：保留 Sheet 占位，由用户翻页重试。
         // eslint-disable-next-line no-console
         console.error("getSheetData page 1 failed:", e);
       }
     },
-    [dispatch, state.pageSize]
+    [dispatch, state.pageSize, nextGen, isStale]
   );
 
   // 翻页时按需拉取对应页数据。
+  // T64：用户快速连续翻页时，旧响应可能晚于新响应返回，导致 UI 显示
+  // 错误页数据。用 generation token 隔离：发起前自增，响应返回时若 token
+  // 已变（用户又翻页了），静默丢弃，不 dispatch SET_SHEET_DATA。
   const handleSetPage = useCallback(
     async (page) => {
       const sheet = state.sheets.find((s) => s.id === state.activeSheetId);
       if (!sheet) return;
       setPage(page);
+      const gen = nextGen(sheet.id);
       try {
         const data = await getSheetData(
           sheet.id,
           page,
           sheet.pageSize || PAGE_SIZE
         );
+        if (isStale(sheet.id, gen)) return;
         dispatch({
           type: ACTION.SET_SHEET_DATA,
           payload: { ...data, sheetId: sheet.id },
         });
       } catch (e) {
+        if (isStale(sheet.id, gen)) return;
         // eslint-disable-next-line no-console
         console.error("getSheetData page failed:", e);
       }
     },
-    [state.sheets, state.activeSheetId, dispatch, setPage]
+    [state.sheets, state.activeSheetId, dispatch, setPage, nextGen, isStale]
   );
 
   // 当前激活的 Sheet（导出按钮据此判断可用性）。

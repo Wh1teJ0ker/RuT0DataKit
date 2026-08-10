@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   Table,
   Checkbox,
@@ -138,6 +138,10 @@ export default function DataTable({ sheet, onSetPage }) {
   const [replacing, setReplacing] = useState(false);
   const [replaceForm] = Form.useForm();
 
+  // T64：搜索请求 generation token。用户快速连续翻页/搜索时，旧响应可能晚于
+  // 新响应返回，导致 UI 闪现错误结果。发起前自增，响应返回时若 token 已变则丢弃。
+  const searchGenRef = useRef(0);
+
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } })
   );
@@ -223,6 +227,7 @@ export default function DataTable({ sheet, onSetPage }) {
 
   // 搜索：调 searchRows 取首页命中行 → dispatch APPLY_SEARCH_ROWS（写入 searchRows +
   // searchTotal + searchHits）。searchRows !== null 即切换为「只保留搜索结果」渲染。
+  // T64：用 generation token 隔离陈旧响应——用户连续点搜索/翻页时旧响应晚到则丢弃。
   async function handleSearch() {
     if (!sheet) return;
     const { query, useRegex, colIdx } = state.searchState;
@@ -231,6 +236,7 @@ export default function DataTable({ sheet, onSetPage }) {
       return;
     }
     setSearching(true);
+    const gen = ++searchGenRef.current;
     try {
       const res = await searchRows(
         sheet.id,
@@ -240,25 +246,29 @@ export default function DataTable({ sheet, onSetPage }) {
         1,
         sheet.pageSize || PAGE_SIZE
       );
+      if (searchGenRef.current !== gen) return;
       applySearchRows({ sheetId: sheet.id, rows: res });
       setSearchState({ page: 1 });
       if ((res.total ?? 0) === 0) {
         message.info("无匹配结果");
       }
     } catch (e) {
+      if (searchGenRef.current !== gen) return;
       // eslint-disable-next-line no-console
       console.error("search_rows failed:", e);
       message.error(`搜索失败：${e}`);
     } finally {
-      setSearching(false);
+      if (searchGenRef.current === gen) setSearching(false);
     }
   }
 
   // 搜索态翻页：调 searchRows 取对应页命中行。
+  // T64：与 handleSearch 共用 searchGenRef，连续翻页时仅最后一次请求生效。
   async function handleSearchPageChange(page) {
     if (!sheet) return;
     const { query, useRegex, colIdx } = state.searchState;
     setSearching(true);
+    const gen = ++searchGenRef.current;
     try {
       const res = await searchRows(
         sheet.id,
@@ -268,14 +278,16 @@ export default function DataTable({ sheet, onSetPage }) {
         page,
         sheet.pageSize || PAGE_SIZE
       );
+      if (searchGenRef.current !== gen) return;
       applySearchRows({ sheetId: sheet.id, rows: res });
       setSearchState({ page });
     } catch (e) {
+      if (searchGenRef.current !== gen) return;
       // eslint-disable-next-line no-console
       console.error("search_rows page failed:", e);
       message.error(`搜索翻页失败：${e}`);
     } finally {
-      setSearching(false);
+      if (searchGenRef.current === gen) setSearching(false);
     }
   }
 
