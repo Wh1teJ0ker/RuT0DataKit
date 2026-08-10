@@ -1,7 +1,7 @@
 # v1.1.3 TASK-BOARD
 
 > 版本：v1.1.3
-> 状态：qa_passed（T48~T51 verified_complete + T52~T57 dev_complete + R1 Release QA 审计通过；R2 架构/性能/安全审计 T59~T66 全部 verified_complete + E2E 全绿，见 `docs/qa/versions/1.1.3/QA-审计报告.md` §R2）
+> 状态：qa_passed（T48~T51 verified_complete + T52~T57 dev_complete + R1 Release QA 审计通过；R2 架构/性能/安全审计 T59~T66 全部 verified_complete + E2E 全绿 + Mimosa 密封扫描重跑 0 findings，见 `docs/qa/versions/1.1.3/QA-审计报告.md` §R2）
 > 前置：v1.1.2 `qa_passed` + tag `v1.1.2` 已发布
 
 ## 任务 DAG

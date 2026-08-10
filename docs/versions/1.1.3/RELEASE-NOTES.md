@@ -1,7 +1,7 @@
 # RuT0DataKit v1.1.3
 
 > Git tag：`v1.1.3`（待推送）
-> 状态：qa_passed（T48~T57 全部完成 + R1 Release QA 审计通过；R2 架构/性能/安全审计 T59~T66 全部 verified_complete + E2E 全绿，见 [`docs/qa/versions/1.1.3/QA-审计报告.md`](../../qa/versions/1.1.3/QA-审计报告.md) §R2）
+> 状态：qa_passed（T48~T57 全部完成 + R1 Release QA 审计通过；R2 架构/性能/安全审计 T59~T66 全部 verified_complete + E2E 全绿 + Mimosa 密封扫描重跑 0 findings，见 [`docs/qa/versions/1.1.3/QA-审计报告.md`](../../qa/versions/1.1.3/QA-审计报告.md) §R2）
 > 前置：v1.1.2 已发布 tag `v1.1.2`
 
 ## 这是什么
@@ -62,7 +62,7 @@ RuT0DataKit v1.1.3 在 v1.1.2 的 `SimpleMasker`（仅"保留首尾各 1 字符"
 - 身份证/手机/出生日期预设有 min_len=max_len guard，长度不匹配的输入原样返回（不脱敏）；银行卡预设无 len guard，任意长度均可脱敏
 - 出生日期脱敏按字符串长度处理（keep 8/0 + mask 2），不校验日期合法性
 - T49 删除了 v1.1.3 T48 的 4 条独立规则 id（idcard-mask/phone-mask/birthdate-mask/bankcard-mask），v1.1.3 用户若已保存这 4 条规则的 template 参数，升级后这 4 条规则会从 DB 消失（seed 不再注册），需改用 general-mask + 对应预设
-- **R2 安全审计 Mimosa 结论不完整**：R2 commit 前的 Mimosa hook 多次报告 `library_source_unavailable` / `callgraph_fact_partial` / `library_source_limit_exceeded`（不完整结论）。R1 完整密封扫描 0 findings（scan-2026-08-10T16-40-17.470Z-31df73e0a37d，487 包 0 漏洞），R2 按兼容策略继续合并但**不宣称项目安全**，待重新运行完整 Mimosa 密封扫描（见 QA 报告 §R2-01）
+- **R2 安全审计 Mimosa 密封扫描重跑（T59~T66）**：R2 commit 前的 Mimosa hook 曾报告不完整结论（`library_source_unavailable` / `callgraph_fact_partial` / `library_source_limit_exceeded`）。已重新运行完整 Mimosa 密封扫描（`scan-2026-08-10T21-49-17.114Z-3e0a1b2d600e`，deep）：0 findings / 487 包 0 漏洞。R1 + R2 双轮 Mimosa 深度扫描均 0 findings（`evidenceBoundary=static_only_no_runtime_execution`，静态分析非运行时验证，不宣称项目安全）
 - **R2 开发期 dev server 默认 localhost-only（T66）**：Vite dev server 默认 `host: 'localhost'`（不再 `host: true` 绑定所有接口），消除局域网暴露面；需从其它设备/容器访问时显式设置 `VITE_DEV_HOST=1`
 
 ## 升级

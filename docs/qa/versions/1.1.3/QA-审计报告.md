@@ -3,8 +3,8 @@
 > 版本：1.1.3
 > 审计类型：Release 前全局审计（v1.1.2 → v1.1.3 架构重构 + 数据提取规则 + 行级多字段校验）+ R2 架构/性能/安全审计
 > 审计依据：[`docs/versions/1.1.3/更新日志.md`](../../versions/1.1.3/更新日志.md) + [`docs/04-版本标准.md`](../../04-版本标准.md) §2 里程碑索引 + [`handoff/TASK-BOARD.md`](../../../handoff/TASK-BOARD.md) T48~T54 任务定义 + E1~E89 验收项
-> 审计轮次：R1（2026-08-07 主会话基于实际命令输出 + Mimosa 完整审计）+ R2（2026-08-11 架构/性能/安全审计 T59~T66）
-> 结论：`qa_passed` — R1 覆盖 T48~T57（250 passed / 3 ignored / 0 failed + 3083 modules + 4 处版本一致 + Mimosa 0 findings）；R2 覆盖 T59~T66（282 passed / 3 ignored / 0 failed + 3083 modules + 8 个审计性质修复全 verified_complete）。**安全声明**：R1 Mimosa 深度扫描（`scan-2026-08-10T16-40-17.470Z-31df73e0a37d`，deep）0 findings / 487 包 0 漏洞（`evidenceBoundary=static_only_no_runtime_execution`）；R2 期间 Mimosa commit hook 多次报告不完整结论（`library_source_unavailable` / `callgraph_fact_partial` / `library_source_limit_exceeded`），按兼容策略继续合并，**不宣称项目安全**，需尽快重新运行完整 Mimosa 密封扫描。
+> 审计轮次：R1（2026-08-07 主会话基于实际命令输出 + Mimosa 完整审计）+ R2（2026-08-11 架构/性能/安全审计 T59~T66 + Mimosa 密封扫描重跑）
+> 结论：`qa_passed` — R1 覆盖 T48~T57（250 passed / 3 ignored / 0 failed + 3083 modules + 4 处版本一致 + Mimosa 0 findings）；R2 覆盖 T59~T66（282 passed / 3 ignored / 0 failed + 3083 modules + 8 个审计性质修复全 verified_complete）。**安全声明**：R1 Mimosa 深度扫描（`scan-2026-08-10T16-40-17.470Z-31df73e0a37d`，deep）0 findings / 487 包 0 漏洞；R2 Mimosa 密封扫描重跑（`scan-2026-08-10T21-49-17.114Z-3e0a1b2d600e`，deep）0 findings / 487 包 0 漏洞（`evidenceBoundary=static_only_no_runtime_execution`）。静态分析非运行时验证，不宣称项目安全，但无已识别 finding 阻碍发布。
 
 ## 1. 审计维度与结论
 
@@ -101,7 +101,7 @@
 | 开发期暴露面（T66） | `pass` | Vite dev server 默认 `host: 'localhost'`（不再 `host: true` 绑所有接口），消除局域网暴露面；需从其它设备/容器访问时显式 `VITE_DEV_HOST=1`；生产构建用 `tauri build`（不走 vite dev server），无影响 |
 | settings.json 完整性（T66） | `pass` | 原子写（NamedTempFile + persist rename，失败不破坏旧文件）+ 进程内 Mutex 串行化 read-modify-write（防并发保存丢字段）+ JSON 损坏返回 `SettingsError::Corrupt(path)` 不静默回退默认值（防静默覆盖用户配置）；8 个 settings 单测 |
 | Mimosa 深度扫描（R1） | `pass` | scan-2026-08-10T16-40-17.470Z-31df73e0a37d（deep 深度）：`findingCount=0`、`hypotheses=[]`、487 包 0 漏洞（`matchedAdvisories=0`）、`dependencySummary.completion=completed`；`evidenceBoundary=static_only_no_runtime_execution` / `verdictEffect=none`。静态分析非运行时验证，不宣称项目安全 |
-| Mimosa 深度扫描（R2） | `warn` | R2 期间 git commit hook 多次报告不完整结论（`library_source_unavailable` / `callgraph_fact_partial` / `library_source_limit_exceeded`）。按兼容策略继续合并，**不宣称项目安全**。需尽快重新运行完整 Mimosa 密封扫描（见 §11 问题记录 R2-01） |
+| Mimosa 深度扫描（R2） | `pass` | scan-2026-08-10T21-49-17.114Z-3e0a1b2d600e（deep 深度）：`findingCount=0`、`hypotheses=[]`、487 包 0 漏洞（`matchedAdvisories=0`）、`dependencySummary.completion=completed`；`evidenceBoundary=static_only_no_runtime_execution` / `verdictEffect=none`。R2 commit hook 阶段的不完整结论（`library_source_unavailable` 等）已由本次完整密封扫描消除——R2 全量代码在 Mimosa 密封边界内得到完整扫描，0 findings |
 
 ## 7. 数据与迁移审计
 
@@ -157,7 +157,7 @@
 | `info` | T54 旧 `general-mask` 规则的 DB 行（含用户编辑过的 template JSON）在升级时被 `cleanup_deprecated_rules` 删除 | v1.1.3 未发布，dev 库无生产数据，可接受；用户需在 simple-mask 或 segment-mask 重新配置 | `info` |
 | `info` | T55c 地址码仅校验长度 + 校验码（不查行政区划表） | 用户决策，防与现实身份证号关联；符合隐私要求 | `info` |
 | `info` | T57 `invalidReasons` 不写入 sheet（用户要求不新增列） | 失败原因仅在 IPC 返回供前端 summary 显示 | `info` |
-| `warn` (R2-01) | R2 期间 Mimosa commit hook 报告不完整结论（`library_source_unavailable` / `callgraph_fact_partial` / `library_source_limit_exceeded`） | 需尽快重新运行完整 Mimosa 密封扫描 | `warn`（非阻塞，但安全声明降级为"不宣称项目安全"） |
+| `warn` (R2-01) | R2 期间 Mimosa commit hook 报告不完整结论（`library_source_unavailable` / `callgraph_fact_partial` / `library_source_limit_exceeded`） | 已重新运行完整 Mimosa 密封扫描（scan-2026-08-10T21-49-17.114Z-3e0a1b2d600e，deep）：0 findings / 487 包 0 漏洞 | `pass`（已修复，R2 全量代码在密封边界内完整扫描） |
 | `info` (R2-02) | T59 `scan_regex_matched_row_ids` 仍为"先 SQL 取全部候选到内存，再 Rust 侧 is_match" | 对万级行千级列 sheet 内存可能较高，但优于原 N+1；后续可考虑 SQL 侧 regex 或分页式候选扫描 | `info`（已知边界，非阻塞） |
 | `info` (R2-03) | 前端 chunk >500kB 警告（antd 既有，非本轮引入） | 既有警告，后续可考虑 manualChunks 优化 | `info` |
 
@@ -186,9 +186,9 @@
 | 版本号一致性（4 处） | pass（1.1.3） |
 | schema 迁移 | SCHEMA_VERSION=5（v4→v5 加 params 列，幂等） |
 | SQL 参数绑定 | pass（55 处 `params![]`，0 处 `format!` SQL 拼接） |
-| Mimosa 深度扫描 | R1：0 findings / 487 包 0 漏洞（静态分析）；R2：commit hook 不完整结论，需重跑（warn） |
+| Mimosa 深度扫描 | R1：0 findings / 487 包 0 漏洞（静态分析）；R2：0 findings / 487 包 0 漏洞（密封扫描重跑，R2 commit hook 不完整结论已消除） |
 
-**门禁裁决**：无未修复的 critical/major 问题。全部 `info` 项均为非阻塞已知简化或已知边界，已记录留待后续版本优化。R2-01（Mimosa 不完整结论）为 `warn` 级，按兼容策略继续合并但安全声明降级为"不宣称项目安全"，需尽快重新运行完整 Mimosa 密封扫描。GUI 端到端交互验收（E75~E78）属浏览器自动化增量轮次，不阻塞发布。**Mimosa 深度扫描**：R1（scan-2026-08-10T16-40-17.470Z-31df73e0a37d）0 findings、487 包 0 漏洞；R2 期间 commit hook 不完整结论，需重跑。静态分析非运行时验证，不宣称项目安全。**结论推进至 `qa_passed`**（R2 安全声明降级待 Mimosa 重跑后恢复）。
+**门禁裁决**：无未修复的 critical/major 问题。全部 `info` 项均为非阻塞已知简化或已知边界，已记录留待后续版本优化。R2-01（Mimosa 不完整结论）已通过完整密封扫描重跑消除（scan-2026-08-10T21-49-17.114Z-3e0a1b2d600e，0 findings / 487 包 0 漏洞），安全声明恢复为"R1 + R2 双轮 Mimosa 深度扫描均 0 findings"。GUI 端到端交互验收（E75~E78）属浏览器自动化增量轮次，不阻塞发布。**Mimosa 深度扫描**：R1（scan-2026-08-10T16-40-17.470Z-31df73e0a37d）0 findings、487 包 0 漏洞；R2（scan-2026-08-10T21-49-17.114Z-3e0a1b2d600e）0 findings、487 包 0 漏洞。静态分析非运行时验证，不宣称项目安全。**结论推进至 `qa_passed`**。
 
 **发布前置门禁**（[`04-版本标准.md`](../../04-版本标准.md) §3）满足：静态 + 单元测试 + 前端构建全绿 + 版本一致性 + schema 迁移幂等 + 文档收口。CI 构建（四目标矩阵）待 git tag `v1.1.3` 触发。
 
