@@ -88,8 +88,9 @@ pub async fn import_file(
     let reader = datasource::detect_format(&path).map_err(|e| e.to_string())?;
     let dataset = reader.read().map_err(|e| e.to_string())?;
     let headers = dataset.headers;
-    // row_count 包含表头行（与 DB cells 行数一致：1 header + N data）。
-    let row_count = (dataset.rows.len() + 1) as u32;
+    // T62：row_count = 数据行数（不含表头行），与 count_rows / PageData.total 口径一致。
+    // 表头仍写入 DB row_idx=0，只是不计入 row_count。
+    let row_count = dataset.rows.len() as u32;
 
     // 2. 文件名 stem 作为 session/sheet 名。
     let file_name = std::path::Path::new(&path)
@@ -167,7 +168,8 @@ pub async fn import_file(
 /// 分页查询 Sheet 数据。
 ///
 /// `db.query_cells` → 按 `row_idx` 分组为 `Vec<Vec<Option<String>>>`；
-/// headers 从首行 cell（row_idx=0）推导。
+/// T62：表头通过 `query_row_cells(sheet_id, 0)` 单独获取，`query_cells`
+/// 已排除表头行，返回的 cells 即纯数据行。
 #[tauri::command]
 pub async fn get_sheet_data(
     sheet_id: i64,
@@ -180,23 +182,14 @@ pub async fn get_sheet_data(
         .map_err(|e| e.to_string())?;
     let total = db.count_rows(sheet_id).map_err(|e| e.to_string())?;
 
-    // headers：从 row_idx=0 的 cell value 取（import_file 写入时首行即表头值）。
-    // 先尝试从本页取 row_idx=0；若本页不含首行（page>1），单独查首页首行。
-    let mut headers: Vec<String> = cells
+    // T62：表头单独读取 row_idx=0，不再从分页结果里提取表头。
+    let header_cells = db.query_row_cells(sheet_id, 0).map_err(|e| e.to_string())?;
+    let mut headers: Vec<(u32, String)> = header_cells
         .iter()
-        .filter(|c| c.row_idx == 0)
-        .map(|c| c.value.clone().unwrap_or_default())
+        .map(|c| (c.col_idx, c.value.clone().unwrap_or_default()))
         .collect();
-    if headers.is_empty() {
-        let first_page = db
-            .query_cells(sheet_id, 1, page_size.max(1))
-            .map_err(|e| e.to_string())?;
-        headers = first_page
-            .iter()
-            .filter(|c| c.row_idx == 0)
-            .map(|c| c.value.clone().unwrap_or_default())
-            .collect();
-    }
+    headers.sort_by_key(|(col, _)| *col);
+    let headers: Vec<String> = headers.into_iter().map(|(_, v)| v).collect();
     // 按 col_idx 排序对齐（query_cells 已 ASC，这里稳定）。
     let col_count = headers.len().max(1);
 
@@ -210,12 +203,9 @@ pub async fn get_sheet_data(
             .push((c.col_idx, c.value.clone()));
     }
 
-    // 行内按 col_idx 填充；缺列补 None；跳过表头行（row_idx=0）。
+    // 行内按 col_idx 填充；缺列补 None。T62：query_cells 已排除表头，无需再跳。
     let mut rows: Vec<Vec<Option<String>>> = Vec::with_capacity(grouped.len());
-    for (row_idx, mut cells_row) in grouped {
-        if row_idx == 0 {
-            continue;
-        }
+    for (_row_idx, mut cells_row) in grouped {
         cells_row.sort_by_key(|(col, _)| *col);
         let mut row = vec![None; col_count];
         for (col, value) in cells_row {

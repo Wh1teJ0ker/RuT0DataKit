@@ -464,9 +464,12 @@ export function toRowObjects(rawRows, headers, sheetId, page = 1, pageSize = PAG
  * 导出前一次性拉取 Sheet 全表数据（不依赖当前页 sheet.rows）。
  *
  * 修复 BUG：原导出只读 sheet.rows（仅当前页 ≤50 行），>50 行数据缺失表现为空白。
- * 后端 get_sheet_data 的 SQL `LIMIT page_size OFFSET offset` 接受任意 page_size，
- * 传 page_size = sheet.total（含表头行）即可一次取回所有数据行（后端 data.rs 跳过
- * row_idx=0 表头行）。无需新增 IPC 或改 DB schema。
+ * 后端 get_sheet_data 的 SQL `LIMIT page_size OFFSET offset` 接受任意 page_size。
+ *
+ * T62：count_rows / query_cells 已统一排除 row_idx=0 表头行，sheet.total 即
+ * 数据行数；传 page_size = sheet.total 恰好覆盖全部数据行（表头由 get_sheet_data
+ * 通过 query_row_cells(sheet_id, 0) 单独返回，不占用数据页行槽）。无需新增 IPC
+ * 或改 DB schema。
  *
  * @param {{id: number, total?: number, rows?: Array<object>}} sheet
  * @returns {Promise<{headers: string[], rows: Array<object>}>} 全表 antd 行对象
