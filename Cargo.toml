@@ -19,5 +19,5 @@ repository = "https://github.com/Wh1teJ0ker/RuT0DataKit"
 [workspace.dependencies]
 ruT0-data-kit-core = { path = "crates/core" }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
 thiserror = "1"
