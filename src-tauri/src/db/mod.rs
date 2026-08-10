@@ -1605,7 +1605,7 @@ mod tests {
         let (_dir, mgr) = open();
         let sid = mgr.create_session("s", None, "csv", 0).unwrap();
         let shid = mgr.create_sheet(sid, "Sheet1", 0).unwrap();
-        // row_idx 0..5（6 行：0=表头，1..5=4 数据行）。
+        // row_idx 0..5（5 行：0=表头，1..5=4 数据行）。
         let cells: Vec<Cell> = (0..5u32)
             .map(|i| Cell {
                 sheet_id: shid,
