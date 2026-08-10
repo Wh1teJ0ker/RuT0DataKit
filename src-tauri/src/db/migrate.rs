@@ -17,7 +17,13 @@ const V3: i64 = 3;
 const V4: i64 = 4;
 const V5: i64 = 5;
 
-/// Reads the current database `schema_version`; returns `None` for a new DB.
+/// Reads the current database `schema_version`.
+///
+/// Returns `Ok(None)` only when the `app_settings` table is absent, which means
+/// the database is brand new and may be bootstrapped safely. When `app_settings`
+/// exists but the `schema_version` row is missing, NULL, or non-integer, the
+/// metadata is corrupt/unknown and this returns an error so the caller backs up
+/// and rejects startup instead of silently bootstrapping over existing data.
 pub fn read_schema_version(conn: &Connection) -> Result<Option<i64>, DbError> {
     let row_count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='app_settings'",
@@ -28,6 +34,9 @@ pub fn read_schema_version(conn: &Connection) -> Result<Option<i64>, DbError> {
         return Ok(None);
     }
 
+    // app_settings exists; the schema_version row must be present and parseable.
+    // A missing row, NULL value, or non-integer value means the database is not
+    // brand new and its real schema is unknown, so it must NOT be bootstrapped.
     let value: Option<String> = conn
         .query_row(
             "SELECT value FROM app_settings WHERE key='schema_version'",
@@ -36,7 +45,16 @@ pub fn read_schema_version(conn: &Connection) -> Result<Option<i64>, DbError> {
         )
         .ok()
         .flatten();
-    Ok(value.and_then(|value| value.parse::<i64>().ok()))
+    match value {
+        Some(raw) => raw.parse::<i64>().map(Some).map_err(|_| {
+            DbError::Migration(format!(
+                "app_settings.schema_version is present but not an integer: {raw:?}"
+            ))
+        }),
+        None => Err(DbError::Migration(
+            "app_settings table exists but schema_version row is missing or NULL".into(),
+        )),
+    }
 }
 
 fn write_schema_version(conn: &Connection, version: i64) -> Result<(), DbError> {
@@ -142,7 +160,19 @@ fn backup_database(db_path: &Path) -> Result<PathBuf, DbError> {
 /// newer than this application, or otherwise unsupported, is copied to a backup and left
 /// unchanged before startup is rejected.
 pub fn migrate(db_path: &Path, conn: &Connection) -> Result<String, DbError> {
-    let current = read_schema_version(conn)?;
+    let current = match read_schema_version(conn) {
+        Ok(value) => value,
+        Err(error) => {
+            // app_settings exists but schema_version is missing/NULL/non-integer:
+            // the database is not brand new and its real schema is unknown, so
+            // back it up unchanged and reject startup (non-destructive).
+            let backup = backup_database(db_path)?;
+            return Err(DbError::Migration(format!(
+                "{error}; backed up unchanged database to {}",
+                backup.display()
+            )));
+        }
+    };
     match current {
         None => {
             bootstrap(conn)?;
@@ -369,6 +399,127 @@ mod tests {
     }
 
     #[test]
+    fn absent_schema_version_row_is_backed_up_and_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("ruT0datakit.db");
+        let conn = Connection::open(&db_path).unwrap();
+        // app_settings table exists but the schema_version row is absent.
+        conn.execute_batch("CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT);")
+            .unwrap();
+        conn.execute(
+            "INSERT INTO app_settings(key, value) VALUES('unrelated', 'value')",
+            [],
+        )
+        .unwrap();
+
+        let error = migrate(&db_path, &conn).unwrap_err();
+
+        assert!(
+            matches!(error, DbError::Migration(ref msg) if msg.contains("schema_version row is missing or NULL"))
+        );
+        // schema_version row still absent -> read_schema_version keeps rejecting.
+        assert!(read_schema_version(&conn).is_err());
+
+        let backups: Vec<PathBuf> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("ruT0datakit.db.bak."))
+            })
+            .collect();
+        assert_eq!(backups.len(), 1);
+    }
+
+    #[test]
+    fn null_schema_version_is_backed_up_and_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("ruT0datakit.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch("CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT);")
+            .unwrap();
+        conn.execute(
+            "INSERT INTO app_settings(key, value) VALUES('schema_version', NULL)",
+            [],
+        )
+        .unwrap();
+
+        let error = migrate(&db_path, &conn).unwrap_err();
+
+        assert!(
+            matches!(error, DbError::Migration(ref msg) if msg.contains("schema_version row is missing or NULL"))
+        );
+        assert!(read_schema_version(&conn).is_err());
+
+        let backups: Vec<PathBuf> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("ruT0datakit.db.bak."))
+            })
+            .collect();
+        assert_eq!(backups.len(), 1);
+    }
+
+    #[test]
+    fn non_integer_schema_version_is_backed_up_and_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("ruT0datakit.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch("CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT);")
+            .unwrap();
+        conn.execute(
+            "INSERT INTO app_settings(key, value) VALUES('schema_version', 'not-a-number')",
+            [],
+        )
+        .unwrap();
+
+        let error = migrate(&db_path, &conn).unwrap_err();
+
+        assert!(matches!(error, DbError::Migration(ref msg) if msg.contains("not an integer")));
+        assert!(read_schema_version(&conn).is_err());
+
+        let backups: Vec<PathBuf> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("ruT0datakit.db.bak."))
+            })
+            .collect();
+        assert_eq!(backups.len(), 1);
+    }
+
+    #[test]
+    fn genuinely_empty_database_is_bootstrapped_not_backed_up() {
+        // A file with no app_settings table at all is brand new -> bootstrap,
+        // not the backup-and-reject path.
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("ruT0datakit.db");
+        let conn = Connection::open(&db_path).unwrap();
+
+        let note = migrate(&db_path, &conn).unwrap();
+
+        assert!(note.contains("bootstrapped"));
+        assert_eq!(read_schema_version(&conn).unwrap(), Some(SCHEMA_VERSION));
+
+        let backups: Vec<PathBuf> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("ruT0datakit.db.bak."))
+            })
+            .collect();
+        assert!(backups.is_empty());
+    }
+
+    #[test]
     fn each_step_records_its_explicit_target_version() {
         let conn = Connection::open_in_memory().unwrap();
         build_v1_db(&conn);
@@ -443,6 +594,9 @@ mod tests {
         let db_path = dir.path().join("ruT0datakit.db");
         let conn = Connection::open(&db_path).unwrap();
         build_v1_db(&conn);
+        // Block v1->v2 by pre-creating an incompatible `rules` view. The very
+        // first migration step fails, so this asserts rollback of a failed
+        // first step. The test below covers rollback after a successful step.
         conn.execute_batch("CREATE VIEW rules AS SELECT 'placeholder' AS kind;")
             .unwrap();
 
@@ -451,6 +605,46 @@ mod tests {
         assert!(matches!(error, DbError::Sqlite(_)));
         assert_eq!(read_schema_version(&conn).unwrap(), Some(V1));
         assert!(!table_exists(&conn, "rules"));
+        assert_legacy_data_is_readable(&conn);
+    }
+
+    /// A failing step *after* an earlier successful step must roll back both the
+    /// schema and the version changes introduced by the successful step.
+    ///
+    /// Setup: a v1 fixture plus a pre-created table named `idx_cells_sheet_col`.
+    /// v1->v2 (rules table + `idx_rules_kind` index) succeeds, then v2->v3 fails
+    /// because its `CREATE INDEX IF NOT EXISTS idx_cells_sheet_col ON cells(...)`
+    /// statement hits SQLite's "there is already a table named
+    /// idx_cells_sheet_col" error. The transaction rolls back; the v1 schema,
+    /// version, and fixture data must all be restored.
+    #[test]
+    fn rollback_restores_prior_state_after_partial_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("ruT0datakit.db");
+        let conn = Connection::open(&db_path).unwrap();
+        build_v1_db(&conn);
+        // Pre-create a table whose name collides with the index that v2->v3
+        // tries to create. v1->v2 does not touch this name, so it succeeds
+        // inside the migration transaction; v2->v3 then fails.
+        conn.execute_batch("CREATE TABLE idx_cells_sheet_col(x INTEGER);")
+            .unwrap();
+        // Snapshot the v1 state we expect to be restored after rollback.
+        assert_eq!(read_schema_version(&conn).unwrap(), Some(V1));
+        assert!(!table_exists(&conn, "rules"));
+
+        let error = migrate(&db_path, &conn).unwrap_err();
+
+        // v2->v3 fails on the name collision; the whole transaction rolls back.
+        assert!(matches!(error, DbError::Sqlite(_)));
+
+        // Version restored to v1 (not the intermediate v2 the successful step wrote).
+        assert_eq!(read_schema_version(&conn).unwrap(), Some(V1));
+        // The rules table added by v1->v2 is rolled back (absent).
+        assert!(!table_exists(&conn, "rules"));
+        // The pre-existing collision table is still there (created outside the
+        // migration transaction).
+        assert!(table_exists(&conn, "idx_cells_sheet_col"));
+        // Original fixture data fully restored.
         assert_legacy_data_is_readable(&conn);
     }
 

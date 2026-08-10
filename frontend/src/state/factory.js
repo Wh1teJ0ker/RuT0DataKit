@@ -66,7 +66,9 @@ export function createSheetFromImport(result, pageSize = PAGE_SIZE) {
     page: 1,
     pageSize,
     columnOrder: [...headers],
-    columnVisibility: headers.reduce((acc, h) => ({ ...acc, [h]: true }), {}),
+    // 单遍构造（Object.fromEntries），避免 reduce + spread 的 O(C²) 复制；
+    // 重复 header 后写覆盖前写，语义与原 reduce 一致。
+    columnVisibility: Object.fromEntries(headers.map((h) => [h, true])),
     selection: { selectedRowKeys: [], lastSelectedIndex: null },
     statusHighlights: {},
     searchHits: {}, // v1.1.1 搜索命中高亮（默认空）
@@ -91,7 +93,9 @@ export function createSheetFromParse(result, pageSize = PAGE_SIZE) {
     page: 1,
     pageSize,
     columnOrder: [...headers],
-    columnVisibility: headers.reduce((acc, h) => ({ ...acc, [h]: true }), {}),
+    // 单遍构造（Object.fromEntries），避免 reduce + spread 的 O(C²) 复制；
+    // 重复 header 后写覆盖前写，语义与原 reduce 一致。
+    columnVisibility: Object.fromEntries(headers.map((h) => [h, true])),
     selection: { selectedRowKeys: [], lastSelectedIndex: null },
     statusHighlights: {},
     searchHits: {},

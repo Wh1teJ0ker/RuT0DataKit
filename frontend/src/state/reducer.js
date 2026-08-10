@@ -134,9 +134,10 @@ export function reducer(state, action) {
             page: action.payload.page ?? s.page,
             pageSize: action.payload.pageSize ?? s.pageSize,
             columnOrder: [...headers],
-            columnVisibility: headers.reduce(
-              (acc, h) => ({ ...acc, [h]: s.columnVisibility?.[h] !== false }),
-              {}
+            // 单遍构造（Object.fromEntries），避免 reduce + spread 的 O(C²) 复制；
+            // 保留 s.columnVisibility 既有值，未配置默认 true（与旧 reduce 语义一致）。
+            columnVisibility: Object.fromEntries(
+              headers.map((h) => [h, s.columnVisibility?.[h] !== false])
             ),
           };
         }),
