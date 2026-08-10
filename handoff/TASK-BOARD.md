@@ -1,7 +1,7 @@
 # v1.1.3 TASK-BOARD
 
 > 版本：v1.1.3
-> 状态：qa_passed（T48~T51 verified_complete + T52~T57 dev_complete + E2E 全绿 + Release QA 审计通过，结论 qa_passed，见 `docs/qa/versions/1.1.3/QA-审计报告.md`）
+> 状态：qa_passed（T48~T51 verified_complete + T52~T57 dev_complete + R1 Release QA 审计通过；R2 架构/性能/安全审计 T59~T66 全部 verified_complete + E2E 全绿，见 `docs/qa/versions/1.1.3/QA-审计报告.md` §R2）
 > 前置：v1.1.2 `qa_passed` + tag `v1.1.2` 已发布
 
 ## 任务 DAG
@@ -77,6 +77,19 @@ T54 拆分整段脱敏与分段脱敏为两条独立规则
 | T53 | 反向脱敏模板（掩码首尾、保留中间） | dev_complete | T51 | handoff/TASK-T53-HANDOFF.md |
 | T54 | 拆分整段脱敏与分段脱敏为两条独立规则 | dev_complete | T53 | handoff/TASK-T54-HANDOFF.md |
 
+## R2 架构/性能/安全审计任务（T59~T66）
+
+| 任务 | 标题 | 状态 | 依赖 | 交接文件 |
+|------|------|------|------|----------|
+| T59 | 搜索行级 N+1 消除 + 正则重扫消除 | verified_complete | — | handoff/TASK-T59-REPORT.md |
+| T60 | 导入单次解析（Reader::read() 一次性产出 headers+rows） | verified_complete | — | — |
+| T61 | validate_column IPC 契约对齐 | verified_complete | — | — |
+| T62 | 分页 total 语义统一排除 row_idx=0 表头行 | verified_complete | — | — |
+| T63 | 翻页保留 columnOrder + statusHighlights | verified_complete | — | — |
+| T64 | 翻页/搜索陈旧响应隔离（generation token） | verified_complete | — | — |
+| T65 | 前端 O(C²) 重复 spread 消除 | verified_complete | — | — |
+| T66 | 开发期安全：dev server localhost-only + settings.json 原子写 + 损坏报错 | verified_complete | — | — |
+
 ## 端到端验收项
 
 - [x] E1: `cargo fmt --check` + `cargo clippy --workspace --all-targets -- -D warnings` + `cargo test --workspace` 全绿（83 个单测，含 masker 模板分支 + 预设参数 + 空模板透传 + DB update_rule_template 持久化 + cleanup_deprecated_rules 清理）
@@ -124,10 +137,24 @@ T54 拆分整段脱敏与分段脱敏为两条独立规则
 - [x] E43（T54）：前端 MaskPanel 脱敏规则下拉 3 条 mask 规则（name-mask + simple-mask + segment-mask）；选 simple-mask → 预设下拉 + 7 个 Simple 参数框（含反向脱敏 Switch），无「模板类型」Select
 - [x] E44（T54）：前端 RulesPanel 选 segment-mask → 显示分隔符 + 段配置，无「模板类型」Select，无 Simple 预设；重置按钮按 selected.id 回退到对应空模板
 
+### R2 审计验收（T59~T66）
+
+- [x] E79（R2）：cargo fmt --check + cargo clippy --workspace --all-targets -- -D warnings + cargo test --workspace 全绿（282 passed / 3 ignored / 0 failed = src-tauri lib 123 + core 148 + Doc-tests 11）
+- [x] E80（R2）：pnpm --dir frontend build 通过（3083 modules，2.46s）
+- [x] E81（T59）：`scan_regex_matched_row_ids` 单次扫描 = 旧 `search_matched_row_ids_regex` + `count_matched_rows_regex` 两步结果（7 个回归测试）
+- [x] E82（T59）：`query_row_cells_batch` 批量取 cells = 逐行 `query_row_cells`（含 >500 行分块）
+- [x] E83（T60）：`Reader::read()` 一次性产出 `Dataset { headers, rows }`，无二次遍历
+- [x] E84（T61）：`validate_column` 返回裸 `Vec<RowValidation>` JSON 数组，前端 `ValidatePanel.jsx` 直接消费（无 `res.results`），2 个契约回归测试
+- [x] E85（T62）：`count_rows` SQL 加 `WHERE row_idx > 0`，分页 total = 纯数据行数（不含表头行）
+- [x] E86（T63）：翻页后 `columnOrder` 保留（用户拖拽重排不丢失）+ `statusHighlights` 回填（行状态高亮不丢失）
+- [x] E87（T64）：快速连续翻页时陈旧响应静默丢弃（不覆盖最新状态）；快速连续搜索时陈旧搜索结果不覆盖最新结果 + 不清 loading
+- [x] E88（T65）：`columnVisibility` 构造 O(C)（`Object.fromEntries` 单遍），无 `reduce + spread` O(C²) 模式
+- [x] E89（T66）：Vite dev server 默认 `host: 'localhost'`（不绑所有接口）；settings.json 原子写（NamedTempFile + persist）；JSON 损坏返回 `SettingsError::Corrupt` 不静默回退；8 个 settings 单测
+
 ## Release QA 门禁
 
-- required: true（已完成 Release QA 审计）
+- required: true（已完成 R1 + R2 Release QA 审计）
 - report: docs/qa/versions/1.1.3/QA-审计报告.md（已生成，结论 qa_passed）
-- audit_scope: 需求覆盖 / 端到端流程 / 构建与测试 / 代码质量 / 安全与隐私 / 数据与迁移 / 依赖与配置 / 文档一致性 / 回归检查 / 发布门禁
-- conclusion: qa_passed（250 单测 + 11 doc-tests + 3083 modules 构建 + 4 处版本一致 + SCHEMA_VERSION=5 幂等迁移 + 55 处 SQL 参数绑定 + Mimosa 0 findings）
-- 安全约束：Mimosa 深度扫描已完成（scan-2026-08-10T16-40-17.470Z-31df73e0a37d，0 findings / 487 包 0 漏洞）；静态分析非运行时验证，不宣称项目安全，但无已识别 finding 阻碍发布
+- audit_scope: 需求覆盖 / 端到端流程 / 构建与测试 / 代码质量 / 安全与隐私 / 数据与迁移 / 依赖与配置 / 文档一致性 / 回归检查 / 发布门禁（R1）+ R2 架构/性能/安全审计（T59~T66）
+- conclusion: qa_passed（R1: 250 单测 + 11 doc-tests + 3083 modules 构建 + 4 处版本一致 + SCHEMA_VERSION=5 幂等迁移 + 55 处 SQL 参数绑定 + Mimosa 0 findings；R2: 282 passed / 3 ignored + E2E 全绿 + clippy -D warnings 零告警）
+- 安全约束：Mimosa R1 深度扫描已完成（scan-2026-08-10T16-40-17.470Z-31df73e0a37d，0 findings / 487 包 0 漏洞）；R2 commit 前 Mimosa hook 报告 `library_source_unavailable` / `callgraph_fact_partial` / `library_source_limit_exceeded`（不完整结论），按兼容策略继续合并但**不宣称项目安全**，待重新运行完整 Mimosa 密封扫描（见 QA 报告 §R2-01）

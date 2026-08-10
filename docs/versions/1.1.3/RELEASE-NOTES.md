@@ -1,7 +1,7 @@
 # RuT0DataKit v1.1.3
 
 > Git tag：`v1.1.3`（待推送）
-> 状态：qa_passed（T48~T57 全部完成 + Release QA 审计通过，见 [`docs/qa/versions/1.1.3/QA-审计报告.md`](../../qa/versions/1.1.3/QA-审计报告.md)）
+> 状态：qa_passed（T48~T57 全部完成 + R1 Release QA 审计通过；R2 架构/性能/安全审计 T59~T66 全部 verified_complete + E2E 全绿，见 [`docs/qa/versions/1.1.3/QA-审计报告.md`](../../qa/versions/1.1.3/QA-审计报告.md) §R2）
 > 前置：v1.1.2 已发布 tag `v1.1.2`
 
 ## 这是什么
@@ -32,6 +32,12 @@ RuT0DataKit v1.1.3 在 v1.1.2 的 `SimpleMasker`（仅"保留首尾各 1 字符"
 
 - **mask_char 优先级统一**：`replacement`（脱敏面板输入框）作临时覆盖，`template.maskChar` 作模板内置默认，`*` 作兜底。用户输入 `#` → 身份证脱敏输出 `110101########1234`；不输入则用模板 `*`
 - **DB schema 迁移链式**：v2 DB 走 `v2→v3→v4` 链式迁移（先补 `before_snapshot_json` 列 + `idx_cells_sheet_col` 索引，再补 `template` 列），v3 DB 走 `v3→v4` 单步迁移；v1 DB 仍走备份重建
+- **R2 搜索行级 N+1 消除（T59）**：`search_rows` 原对每个命中的 row_idx 单独执行 `SELECT`（N+1）+ `count_matched_rows_regex` 通过 `u32::MAX` 范围重扫全表。抽取共享单次扫描核心 `scan_regex_matched_row_ids`（一次 `LIKE '%' ESCAPE '\' 取全部候选 cell + Rust 侧逐 cell `regex::is_match`），`search_matched_row_ids_regex` / `count_matched_rows_regex` / `search_matched_rows_regex_with_total` 全部复用同一逻辑，total 与分页结果来自同一次扫描。新增 `query_row_cells_batch`（IN 子句按 500 分块规避 `SQLITE_MAX_VARIABLE_NUMBER`）。净效果 +73 / -152 行，7 个回归测试断言等价
+- **R2 导入单次解析（T60）**：`Reader::read()` 改为一次性产出 `Dataset { headers, rows }`，消除"先拿 headers 再二次遍历拿 rows"的重复 I/O。CsvReader / XlsxReader / JsonReader / JsonlReader / TxtReader / SqlReader / PcapReader 全部适配
+- **R2 分页 total 语义统一（T62）**：`count_rows` SQL 加 `WHERE row_idx > 0`，`query_cells` offset 语义对齐（page=1 从 row_idx=1 起）。分页 total = 纯数据行数（不再含表头行 +1 误差）
+- **R2 翻页状态保留（T63）**：`SET_SHEET_DATA` reducer 保留用户拖拽重排的 `columnOrder`（双向 includes + 长度等价判定 set equality）+ `statusHighlights` 按 `${sheetId}-${page}-${i}` key 回填
+- **R2 翻页/搜索陈旧响应隔离（T64）**：App.jsx 引入 `pageReqGenRef`（按 sheetId 分桶单调递增 token）+ `isStale` 检查 → 陈旧响应静默丢弃；DataTable.jsx 引入 `searchGenRef`（单一计数器）→ 搜索陈旧结果不覆盖最新 + 不清 loading
+- **R2 前端 O(C²) 消除（T65）**：`SET_SHEET_DATA` / `createSheetFromImport` / `createSheetFromParse` 的 `columnVisibility` 构造从 `reduce + [...acc, ...]`（O(C²)）改为单遍 `Object.fromEntries`（O(C)）
 
 ## 下载
 
@@ -46,9 +52,9 @@ RuT0DataKit v1.1.3 在 v1.1.2 的 `SimpleMasker`（仅"保留首尾各 1 字符"
 ## 验证
 
 - `cargo fmt --check`：通过
-- `cargo clippy --workspace -- -D warnings`：通过
-- `cargo test --workspace`：全绿（80 个单测，含 masker 模板分支 + 预设参数 + 空模板透传 + DB update_rule_template 持久化）
-- `pnpm --prefix frontend build`：通过
+- `cargo clippy --workspace --all-targets -- -D warnings`：通过（R2 额外修复 5 处 lint：`unnecessary_get_then_check` / `field_reassign_with_default` ×3 / `type_complexity`）
+- `cargo test --workspace`：全绿（282 passed / 3 ignored / 0 failed = src-tauri lib 123 + core 148 + Doc-tests 11；含 R2 新增 7 个搜索回归测试 + 2 个 IPC 契约测试 + 8 个 settings 单测）
+- `pnpm --prefix frontend build`：通过（3083 modules，2.46s）
 
 ## 已知限制
 
@@ -56,7 +62,8 @@ RuT0DataKit v1.1.3 在 v1.1.2 的 `SimpleMasker`（仅"保留首尾各 1 字符"
 - 身份证/手机/出生日期预设有 min_len=max_len guard，长度不匹配的输入原样返回（不脱敏）；银行卡预设无 len guard，任意长度均可脱敏
 - 出生日期脱敏按字符串长度处理（keep 8/0 + mask 2），不校验日期合法性
 - T49 删除了 v1.1.3 T48 的 4 条独立规则 id（idcard-mask/phone-mask/birthdate-mask/bankcard-mask），v1.1.3 用户若已保存这 4 条规则的 template 参数，升级后这 4 条规则会从 DB 消失（seed 不再注册），需改用 general-mask + 对应预设
-- Mimosa 深度扫描需在 commit 前重跑完整审计（v1.1.2 兼容策略延续）
+- **R2 安全审计 Mimosa 结论不完整**：R2 commit 前的 Mimosa hook 多次报告 `library_source_unavailable` / `callgraph_fact_partial` / `library_source_limit_exceeded`（不完整结论）。R1 完整密封扫描 0 findings（scan-2026-08-10T16-40-17.470Z-31df73e0a37d，487 包 0 漏洞），R2 按兼容策略继续合并但**不宣称项目安全**，待重新运行完整 Mimosa 密封扫描（见 QA 报告 §R2-01）
+- **R2 开发期 dev server 默认 localhost-only（T66）**：Vite dev server 默认 `host: 'localhost'`（不再 `host: true` 绑定所有接口），消除局域网暴露面；需从其它设备/容器访问时显式设置 `VITE_DEV_HOST=1`
 
 ## 升级
 
