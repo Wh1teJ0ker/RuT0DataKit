@@ -46,15 +46,20 @@ export default function ValidatePanel() {
     }
     setLoading(true);
     try {
-      const res = await validateColumn(sheet.id, column, ruleId);
+      // validate_column 返回 Vec<RowValidation>（直接是数组，不是 { results: [...] }）。
+      // rowIdx 是 DB 绝对行号（row_idx=0 是表头行，数据行从 1 开始），与
+      // reducer.APPLY_SEARCH_HITS 的换算保持一致：
+      //   pageInnerIdx = rowIdx - 1 - pageBase
+      //   rowKey = `${sheetId}-${page}-${pageInnerIdx}`
+      const results = await validateColumn(sheet.id, column, ruleId);
       const page = sheet.page || 1;
       const base = (page - 1) * (sheet.pageSize || 50);
       const rowStatuses = {};
       let failedCount = 0;
-      (res.results || []).forEach((r) => {
+      (Array.isArray(results) ? results : []).forEach((r) => {
         if (!r.passed) {
           failedCount += 1;
-          const i = r.rowIdx - base - 1;
+          const i = r.rowIdx - 1 - base;
           if (i >= 0) {
             rowStatuses[`${sheet.id}-${page}-${i}`] = "invalid";
           }
