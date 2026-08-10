@@ -741,7 +741,17 @@ pub fn validate_rows_to_two_sheets_inner(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("sheet {sheet_id} 不存在"))?;
 
-    // 分页读全部 cells。
+    // T62：表头通过 query_row_cells(sheet_id, 0) 单独读取（query_cells 已排除 row_idx=0）。
+    let header_cells = db.query_row_cells(sheet_id, 0).map_err(|e| e.to_string())?;
+    let mut header_pairs: Vec<(u32, String)> = header_cells
+        .iter()
+        .map(|c| (c.col_idx, c.value.clone().unwrap_or_default()))
+        .collect();
+    header_pairs.sort_by_key(|(col, _)| *col);
+    let headers: Vec<String> = header_pairs.into_iter().map(|(_, v)| v).collect();
+    let col_count = headers.len();
+
+    // 分页读全部 cells（T62：query_cells 只返回数据行，不含表头）。
     let total_rows = db.count_rows(sheet_id).map_err(|e| e.to_string())?;
     let page_size: u32 = 500;
     let pages = total_rows.div_ceil(page_size).max(1);
@@ -761,19 +771,6 @@ pub fn validate_rows_to_two_sheets_inner(
             .or_default()
             .push((c.col_idx, c.value));
     }
-
-    // headers：row_idx=0 的 cells 按 col_idx 排序取 value。
-    let headers: Vec<String> = grouped
-        .get(&0)
-        .map(|cells| {
-            let mut v = cells.clone();
-            v.sort_by_key(|(col, _)| *col);
-            v.into_iter()
-                .map(|(_, val)| val.unwrap_or_default())
-                .collect()
-        })
-        .unwrap_or_default();
-    let col_count = headers.len();
 
     // 字段 → col_idx 解析（找不到列 → 报错，避免静默跳过）。
     let resolve_col = |field: &str, name: &Option<String>| -> Result<Option<u32>, String> {
@@ -800,15 +797,13 @@ pub fn validate_rows_to_two_sheets_inner(
     let name_re = regex::Regex::new(r"^[\u4e00-\u9fa5]{2,4}$")
         .map_err(|e| format!("姓名正则编译失败: {e}"))?;
 
-    // 逐行校验。row_idx=0 是表头，跳过。
+    // 逐行校验。T62：query_cells 已排除表头，grouped 里不再有 row_idx=0。
     let mut valid_rows: Vec<Vec<Option<String>>> = Vec::new();
     let mut invalid_rows: Vec<Vec<Option<String>>> = Vec::new();
     let mut invalid_reasons: Vec<RowInvalidReason> = Vec::new();
 
     for (&row_idx, cells_row) in grouped.iter() {
-        if row_idx == 0 {
-            continue;
-        }
+        debug_assert!(row_idx > 0, "T62: query_cells should exclude header");
         // 行内按 col_idx 排序对齐到 col_count 列（缺列补 None）。
         let mut row_vals: Vec<Option<String>> = vec![None; col_count];
         let mut sorted_cells = cells_row.clone();

@@ -400,18 +400,15 @@ mod tests {
         assert_eq!(result.row_count, 2);
         assert_eq!(result.skipped, 0);
 
-        // 新 sheet 表头行：row_idx=0, col_idx=0..2。
-        let headers = db
-            .query_cells(result.new_sheet_id, 1, 100)
+        // T62：新 sheet 表头行通过 query_row_cells(sheet_id, 0) 取（query_cells 已排除表头）。
+        let headers: std::collections::BTreeMap<u32, String> = db
+            .query_row_cells(result.new_sheet_id, 0)
             .unwrap()
             .into_iter()
-            .filter(|c| c.row_idx == 0)
-            .collect::<Vec<_>>();
-        assert_eq!(headers.len(), 2);
-        let header_vals: Vec<String> = headers
-            .iter()
-            .map(|c| c.value.clone().unwrap_or_default())
+            .map(|c| (c.col_idx, c.value.clone().unwrap_or_default()))
             .collect();
+        assert_eq!(headers.len(), 2);
+        let header_vals: Vec<String> = headers.into_values().collect();
         assert!(header_vals.contains(&"a".to_string()));
         assert!(header_vals.contains(&"b".to_string()));
 

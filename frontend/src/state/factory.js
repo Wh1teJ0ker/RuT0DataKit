@@ -62,7 +62,7 @@ export function createSheetFromImport(result, pageSize = PAGE_SIZE) {
     name: result.name || `Sheet ${result.sheetId}`,
     headers,
     rows: [], // 由 SET_SHEET_DATA 填充首页
-    total: result.rowCount, // DB cell 行数（含表头行；前端展示去掉表头行）
+    total: result.rowCount, // T62：数据行数（不含表头行），与后端 count_rows / PageData.total 口径一致
     page: 1,
     pageSize,
     columnOrder: [...headers],
