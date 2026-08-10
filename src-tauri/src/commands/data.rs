@@ -84,13 +84,12 @@ pub async fn import_file(
     path: String,
     db: tauri::State<'_, crate::db::DbManager>,
 ) -> Result<ImportResult, String> {
-    // 1. 探测格式 + 读取全部记录（含表头行作为 row_idx=0）。
+    // 1. 探测格式 + 单次解析（headers + rows 一次性产出，不再重复 IO）。
     let reader = datasource::detect_format(&path).map_err(|e| e.to_string())?;
-    let headers = reader.headers().map_err(|e| e.to_string())?;
-    let records = reader.read_all().map_err(|e| e.to_string())?;
-
-    // row_count 包含表头行（与 DB cells 行数一致）。
-    let row_count = records.len() as u32;
+    let dataset = reader.read().map_err(|e| e.to_string())?;
+    let headers = dataset.headers;
+    // row_count 包含表头行（与 DB cells 行数一致：1 header + N data）。
+    let row_count = (dataset.rows.len() + 1) as u32;
 
     // 2. 文件名 stem 作为 session/sheet 名。
     let file_name = std::path::Path::new(&path)
@@ -113,8 +112,24 @@ pub async fn import_file(
         .map_err(|e| e.to_string())?;
 
     // 4. 分批 write_cells：每 5000 行一批 commit。
+    //    首行（row_idx=0）写表头值，其后为数据行。表头行由 headers 直接构造，
+    //    不再依赖 reader 二次产出，与单次解析语义对齐。
     let mut row_idx: u32 = 0;
-    for chunk in records.chunks(IMPORT_BATCH_ROWS) {
+    // 表头行单独成批（row_idx=0）。
+    let header_cells: Vec<Cell> = headers
+        .iter()
+        .enumerate()
+        .map(|(col_idx, h)| Cell {
+            sheet_id,
+            row_idx: 0,
+            col_idx: col_idx as u32,
+            value: Some(h.clone()).filter(|v| !v.is_empty()),
+        })
+        .collect();
+    db.write_cells(sheet_id, &header_cells)
+        .map_err(|e| e.to_string())?;
+    row_idx = row_idx.saturating_add(1);
+    for chunk in dataset.rows.chunks(IMPORT_BATCH_ROWS) {
         let mut cells: Vec<Cell> = Vec::with_capacity(chunk.len() * headers.len());
         for record in chunk {
             for (col_idx, key) in headers.iter().enumerate() {

@@ -17,7 +17,7 @@ use regex::Regex;
 use crate::error::{CoreError, CoreResult};
 use crate::model::Record;
 
-use super::Reader;
+use super::{Dataset, Reader};
 
 /// 识别到的日志格式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -223,31 +223,24 @@ impl LogReader {
 }
 
 impl Reader for LogReader {
-    fn read_all(&self) -> CoreResult<Vec<Record>> {
+    /// 单次解析：load() 一次性读全部行 + 探测格式，再产出 headers 与 rows。
+    fn read(&self) -> CoreResult<Dataset> {
         let (lines, fmt) = self.load()?;
-        let headers = match fmt {
+        let headers: Vec<String> = match fmt {
             LogFormat::ApacheCombined => APACHE_COMBINED_HEADERS,
             LogFormat::ApacheCommon => APACHE_COMMON_HEADERS,
             LogFormat::Syslog => SYSLOG_HEADERS,
             LogFormat::AppLog => APP_LOG_HEADERS,
             LogFormat::Fallback => FALLBACK_HEADERS,
-        };
-
-        let mut records: Vec<Record> = Vec::with_capacity(lines.len() + 1);
-
-        // 表头行：fields[h] = h
-        let mut h_fields = HashMap::new();
-        for h in headers {
-            h_fields.insert(h.to_string(), h.to_string());
         }
-        records.push(Record { fields: h_fields });
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
 
+        let mut rows: Vec<Record> = Vec::with_capacity(lines.len());
         for line in &lines {
             let mut fields = HashMap::new();
-
-            // raw_line 始终保留原始全文（所有格式通用）。
             let raw = line.as_str();
-
             match fmt {
                 LogFormat::ApacheCombined => {
                     if let Some(caps) = combined_re().captures(raw) {
@@ -265,7 +258,6 @@ impl Reader for LogReader {
                         fields.insert("http_referer".into(), caps[8].to_string());
                         fields.insert("http_user_agent".into(), caps[9].to_string());
                     }
-                    // 未命中的字段留空（HashMap::get → None → import_file 写 NULL）
                     fields.insert("raw_line".into(), raw.to_string());
                 }
                 LogFormat::ApacheCommon => {
@@ -316,18 +308,29 @@ impl Reader for LogReader {
                     fields.insert("raw_line".into(), raw.to_string());
                 }
                 LogFormat::Fallback => {
-                    // 单列 line（v1.1.2 之前行为）。
                     fields.insert("line".into(), raw.to_string());
                 }
             }
-
-            records.push(Record { fields });
+            rows.push(Record { fields });
         }
 
+        Ok(Dataset { headers, rows })
+    }
+
+    fn read_all(&self) -> CoreResult<Vec<Record>> {
+        let Dataset { headers, rows } = self.read()?;
+        let mut records: Vec<Record> = Vec::with_capacity(rows.len() + 1);
+        let mut h_fields = HashMap::new();
+        for h in &headers {
+            h_fields.insert(h.clone(), h.clone());
+        }
+        records.push(Record { fields: h_fields });
+        records.extend(rows);
         Ok(records)
     }
 
     fn headers(&self) -> CoreResult<Vec<String>> {
+        // 复用 load() 单次读取，不再二次打开文件。
         let (_, fmt) = self.load()?;
         let headers = match fmt {
             LogFormat::ApacheCombined => APACHE_COMBINED_HEADERS,

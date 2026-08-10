@@ -6,7 +6,7 @@ use crate::error::{CoreError, CoreResult};
 use crate::model::Record;
 
 use super::util::cell_to_string;
-use super::Reader;
+use super::{Dataset, Reader};
 
 /// XLSX 读取器。取首个工作表，首行作表头，其余行映射为 `Record`。
 pub struct XlsxReader {
@@ -20,7 +20,8 @@ impl XlsxReader {
 }
 
 impl Reader for XlsxReader {
-    fn read_all(&self) -> CoreResult<Vec<Record>> {
+    /// 单次解析：打开工作簿一次，首行作表头，其余行映射为 `Record`。
+    fn read(&self) -> CoreResult<Dataset> {
         let mut workbook = open_workbook_auto(&self.path)
             .map_err(|e| CoreError::DataSource(format!("xlsx open: {e}")))?;
         let sheet_name = workbook
@@ -28,59 +29,48 @@ impl Reader for XlsxReader {
             .first()
             .cloned()
             .ok_or_else(|| CoreError::DataSource("xlsx no sheet".into()))?;
-
         let range = workbook
             .worksheet_range(&sheet_name)
             .map_err(|e| CoreError::DataSource(format!("xlsx range: {e}")))?;
 
-        let mut rows = range.rows();
-        let mut records: Vec<Record> = Vec::new();
-
-        let headers: Option<Vec<String>> = rows
-            .next()
-            .map(|header_row| header_row.iter().map(cell_to_string).collect());
-
-        // 首行作为表头同时也是 row_idx=0 的 Record。
-        if let Some(h) = headers.as_ref() {
-            let mut fields = std::collections::HashMap::new();
-            for v in h {
-                fields.insert(v.clone(), v.clone());
+        let mut rows_iter = range.rows();
+        let headers: Vec<String> = match rows_iter.next() {
+            Some(header_row) => header_row.iter().map(cell_to_string).collect(),
+            None => {
+                return Ok(Dataset {
+                    headers: Vec::new(),
+                    rows: Vec::new(),
+                })
             }
-            records.push(Record { fields });
-        }
+        };
 
-        let header_ref = headers.as_deref();
-        for row in rows {
+        let mut rows: Vec<Record> = Vec::new();
+        for row in rows_iter {
             let mut fields = std::collections::HashMap::new();
             for (i, cell) in row.iter().enumerate() {
-                let key = header_ref
-                    .and_then(|h| h.get(i))
-                    .cloned()
-                    .unwrap_or_else(|| format!("col{}", i));
+                let key = headers.get(i).cloned().unwrap_or_else(|| format!("col{i}"));
                 let value = cell_to_string(cell);
                 fields.insert(key, value);
             }
-            records.push(Record { fields });
+            rows.push(Record { fields });
         }
 
+        Ok(Dataset { headers, rows })
+    }
+
+    fn read_all(&self) -> CoreResult<Vec<Record>> {
+        let Dataset { headers, rows } = self.read()?;
+        let mut records: Vec<Record> = Vec::with_capacity(rows.len() + 1);
+        let mut h_fields = std::collections::HashMap::new();
+        for h in &headers {
+            h_fields.insert(h.clone(), h.clone());
+        }
+        records.push(Record { fields: h_fields });
+        records.extend(rows);
         Ok(records)
     }
 
     fn headers(&self) -> CoreResult<Vec<String>> {
-        let mut workbook = open_workbook_auto(&self.path)
-            .map_err(|e| CoreError::DataSource(format!("xlsx open: {e}")))?;
-        let sheet_name = workbook
-            .sheet_names()
-            .first()
-            .cloned()
-            .ok_or_else(|| CoreError::DataSource("xlsx no sheet".into()))?;
-        let range = workbook
-            .worksheet_range(&sheet_name)
-            .map_err(|e| CoreError::DataSource(format!("xlsx range: {e}")))?;
-        let header_row = range
-            .rows()
-            .next()
-            .ok_or_else(|| CoreError::DataSource("xlsx empty sheet".into()))?;
-        Ok(header_row.iter().map(cell_to_string).collect())
+        Ok(self.read()?.headers)
     }
 }

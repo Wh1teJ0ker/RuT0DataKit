@@ -18,6 +18,7 @@
 use std::path::Path;
 
 use crate::error::{CoreError, CoreResult};
+use crate::model::Record;
 
 mod csv;
 mod json;
@@ -36,13 +37,53 @@ pub use sql::SqlReader;
 pub use txt::TxtReader;
 pub use xlsx::XlsxReader;
 
-/// 数据源读取器 trait。
-pub trait Reader: Send + Sync {
-    /// 读取全部记录（含表头行；表头行 `row_idx=0`）。
-    fn read_all(&self) -> CoreResult<Vec<crate::model::Record>>;
+/// 单次解析产出的数据集：稳定 `headers` + 数据行 `rows`。
+///
+/// `rows` 不含表头行；表头仅由 `headers` 字段表达。这与历史 `read_all`
+/// 返回「表头作为 row_idx=0」的语义不同，但 import_file 调用方据此分别
+/// 写入表头 cells 与数据 cells，避免重复解析。
+#[derive(Debug, Clone)]
+pub struct Dataset {
+    /// 列名（首次出现顺序，稳定）。
+    pub headers: Vec<String>,
+    /// 数据行（不含表头行）。
+    pub rows: Vec<Record>,
+}
 
-    /// 返回列名（首行）。
-    fn headers(&self) -> CoreResult<Vec<String>>;
+/// 数据源读取器 trait。
+///
+/// v1.1.4（T60）：新增 [`Reader::read`] 作为单次解析入口，同一会话内
+/// 同时产出 headers 与 rows，消除旧的 `headers() + read_all()` 双解析
+/// 路径。`headers()` 与 `read_all()` 保留为基于 `read()` 的默认实现，
+/// 兼容既有调用方与测试；新代码应直接使用 `read()`。
+pub trait Reader: Send + Sync {
+    /// 单次解析：读取表头与全部数据行（不含表头行）。
+    ///
+    /// 所有具体 Reader 必须直接重写此方法为真正的单次解析；
+    /// 默认实现仅供 trait 对象在未重写时回退（不会与已重写的 `read_all`
+    /// 形成无限递归，因为具体实现二者其一会被覆盖）。
+    fn read(&self) -> CoreResult<Dataset>;
+
+    /// 读取全部记录（含表头行；表头行 `row_idx=0`）。
+    ///
+    /// 默认实现基于 `read()` 拼回「表头作为首行」的旧形态，兼容既有
+    /// 调用方与测试。
+    fn read_all(&self) -> CoreResult<Vec<Record>> {
+        let Dataset { headers, rows } = self.read()?;
+        let mut records: Vec<Record> = Vec::with_capacity(rows.len() + 1);
+        let mut h_fields = std::collections::HashMap::new();
+        for h in &headers {
+            h_fields.insert(h.clone(), h.clone());
+        }
+        records.push(Record { fields: h_fields });
+        records.extend(rows);
+        Ok(records)
+    }
+
+    /// 返回列名（首行）。默认实现复用 `read()`，避免重复解析。
+    fn headers(&self) -> CoreResult<Vec<String>> {
+        Ok(self.read()?.headers)
+    }
 }
 
 /// 格式探测工厂：按扩展名分发到具体 Reader。

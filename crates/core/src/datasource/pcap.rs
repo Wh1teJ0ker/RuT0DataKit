@@ -10,7 +10,7 @@ use crate::error::CoreResult;
 use crate::model::Record;
 use crate::pcap::reader::{HttpRequest, PcapReader as CorePcapReader};
 
-use super::Reader;
+use super::{Dataset, Reader};
 
 /// PCAP 读取器：适配 `crate::pcap::PcapReader`。
 pub struct PcapReader {
@@ -40,18 +40,12 @@ impl PcapReader {
 }
 
 impl Reader for PcapReader {
-    fn read_all(&self) -> CoreResult<Vec<Record>> {
+    /// 单次解析：调一次 tshark 子进程，产出 headers + rows。
+    fn read(&self) -> CoreResult<Dataset> {
         let requests = self.read_requests()?;
         let headers: Vec<String> = Self::HEADERS.iter().map(|s| s.to_string()).collect();
 
-        let mut records: Vec<Record> = Vec::new();
-        // 表头行。
-        let mut h_fields = std::collections::HashMap::new();
-        for h in &headers {
-            h_fields.insert(h.clone(), h.clone());
-        }
-        records.push(Record { fields: h_fields });
-
+        let mut rows: Vec<Record> = Vec::with_capacity(requests.len());
         for req in &requests {
             let mut fields = std::collections::HashMap::new();
             fields.insert("frame_no".to_string(), req.frame_no.clone());
@@ -62,8 +56,20 @@ impl Reader for PcapReader {
             fields.insert("uri".to_string(), req.uri.clone());
             fields.insert("body".to_string(), req.body.clone());
             fields.insert("user_agent".to_string(), req.user_agent.clone());
-            records.push(Record { fields });
+            rows.push(Record { fields });
         }
+        Ok(Dataset { headers, rows })
+    }
+
+    fn read_all(&self) -> CoreResult<Vec<Record>> {
+        let Dataset { headers, rows } = self.read()?;
+        let mut records: Vec<Record> = Vec::with_capacity(rows.len() + 1);
+        let mut h_fields = std::collections::HashMap::new();
+        for h in &headers {
+            h_fields.insert(h.clone(), h.clone());
+        }
+        records.push(Record { fields: h_fields });
+        records.extend(rows);
         Ok(records)
     }
 

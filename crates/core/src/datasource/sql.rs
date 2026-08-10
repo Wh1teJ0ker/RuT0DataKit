@@ -16,7 +16,7 @@ use rusqlite::Connection;
 use crate::error::{CoreError, CoreResult};
 use crate::model::Record;
 
-use super::Reader;
+use super::{Dataset, Reader};
 
 /// SQL 读取器：用 `rusqlite` in-memory 执行全部语句并收集所有 SELECT 结果。
 pub struct SqlReader {
@@ -129,7 +129,8 @@ fn extract_table_name(stmt: &str) -> Option<String> {
 }
 
 impl Reader for SqlReader {
-    fn read_all(&self) -> CoreResult<Vec<Record>> {
+    /// 单次解析：执行 SQL 一次，收集 union headers + 所有 SELECT 数据行。
+    fn read(&self) -> CoreResult<Dataset> {
         let content = std::fs::read_to_string(&self.path)
             .map_err(|e| CoreError::DataSource(format!("sql open: {e}")))?;
         let conn = Connection::open_in_memory()
@@ -151,7 +152,10 @@ impl Reader for SqlReader {
         }
 
         if selects.is_empty() {
-            return Ok(Vec::new());
+            return Ok(Dataset {
+                headers: Vec::new(),
+                rows: Vec::new(),
+            });
         }
 
         // 收集所有 SELECT 结果。
@@ -197,15 +201,8 @@ impl Reader for SqlReader {
             }
         }
 
-        let mut records: Vec<Record> = Vec::new();
-        // 表头行。
-        let mut h_fields = std::collections::HashMap::new();
-        for h in &union_headers {
-            h_fields.insert(h.clone(), h.clone());
-        }
-        records.push(Record { fields: h_fields });
-
         // 数据行：按 union_headers 对齐。
+        let mut rows: Vec<Record> = Vec::with_capacity(all_rows.len());
         for (cells, local_headers) in all_rows {
             let mut fields = std::collections::HashMap::new();
             for (i, cell) in cells.iter().enumerate() {
@@ -219,17 +216,27 @@ impl Reader for SqlReader {
             for h in &union_headers {
                 fields.entry(h.clone()).or_insert_with(String::new);
             }
-            records.push(Record { fields });
+            rows.push(Record { fields });
         }
+        Ok(Dataset {
+            headers: union_headers,
+            rows,
+        })
+    }
+
+    fn read_all(&self) -> CoreResult<Vec<Record>> {
+        let Dataset { headers, rows } = self.read()?;
+        let mut records: Vec<Record> = Vec::with_capacity(rows.len() + 1);
+        let mut h_fields = std::collections::HashMap::new();
+        for h in &headers {
+            h_fields.insert(h.clone(), h.clone());
+        }
+        records.push(Record { fields: h_fields });
+        records.extend(rows);
         Ok(records)
     }
 
     fn headers(&self) -> CoreResult<Vec<String>> {
-        let recs = self.read_all()?;
-        Ok(recs
-            .into_iter()
-            .next()
-            .map(|r| r.fields.into_keys().collect())
-            .unwrap_or_default())
+        Ok(self.read()?.headers)
     }
 }
