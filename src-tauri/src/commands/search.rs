@@ -231,11 +231,12 @@ pub fn replace_all(
 ///
 /// - `use_regex=false`（关键字）：`search_matched_row_ids` + `count_matched_rows`，
 ///   `LIKE '%kw%'` + `ESCAPE '\'`；命中区间由 `compute_keyword_matches` 计算。
-/// - `use_regex=true`（正则）：`search_matched_rows_regex_with_total`（单次扫描
-///   同时返回分页 row_idx + total，不再二次重扫）；命中区间由 `regex::find_iter` 计算。
+/// - `use_regex=true`（正则）：`search_matched_rows_regex_with_total`（T59：单次
+///   `LIKE '%'` 预筛 + Rust `regex::is_match` 单次扫描，同时返回分页结果与 total，
+///   不再用 `u32::MAX` 重扫）；命中区间由 `regex::find_iter` 计算。
 ///
-/// 两种模式的整行 cells 均通过 `query_row_cells_batch` 批量获取（一次 SQL，
-/// 替代逐行 `query_row_cells` 的 N+1 查询）。
+/// T59：本页命中行的整行 cells 由 `query_row_cells_batch` 一次性批量获取（按
+/// `row_idx` IN (...) 分块查询），替代逐行 `query_row_cells` 的 N+1 查询。
 ///
 /// `page` 从 1 开始；`col_idx=None` 搜全表所有列；空 `query` 返回空结果。
 #[tauri::command]
@@ -266,9 +267,10 @@ pub fn search_rows(
     let col_count = db.count_columns(sheet_id).map_err(|e| e.to_string())?;
     let col_count = col_count as usize;
 
-    // 1. 取本页命中的 row_idx 列表 + total。
+    // 1. 取本页命中的 row_idx 列表 + total（T59：正则路径用单次扫描同时
+    // 返回分页结果与 total，不再调用 count_matched_rows_regex 重扫；
+    // 关键字路径仍用 SQL `LIMIT/OFFSET` + `COUNT(DISTINCT row_idx)`）。
     let (row_ids, total) = if use_regex {
-        // 正则路径：单次扫描同时返回分页结果与 total，避免二次重扫。
         db.search_matched_rows_regex_with_total(sheet_id, col_idx, &query, offset, page_size)
             .map_err(|e| e.to_string())?
     } else {
@@ -281,15 +283,14 @@ pub fn search_rows(
         (ids, total)
     };
 
-    // 2. 批量取本页所有行的整行 cells（一次 SQL，替代逐行 N+1 查询）。
-    //    结果按 row_idx ASC, col_idx ASC 排序，与逐行 query_row_cells 组合结果一致。
+    // 2. T59：一次性批量取本页全部命中行的整行 cells（替代逐行
+    // `query_row_cells` 的 N+1 查询），组装成 SearchRow。
     let cells_raw = db
         .query_row_cells_batch(sheet_id, &row_ids)
         .map_err(|e| e.to_string())?;
-    let mut cells_iter = cells_raw.into_iter().peekable();
-
-    // 3. 按 row_ids 顺序逐行组装 SearchRow（cells_raw 已排序，可顺序消费 cells_iter）。
+    // 按 row_idx 分组（保留 col_idx 升序，已由 SQL ORDER BY 保证）。
     let mut rows: Vec<SearchRow> = Vec::with_capacity(row_ids.len());
+    let mut cells_iter = cells_raw.into_iter().peekable();
     for &rid in &row_ids {
         let mut cells: Vec<Option<String>> = vec![None; col_count];
         let mut hits: Vec<RowCellMatch> = Vec::new();
@@ -883,5 +884,230 @@ mod tests {
         // count_matched_rows 对空 keyword 仍返回 0（LIKE '%%' 不应匹配空 cell，
         // 但此处仅验证空 query 路径）。
         let _ = mgr.count_matched_rows(shid, None, "张").unwrap();
+    }
+
+    // ---- T59：单次扫描 + 批量 cells 回归测试 ----
+
+    /// T59：正则单次扫描同时返回分页结果与 total，不再二次重扫。
+    #[test]
+    fn search_rows_regex_with_total_matches_legacy() {
+        let (_dir, mgr) = open();
+        let shid = build_search_sheet(&mgr);
+        // 正则 \d{3}：phone 列 3 行命中。
+        let (ids, total) = mgr
+            .search_matched_rows_regex_with_total(shid, None, r"\d{3}", 0, 50)
+            .unwrap();
+        assert_eq!(total, 3);
+        assert_eq!(ids.len(), 3);
+        assert!(ids.contains(&1));
+        assert!(ids.contains(&2));
+        assert!(ids.contains(&3));
+        // 与旧 search_matched_row_ids_regex + count_matched_rows_regex 等价。
+        let legacy_ids = mgr
+            .search_matched_row_ids_regex(shid, None, r"\d{3}", 0, 50)
+            .unwrap();
+        let legacy_total = mgr.count_matched_rows_regex(shid, None, r"\d{3}").unwrap();
+        assert_eq!(legacy_ids, ids);
+        assert_eq!(legacy_total, total);
+    }
+
+    /// T59：正则单次扫描分页（offset/limit）与旧实现一致。
+    #[test]
+    fn search_rows_regex_with_total_pagination() {
+        let (_dir, mgr) = open();
+        let shid = build_search_sheet(&mgr);
+        // 全表正则 \d → phone 列 3 行命中（row 1/2/3）；memo "50%" 同属 row 3，
+        // 行级去重后仍为 3 行命中。
+        let (p1, total) = mgr
+            .search_matched_rows_regex_with_total(shid, None, r"\d", 0, 2)
+            .unwrap();
+        assert_eq!(total, 3);
+        assert_eq!(p1.len(), 2);
+        let (p2, _) = mgr
+            .search_matched_rows_regex_with_total(shid, None, r"\d", 2, 2)
+            .unwrap();
+        assert_eq!(p2.len(), 1);
+        // offset 越界（>= total）→ 空页，total 仍为 3。
+        let (p3, total3) = mgr
+            .search_matched_rows_regex_with_total(shid, None, r"\d", 3, 2)
+            .unwrap();
+        assert_eq!(total3, 3);
+        assert!(p3.is_empty());
+    }
+
+    /// T59：指定列正则单次扫描（NULL 跳过语义保留）。
+    #[test]
+    fn search_rows_regex_with_total_col_filtered() {
+        let (_dir, mgr) = open();
+        let shid = build_search_sheet(&mgr);
+        // col1 (phone) 正则 \d{3} → 3 行命中。
+        let (ids, total) = mgr
+            .search_matched_rows_regex_with_total(shid, Some(1), r"\d{3}", 0, 50)
+            .unwrap();
+        assert_eq!(total, 3);
+        assert_eq!(ids.len(), 3);
+        // col0 (name) 正则 \d → 0 命中（无数字）。
+        let (ids0, total0) = mgr
+            .search_matched_rows_regex_with_total(shid, Some(0), r"\d", 0, 50)
+            .unwrap();
+        assert_eq!(total0, 0);
+        assert!(ids0.is_empty());
+    }
+
+    /// T59：query_row_cells_batch 一次性取多行 cells（替代 N+1 query_row_cells）。
+    #[test]
+    fn query_row_cells_batch_returns_all_rows() {
+        let (_dir, mgr) = open();
+        let shid = build_search_sheet(&mgr);
+        // 取 row_idx=1,2 → 6 个 cell（2 行 × 3 列），按 row_idx/col_idx 升序。
+        let cells = mgr.query_row_cells_batch(shid, &[1, 2]).unwrap();
+        assert_eq!(cells.len(), 6);
+        assert_eq!(cells[0].row_idx, 1);
+        assert_eq!(cells[0].col_idx, 0);
+        assert_eq!(cells[3].row_idx, 2);
+        assert_eq!(cells[3].col_idx, 0);
+        // 空入参 → 空结果。
+        let empty = mgr.query_row_cells_batch(shid, &[]).unwrap();
+        assert!(empty.is_empty());
+        // 与逐行 query_row_cells 结果一致（逐字段比对，Cell 未派生 PartialEq）。
+        let mut legacy: Vec<Cell> = Vec::new();
+        for rid in [1u32, 2] {
+            legacy.extend(mgr.query_row_cells(shid, rid).unwrap());
+        }
+        assert_eq!(legacy.len(), cells.len());
+        for (l, n) in legacy.iter().zip(cells.iter()) {
+            assert_eq!(l.row_idx, n.row_idx);
+            assert_eq!(l.col_idx, n.col_idx);
+            assert_eq!(l.value, n.value);
+        }
+    }
+
+    /// T59：query_row_cells_batch 处理大批量（>500 行分块）。
+    #[test]
+    fn query_row_cells_batch_handles_large_input() {
+        let (_dir, mgr) = open();
+        let sid = mgr.create_session("s", None, "csv", 0).unwrap();
+        let shid = mgr.create_sheet(sid, "Sheet1", 0).unwrap();
+        // 写 600 行 × 1 列。
+        let cells: Vec<Cell> = (1..=600u32)
+            .map(|i| Cell {
+                sheet_id: shid,
+                row_idx: i,
+                col_idx: 0,
+                value: Some(format!("v{}", i)),
+            })
+            .collect();
+        mgr.write_cells(shid, &cells).unwrap();
+        let row_idxs: Vec<u32> = (1..=600).collect();
+        let out = mgr.query_row_cells_batch(shid, &row_idxs).unwrap();
+        assert_eq!(out.len(), 600);
+        assert_eq!(out[0].row_idx, 1);
+        assert_eq!(out[599].row_idx, 600);
+    }
+
+    /// T59：模拟 search_rows 正则路径用单次扫描 + 批量 cells，
+    /// 结果与旧逐行流程一致（含 UTF-8 命中区间）。
+    #[test]
+    fn search_rows_regex_single_scan_matches_legacy_flow() {
+        let (_dir, mgr) = open();
+        let shid = build_search_sheet(&mgr);
+        let col_count = mgr.count_columns(shid).unwrap() as usize;
+        let query = r"\d{3}";
+
+        // 新流程：单次扫描 + 批量 cells。
+        let (row_ids, total) = mgr
+            .search_matched_rows_regex_with_total(shid, None, query, 0, 50)
+            .unwrap();
+        let cells_raw = mgr.query_row_cells_batch(shid, &row_ids).unwrap();
+        let mut new_rows: Vec<SearchRow> = Vec::with_capacity(row_ids.len());
+        let mut iter = cells_raw.into_iter().peekable();
+        for &rid in &row_ids {
+            let mut cells: Vec<Option<String>> = vec![None; col_count];
+            let mut hits: Vec<RowCellMatch> = Vec::new();
+            while let Some(c) = iter.peek() {
+                if c.row_idx != rid {
+                    break;
+                }
+                let c = iter.next().unwrap();
+                let ci = c.col_idx as usize;
+                if ci < col_count {
+                    cells[ci] = c.value.clone();
+                }
+                let spans = compute_regex_matches(&c.value, query);
+                if !spans.is_empty() {
+                    hits.push(RowCellMatch {
+                        col_idx: c.col_idx,
+                        value: c.value.clone(),
+                        matches: spans,
+                    });
+                }
+            }
+            new_rows.push(SearchRow {
+                row_idx: rid,
+                cells,
+                hits,
+            });
+        }
+
+        // 旧流程：逐行 query_row_cells。
+        let legacy_ids = mgr
+            .search_matched_row_ids_regex(shid, None, query, 0, 50)
+            .unwrap();
+        assert_eq!(legacy_ids, row_ids);
+        assert_eq!(total, 3);
+        let mut legacy_rows: Vec<SearchRow> = Vec::with_capacity(legacy_ids.len());
+        for &rid in &legacy_ids {
+            let cells_raw = mgr.query_row_cells(shid, rid).unwrap();
+            let mut cells: Vec<Option<String>> = vec![None; col_count];
+            let mut hits: Vec<RowCellMatch> = Vec::new();
+            for c in &cells_raw {
+                let ci = c.col_idx as usize;
+                if ci < col_count {
+                    cells[ci] = c.value.clone();
+                }
+                let spans = compute_regex_matches(&c.value, query);
+                if !spans.is_empty() {
+                    hits.push(RowCellMatch {
+                        col_idx: c.col_idx,
+                        value: c.value.clone(),
+                        matches: spans,
+                    });
+                }
+            }
+            legacy_rows.push(SearchRow {
+                row_idx: rid,
+                cells,
+                hits,
+            });
+        }
+        assert_eq!(new_rows.len(), legacy_rows.len());
+        for (n, l) in new_rows.iter().zip(legacy_rows.iter()) {
+            assert_eq!(n.row_idx, l.row_idx);
+            assert_eq!(n.cells, l.cells);
+            assert_eq!(n.hits.len(), l.hits.len());
+        }
+    }
+
+    /// T59：UTF-8 关键字命中区间（字节偏移）在批量 cells 路径下保持不变。
+    #[test]
+    fn search_rows_keyword_utf8_byte_offsets_preserved() {
+        let (_dir, mgr) = open();
+        let shid = build_search_sheet(&mgr);
+        // "张" UTF-8 3 字节；命中区间 start..end 应为字节偏移。
+        let row_ids = mgr.search_matched_row_ids(shid, None, "张", 0, 50).unwrap();
+        let cells_raw = mgr.query_row_cells_batch(shid, &row_ids).unwrap();
+        let mut found_span = false;
+        for c in &cells_raw {
+            let spans = compute_keyword_matches(&c.value, "张");
+            if !spans.is_empty() {
+                let val = c.value.as_ref().unwrap();
+                for span in &spans {
+                    assert_eq!(&val[span.start..span.end], "张");
+                    assert_eq!(span.end - span.start, 3); // UTF-8 3 字节
+                    found_span = true;
+                }
+            }
+        }
+        assert!(found_span);
     }
 }
