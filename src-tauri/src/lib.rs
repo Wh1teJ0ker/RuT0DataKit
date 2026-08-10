@@ -73,6 +73,8 @@ pub fn run() {
             db_manager.seed_builtin_rules()?;
             app.manage(db_manager);
             // 启动时加载 tshark 路径并注入 core 运行时（同步执行）。
+            // settings.json 损坏时不阻断启动：记录日志并使用默认值，
+            // 不静默覆盖原文件（由用户决定后续处理）。
             let settings = commands::read_settings(app.handle());
             ruT0_data_kit_core::pcap::set_tshark_path(settings.tshark_path.clone());
             Ok(())
