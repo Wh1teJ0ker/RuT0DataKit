@@ -1,28 +1,8 @@
-//! 数据库迁移逻辑。
+//! SQLite schema migration logic.
 //!
-//! v1.1.3 T55: `schema_version=5`，`rules` 表新增 `params TEXT` 列存提取
-//! 规则函数式校验参数（`ExtractParams` JSON）（v4→v5 增量迁移）。
-//! v1.1.3: `schema_version=4`，`rules` 表新增 `template TEXT` 列存通用模板
-//! 脱敏参数（TemplateParams JSON）（v3→v4 增量迁移）。
-//! v1.1.1: `schema_version=3`，`operations` 表新增 `before_snapshot_json` 列
-//! 存撤销前置快照；新增 `idx_cells_sheet_col` 复合索引（v2→v3 增量迁移）。
-//! v1.1.0: `schema_version=2`，新增 `rules` 表（v1→v2 增量迁移）。
-//! v1.0.0: `schema_version=1`，无真实历史版本迁移。
-//! - 首次启动：建表 + 建索引 + 写 `schema_version`。
-//! - 后续启动：读 `app_settings.schema_version`；不存在视为首次；存在且 != 当前版本则备份旧 DB 重建。
-//!
-//! v1→v2 迁移：仅追加 `rules` 表 + `idx_rules_kind` 索引（`IF NOT EXISTS` 幂等），
-//! 不影响历史数据，无需备份重建。
-//!
-//! v2→v3 迁移：`operations` 表 `ADD COLUMN before_snapshot_json TEXT`（先
-//! `PRAGMA table_info` 检查列是否存在再 ALTER，保证幂等）+ `idx_cells_sheet_col`
-//! 复合索引（`IF NOT EXISTS` 幂等），不影响历史数据。
-//!
-//! v3→v4 迁移：`rules` 表 `ADD COLUMN template TEXT`（先 `PRAGMA table_info`
-//! 检查列是否存在再 ALTER，保证幂等），不影响历史数据。
-//!
-//! v4→v5 迁移：`rules` 表 `ADD COLUMN params TEXT`（先 `PRAGMA table_info`
-//! 检查列是否存在再 ALTER，保证幂等），不影响历史数据。
+//! Supported database versions are upgraded incrementally in one transaction:
+//! v1 -> v2 -> v3 -> v4 -> v5. Each step persists its own target version so a
+//! failed migration rolls back both schema and version changes together.
 
 use std::path::{Path, PathBuf};
 
@@ -31,44 +11,61 @@ use rusqlite::Connection;
 use super::error::DbError;
 use super::schema::{SCHEMA_DDL, SCHEMA_VERSION};
 
-/// 读取当前 DB 的 `schema_version`；不存在（首次启动）返回 `None`。
+const V1: i64 = 1;
+const V2: i64 = 2;
+const V3: i64 = 3;
+const V4: i64 = 4;
+const V5: i64 = 5;
+
+/// Reads the current database `schema_version`; returns `None` for a new DB.
 pub fn read_schema_version(conn: &Connection) -> Result<Option<i64>, DbError> {
-    let row_count: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='app_settings'",
-            [],
-            |r| r.get(0),
-        )
-        .map_err(DbError::Sqlite)?;
+    let row_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='app_settings'",
+        [],
+        |row| row.get(0),
+    )?;
     if row_count == 0 {
         return Ok(None);
     }
+
     let value: Option<String> = conn
         .query_row(
             "SELECT value FROM app_settings WHERE key='schema_version'",
             [],
-            |r| r.get::<_, Option<String>>(0),
+            |row| row.get::<_, Option<String>>(0),
         )
         .ok()
         .flatten();
-    Ok(value.and_then(|v| v.parse::<i64>().ok()))
+    Ok(value.and_then(|value| value.parse::<i64>().ok()))
 }
 
-/// 执行首次/幂等建表 + 建索引，写 `schema_version`。
-/// 幂等：`IF NOT EXISTS` 保证重复调用安全。
-pub fn bootstrap(conn: &Connection) -> Result<(), DbError> {
-    conn.execute_batch(SCHEMA_DDL).map_err(DbError::Sqlite)?;
+fn write_schema_version(conn: &Connection, version: i64) -> Result<(), DbError> {
     conn.execute(
         "INSERT INTO app_settings(key, value) VALUES('schema_version', ?1)
          ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-        rusqlite::params![SCHEMA_VERSION.to_string()],
-    )
-    .map_err(DbError::Sqlite)?;
+        rusqlite::params![version.to_string()],
+    )?;
     Ok(())
 }
 
-/// v1→v2 增量迁移：追加 `rules` 表 + `idx_rules_kind` 索引（幂等），
-/// 更新 `schema_version=2`。不影响历史数据。
+fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, DbError> {
+    let mut statement = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(1))?;
+    for name in rows {
+        if name? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Creates the current schema for a new database and records the current version.
+pub fn bootstrap(conn: &Connection) -> Result<(), DbError> {
+    conn.execute_batch(SCHEMA_DDL)?;
+    write_schema_version(conn, SCHEMA_VERSION)
+}
+
+/// v1 -> v2: adds the rules table and index without changing existing data.
 pub fn migrate_v1_to_v2(conn: &Connection) -> Result<(), DbError> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS rules (
@@ -82,227 +79,115 @@ pub fn migrate_v1_to_v2(conn: &Connection) -> Result<(), DbError> {
             description TEXT NOT NULL DEFAULT ''
         );
         CREATE INDEX IF NOT EXISTS idx_rules_kind ON rules(kind);",
-    )
-    .map_err(DbError::Sqlite)?;
-    conn.execute(
-        "INSERT INTO app_settings(key, value) VALUES('schema_version', ?1)
-         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-        rusqlite::params![SCHEMA_VERSION.to_string()],
-    )
-    .map_err(DbError::Sqlite)?;
-    Ok(())
+    )?;
+    write_schema_version(conn, V2)
 }
 
-/// v2→v3 增量迁移：`operations` 表 `ADD COLUMN before_snapshot_json TEXT`
-/// + `idx_cells_sheet_col` 复合索引（幂等），更新 `schema_version=3`。不影响历史数据。
-///
-/// 幂等保证：先用 `PRAGMA table_info(operations)` 查 `before_snapshot_json`
-/// 列是否存在，不存在才 ALTER；索引用 `IF NOT EXISTS`。
+/// v2 -> v3: adds the operation snapshot column and the column-search index.
 pub fn migrate_v2_to_v3(conn: &Connection) -> Result<(), DbError> {
-    // 检查 before_snapshot_json 列是否已存在。
-    let col_exists: bool = {
-        let mut stmt = conn
-            .prepare("PRAGMA table_info(operations)")
-            .map_err(DbError::Sqlite)?;
-        let mut rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
-        let mut found = false;
-        for row_res in rows.by_ref() {
-            match row_res {
-                Ok(name) if name == "before_snapshot_json" => {
-                    found = true;
-                    break;
-                }
-                Ok(_) => continue,
-                Err(e) => return Err(DbError::Sqlite(e)),
-            }
-        }
-        found
-    };
-    if !col_exists {
+    if !table_has_column(conn, "operations", "before_snapshot_json")? {
         conn.execute(
             "ALTER TABLE operations ADD COLUMN before_snapshot_json TEXT",
             [],
-        )
-        .map_err(DbError::Sqlite)?;
+        )?;
     }
-    // 复合索引（IF NOT EXISTS 幂等）。
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_cells_sheet_col ON cells(sheet_id, col_idx)",
         [],
-    )
-    .map_err(DbError::Sqlite)?;
-    conn.execute(
-        "INSERT INTO app_settings(key, value) VALUES('schema_version', ?1)
-         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-        rusqlite::params![SCHEMA_VERSION.to_string()],
-    )
-    .map_err(DbError::Sqlite)?;
-    Ok(())
+    )?;
+    write_schema_version(conn, V3)
 }
 
-/// v3→v4 增量迁移：`rules` 表 `ADD COLUMN template TEXT`（幂等），
-/// 更新 `schema_version=4`。不影响历史数据。
-///
-/// 幂等保证：先用 `PRAGMA table_info(rules)` 查 `template` 列是否存在，
-/// 不存在才 ALTER。`template` 列存通用模板脱敏参数（`TemplateParams` JSON）。
+/// v3 -> v4: adds the optional generic-template rule parameter column.
 pub fn migrate_v3_to_v4(conn: &Connection) -> Result<(), DbError> {
-    // 检查 template 列是否已存在。
-    let col_exists: bool = {
-        let mut stmt = conn
-            .prepare("PRAGMA table_info(rules)")
-            .map_err(DbError::Sqlite)?;
-        let mut rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
-        let mut found = false;
-        for row_res in rows.by_ref() {
-            match row_res {
-                Ok(name) if name == "template" => {
-                    found = true;
-                    break;
-                }
-                Ok(_) => continue,
-                Err(e) => return Err(DbError::Sqlite(e)),
-            }
-        }
-        found
-    };
-    if !col_exists {
-        conn.execute("ALTER TABLE rules ADD COLUMN template TEXT", [])
-            .map_err(DbError::Sqlite)?;
+    if !table_has_column(conn, "rules", "template")? {
+        conn.execute("ALTER TABLE rules ADD COLUMN template TEXT", [])?;
     }
-    conn.execute(
-        "INSERT INTO app_settings(key, value) VALUES('schema_version', ?1)
-         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-        rusqlite::params![SCHEMA_VERSION.to_string()],
-    )
-    .map_err(DbError::Sqlite)?;
-    Ok(())
+    write_schema_version(conn, V4)
 }
 
-/// v4→v5 增量迁移：`rules` 表 `ADD COLUMN params TEXT`（幂等），
-/// 更新 `schema_version=5`。不影响历史数据。
-///
-/// 幂等保证：先用 `PRAGMA table_info(rules)` 查 `params` 列是否存在，
-/// 不存在才 ALTER。`params` 列存提取规则函数式校验参数（`ExtractParams` JSON）。
+/// v4 -> v5: adds the optional extraction rule parameter column.
 pub fn migrate_v4_to_v5(conn: &Connection) -> Result<(), DbError> {
-    // 检查 params 列是否已存在。
-    let col_exists: bool = {
-        let mut stmt = conn
-            .prepare("PRAGMA table_info(rules)")
-            .map_err(DbError::Sqlite)?;
-        let mut rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
-        let mut found = false;
-        for row_res in rows.by_ref() {
-            match row_res {
-                Ok(name) if name == "params" => {
-                    found = true;
-                    break;
-                }
-                Ok(_) => continue,
-                Err(e) => return Err(DbError::Sqlite(e)),
-            }
-        }
-        found
-    };
-    if !col_exists {
-        conn.execute("ALTER TABLE rules ADD COLUMN params TEXT", [])
-            .map_err(DbError::Sqlite)?;
+    if !table_has_column(conn, "rules", "params")? {
+        conn.execute("ALTER TABLE rules ADD COLUMN params TEXT", [])?;
     }
-    conn.execute(
-        "INSERT INTO app_settings(key, value) VALUES('schema_version', ?1)
-         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-        rusqlite::params![SCHEMA_VERSION.to_string()],
-    )
-    .map_err(DbError::Sqlite)?;
-    Ok(())
+    write_schema_version(conn, V5)
 }
 
-/// 初始化迁移：首次建表；版本不兼容则备份旧 DB 重建；v1→v2 / v2→v3 / v3→v4 / v4→v5 增量迁移。
+fn backup_path(db_path: &Path) -> PathBuf {
+    let timestamp = backup_timestamp();
+    let filename = db_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("ruT0datakit.db");
+    db_path.with_file_name(format!("{filename}.bak.{timestamp}"))
+}
+
+fn backup_database(db_path: &Path) -> Result<PathBuf, DbError> {
+    if !db_path.is_file() {
+        return Err(DbError::Migration(format!(
+            "cannot back up unsupported schema because database file is missing: {}",
+            db_path.display()
+        )));
+    }
+
+    let backup = backup_path(db_path);
+    std::fs::copy(db_path, &backup)?;
+    Ok(backup)
+}
+
+/// Initializes a database or upgrades a supported older version to the current schema.
 ///
-/// - `db_path`: DB 文件路径（`app_config_dir/ruT0datakit.db`）。
-/// - `conn`: 已打开的连接。
-/// - 返回迁移说明（用于日志/测试断言）。
+/// All supported upgrade steps run in one SQLite transaction. A database whose version is
+/// newer than this application, or otherwise unsupported, is copied to a backup and left
+/// unchanged before startup is rejected.
 pub fn migrate(db_path: &Path, conn: &Connection) -> Result<String, DbError> {
     let current = read_schema_version(conn)?;
     match current {
         None => {
             bootstrap(conn)?;
-            Ok(format!("bootstrapped schema_version={}", SCHEMA_VERSION))
+            Ok(format!("bootstrapped schema_version={SCHEMA_VERSION}"))
         }
-        Some(v) if v == SCHEMA_VERSION => {
-            // 版本一致，幂等补建（保证 DB 文件存在但表缺的边缘情况）。
-            conn.execute_batch(SCHEMA_DDL).map_err(DbError::Sqlite)?;
-            Ok(format!("schema_version={} ok", v))
+        Some(version) if version == SCHEMA_VERSION => {
+            conn.execute_batch(SCHEMA_DDL)?;
+            Ok(format!("schema_version={version} ok"))
         }
-        Some(1) if SCHEMA_VERSION == 2 => {
-            // v1→v2 增量迁移：追加 rules 表，不备份重建。
-            migrate_v1_to_v2(conn)?;
-            Ok("migrated v1→v2 (rules table added)".into())
+        Some(V1 | V2 | V3 | V4) => {
+            let transaction = conn.unchecked_transaction()?;
+            let note = match current {
+                Some(V1) => {
+                    migrate_v1_to_v2(&transaction)?;
+                    migrate_v2_to_v3(&transaction)?;
+                    migrate_v3_to_v4(&transaction)?;
+                    migrate_v4_to_v5(&transaction)?;
+                    "migrated v1 -> v5"
+                }
+                Some(V2) => {
+                    migrate_v2_to_v3(&transaction)?;
+                    migrate_v3_to_v4(&transaction)?;
+                    migrate_v4_to_v5(&transaction)?;
+                    "migrated v2 -> v5"
+                }
+                Some(V3) => {
+                    migrate_v3_to_v4(&transaction)?;
+                    migrate_v4_to_v5(&transaction)?;
+                    "migrated v3 -> v5"
+                }
+                Some(V4) => {
+                    migrate_v4_to_v5(&transaction)?;
+                    "migrated v4 -> v5"
+                }
+                _ => unreachable!("supported versions are matched above"),
+            };
+            transaction.commit()?;
+            Ok(note.into())
         }
-        Some(2) if SCHEMA_VERSION == 3 => {
-            // v2→v3 增量迁移：operations 表加 before_snapshot_json 列 + 复合索引。
-            migrate_v2_to_v3(conn)?;
-            Ok("migrated v2→v3 (before_snapshot_json column + idx_cells_sheet_col added)".into())
-        }
-        Some(2) if SCHEMA_VERSION == 4 => {
-            // v2→v4 链式增量迁移：先 v2→v3 再 v3→v4。
-            migrate_v2_to_v3(conn)?;
-            migrate_v3_to_v4(conn)?;
-            Ok(
-                "migrated v2→v4 (before_snapshot_json + idx_cells_sheet_col + rules.template)"
-                    .into(),
-            )
-        }
-        Some(3) if SCHEMA_VERSION == 4 => {
-            // v3→v4 增量迁移：rules 表加 template 列。
-            migrate_v3_to_v4(conn)?;
-            Ok("migrated v3→v4 (rules.template column added)".into())
-        }
-        Some(2) if SCHEMA_VERSION == 5 => {
-            // v2→v5 链式增量迁移：v2→v3→v4→v5。
-            migrate_v2_to_v3(conn)?;
-            migrate_v3_to_v4(conn)?;
-            migrate_v4_to_v5(conn)?;
-            Ok(
-                "migrated v2→v5 (before_snapshot_json + idx_cells_sheet_col + rules.template + rules.params)"
-                    .into(),
-            )
-        }
-        Some(3) if SCHEMA_VERSION == 5 => {
-            // v3→v5 链式增量迁移：v3→v4→v5。
-            migrate_v3_to_v4(conn)?;
-            migrate_v4_to_v5(conn)?;
-            Ok("migrated v3→v5 (rules.template + rules.params)".into())
-        }
-        Some(4) if SCHEMA_VERSION == 5 => {
-            // v4→v5 增量迁移：rules 表加 params 列。
-            migrate_v4_to_v5(conn)?;
-            Ok("migrated v4→v5 (rules.params column added)".into())
-        }
-        Some(v) => {
-            // 版本不兼容（高于当前或无法增量迁移）：备份旧 DB 后重建。
-            let ts = backup_timestamp();
-            let bak: PathBuf = db_path
-                .with_extension(format!("db.bak.{}", ts))
-                .parent()
-                .unwrap_or_else(|| Path::new("."))
-                .join(format!("ruT0datakit.db.bak.{}", ts));
-            // 关闭连接前先落盘备份：复制当前文件（若存在）。
-            if db_path.exists() {
-                std::fs::copy(db_path, &bak).map_err(DbError::Io)?;
-            }
-            conn.execute_batch(
-                "DROP TABLE IF EXISTS cells; \
-                 DROP TABLE IF EXISTS operations; \
-                 DROP TABLE IF EXISTS sheets; \
-                 DROP TABLE IF EXISTS sessions; \
-                 DROP TABLE IF EXISTS app_settings; \
-                 DROP TABLE IF EXISTS rules;",
-            )
-            .map_err(DbError::Sqlite)?;
-            bootstrap(conn)?;
+        Some(version) => {
+            let backup = backup_database(db_path)?;
             Err(DbError::Migration(format!(
-                "incompatible schema_version={} (expected {}), rebuilt from backup",
-                v, SCHEMA_VERSION
+                "unsupported schema_version={version} (current {SCHEMA_VERSION}); \
+                 backed up unchanged database to {}",
+                backup.display()
             )))
         }
     }
@@ -310,384 +195,298 @@ pub fn migrate(db_path: &Path, conn: &Connection) -> Result<String, DbError> {
 
 fn backup_timestamp() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
+
+    SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    format!("{}", secs)
+        .map(|duration| duration.as_millis().to_string())
+        .unwrap_or_else(|_| "0".into())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    const V1_SCHEMA: &str = r#"
+        CREATE TABLE sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            source_path TEXT,
+            source_type TEXT NOT NULL,
+            row_count INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE sheets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            position INTEGER NOT NULL DEFAULT 0,
+            column_order TEXT,
+            column_visibility TEXT,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE cells (
+            sheet_id INTEGER NOT NULL,
+            row_idx INTEGER NOT NULL,
+            col_idx INTEGER NOT NULL,
+            value TEXT,
+            PRIMARY KEY (sheet_id, row_idx, col_idx)
+        );
+        CREATE TABLE operations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sheet_id INTEGER,
+            kind TEXT NOT NULL,
+            params_json TEXT,
+            result_snapshot_json TEXT,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT);
+        CREATE INDEX idx_cells_sheet_row ON cells(sheet_id, row_idx);
+        CREATE INDEX idx_operations_sheet ON operations(sheet_id);
+        CREATE INDEX idx_sheets_session ON sheets(session_id);
+    "#;
+
+    fn set_fixture_version(conn: &Connection, version: i64) {
+        write_schema_version(conn, version).unwrap();
+    }
+
+    fn build_v1_db(conn: &Connection) {
+        conn.execute_batch(V1_SCHEMA).unwrap();
+        conn.execute_batch(
+            "INSERT INTO sessions(id, name, source_path, source_type, row_count, created_at, updated_at)
+             VALUES(1, 'legacy session', 'legacy.csv', 'csv', 1, '2024-01-01', '2024-01-01');
+             INSERT INTO sheets(id, session_id, name, position, created_at)
+             VALUES(1, 1, 'legacy sheet', 0, '2024-01-01');
+             INSERT INTO cells(sheet_id, row_idx, col_idx, value) VALUES(1, 0, 0, 'legacy cell');
+             INSERT INTO operations(id, sheet_id, kind, params_json, result_snapshot_json, created_at)
+             VALUES(1, 1, 'import', '{}', '{}', '2024-01-01');",
+        )
+        .unwrap();
+        set_fixture_version(conn, V1);
+    }
+
+    fn build_v2_db(conn: &Connection) {
+        build_v1_db(conn);
+        conn.execute_batch(
+            "CREATE TABLE rules (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                field TEXT,
+                pattern TEXT,
+                replacement TEXT,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                description TEXT NOT NULL DEFAULT ''
+            );
+            CREATE INDEX idx_rules_kind ON rules(kind);",
+        )
+        .unwrap();
+        set_fixture_version(conn, V2);
+    }
+
+    fn build_v3_db(conn: &Connection) {
+        build_v2_db(conn);
+        conn.execute_batch(
+            "ALTER TABLE operations ADD COLUMN before_snapshot_json TEXT;
+             CREATE INDEX idx_cells_sheet_col ON cells(sheet_id, col_idx);",
+        )
+        .unwrap();
+        set_fixture_version(conn, V3);
+    }
+
+    fn build_v4_db(conn: &Connection) {
+        build_v3_db(conn);
+        conn.execute("ALTER TABLE rules ADD COLUMN template TEXT", [])
+            .unwrap();
+        set_fixture_version(conn, V4);
+    }
+
+    fn column_exists(conn: &Connection, table: &str, column: &str) -> bool {
+        table_has_column(conn, table, column).unwrap()
+    }
+
+    fn index_exists(conn: &Connection, name: &str) -> bool {
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1)",
+            rusqlite::params![name],
+            |row| row.get::<_, bool>(0),
+        )
+        .unwrap()
+    }
+
+    fn table_exists(conn: &Connection, name: &str) -> bool {
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+            rusqlite::params![name],
+            |row| row.get::<_, bool>(0),
+        )
+        .unwrap()
+    }
+
+    fn assert_legacy_data_is_readable(conn: &Connection) {
+        let session: String = conn
+            .query_row("SELECT name FROM sessions WHERE id=1", [], |row| row.get(0))
+            .unwrap();
+        let sheet: String = conn
+            .query_row("SELECT name FROM sheets WHERE id=1", [], |row| row.get(0))
+            .unwrap();
+        let cell: String = conn
+            .query_row(
+                "SELECT value FROM cells WHERE sheet_id=1 AND row_idx=0 AND col_idx=0",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let operation: String = conn
+            .query_row("SELECT kind FROM operations WHERE id=1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(session, "legacy session");
+        assert_eq!(sheet, "legacy sheet");
+        assert_eq!(cell, "legacy cell");
+        assert_eq!(operation, "import");
+    }
+
+    fn assert_v5_schema(conn: &Connection) {
+        assert_eq!(read_schema_version(conn).unwrap(), Some(V5));
+        assert!(column_exists(conn, "operations", "before_snapshot_json"));
+        assert!(column_exists(conn, "rules", "template"));
+        assert!(column_exists(conn, "rules", "params"));
+        assert!(index_exists(conn, "idx_cells_sheet_col"));
+    }
+
     #[test]
     fn migrate_first_time_bootstraps() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("ruT0datakit.db");
         let conn = Connection::open(&db_path).unwrap();
+
         let note = migrate(&db_path, &conn).unwrap();
+
         assert!(note.contains("bootstrapped"));
-        assert_eq!(read_schema_version(&conn).unwrap(), Some(SCHEMA_VERSION));
+        assert_v5_schema(&conn);
     }
 
     #[test]
-    fn migrate_repeat_is_idempotent() {
-        let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("ruT0datakit.db");
-        let conn = Connection::open(&db_path).unwrap();
-        migrate(&db_path, &conn).unwrap();
-        let note = migrate(&db_path, &conn).unwrap();
-        assert!(note.contains("ok"));
-        assert_eq!(read_schema_version(&conn).unwrap(), Some(SCHEMA_VERSION));
-    }
+    fn each_step_records_its_explicit_target_version() {
+        let conn = Connection::open_in_memory().unwrap();
+        build_v1_db(&conn);
 
-    #[test]
-    fn migrate_v1_to_v2_adds_rules_table() {
-        // v1.1.1 起 SCHEMA_VERSION=3：v1→v2 增量迁移已被 v1→v3 全量重建取代。
-        // 此测试用 v1.1.0 时代的固定 v1→v2 路径验证（直接调用 migrate_v1_to_v2）。
-        let dir = tempfile::tempdir().unwrap();
-        let conn = Connection::open(dir.path().join("ruT0datakit.db")).unwrap();
-        // 模拟 v1：建 app_settings + 写 schema_version=1。
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS sessions (id INTEGER PRIMARY KEY, name TEXT);
-             CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT);
-             INSERT INTO app_settings(key, value) VALUES('schema_version', '1');",
-        )
-        .unwrap();
-        // 直接走 v1→v2 增量迁移。
         migrate_v1_to_v2(&conn).unwrap();
-        // rules 表已存在。
-        let count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='rules'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(count, 1);
-        // migrate_v1_to_v2 把 schema_version 写为 SCHEMA_VERSION（当前为 3）。
-        assert_eq!(read_schema_version(&conn).unwrap(), Some(SCHEMA_VERSION));
-    }
-
-    #[test]
-    fn migrate_v1_to_v2_preserves_existing_data() {
-        // 同上：v1.1.1 起 v1 DB 走重建路径，此测试改用直接 migrate_v1_to_v2
-        // 验证「增量迁移不破坏历史数据」这一原语义。
-        let dir = tempfile::tempdir().unwrap();
-        let conn = Connection::open(dir.path().join("ruT0datakit.db")).unwrap();
-        conn.execute_batch(
-            "CREATE TABLE sessions (id INTEGER PRIMARY KEY, name TEXT);
-             CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT);
-             INSERT INTO app_settings(key, value) VALUES('schema_version', '1');
-             INSERT INTO sessions(id, name) VALUES(1, 'preserved');",
-        )
-        .unwrap();
-        migrate_v1_to_v2(&conn).unwrap();
-        let name: String = conn
-            .query_row("SELECT name FROM sessions WHERE id=1", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(name, "preserved");
-    }
-
-    /// v2 DB（不含 before_snapshot_json 列、不含 idx_cells_sheet_col）。
-    fn build_v2_db(conn: &Connection) {
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS sessions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
-                source_path TEXT, source_type TEXT NOT NULL,
-                row_count INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-             CREATE TABLE IF NOT EXISTS sheets (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id INTEGER NOT NULL, name TEXT NOT NULL,
-                position INTEGER NOT NULL DEFAULT 0,
-                column_order TEXT, column_visibility TEXT,
-                created_at TEXT NOT NULL);
-             CREATE TABLE IF NOT EXISTS cells (
-                sheet_id INTEGER NOT NULL, row_idx INTEGER NOT NULL,
-                col_idx INTEGER NOT NULL, value TEXT,
-                PRIMARY KEY (sheet_id, row_idx, col_idx));
-             CREATE TABLE IF NOT EXISTS operations (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                sheet_id INTEGER, kind TEXT NOT NULL,
-                params_json TEXT, result_snapshot_json TEXT,
-                created_at TEXT NOT NULL);
-             CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT);
-             CREATE TABLE IF NOT EXISTS rules (
-                id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL,
-                field TEXT, pattern TEXT, replacement TEXT,
-                enabled INTEGER NOT NULL DEFAULT 1, description TEXT NOT NULL DEFAULT '');
-             CREATE INDEX IF NOT EXISTS idx_cells_sheet_row ON cells(sheet_id, row_idx);
-             CREATE INDEX IF NOT EXISTS idx_operations_sheet ON operations(sheet_id);
-             CREATE INDEX IF NOT EXISTS idx_sheets_session ON sheets(session_id);
-             CREATE INDEX IF NOT EXISTS idx_rules_kind ON rules(kind);
-             INSERT INTO app_settings(key, value) VALUES('schema_version', '2');",
-        )
-        .unwrap();
-    }
-
-    /// `operations.before_snapshot_json` 列是否存在。
-    fn column_exists(conn: &Connection, table: &str, col: &str) -> bool {
-        let sql = format!("PRAGMA table_info({})", table);
-        let mut stmt = match conn.prepare(&sql) {
-            Ok(s) => s,
-            Err(_) => return false,
-        };
-        let mut rows = match stmt.query_map([], |r| r.get::<_, String>(1)) {
-            Ok(r) => r,
-            Err(_) => return false,
-        };
-        while let Some(Ok(name)) = rows.next() {
-            if name == col {
-                return true;
-            }
-        }
-        false
-    }
-
-    /// `idx_cells_sheet_col` 索引是否存在。
-    fn index_exists(conn: &Connection, name: &str) -> bool {
-        let n: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?1",
-                rusqlite::params![name],
-                |r| r.get(0),
-            )
-            .unwrap();
-        n > 0
-    }
-
-    #[test]
-    fn migrate_v2_to_v3_adds_before_snapshot_column() {
-        let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("ruT0datakit.db");
-        let conn = Connection::open(&db_path).unwrap();
-        build_v2_db(&conn);
-        assert!(!column_exists(&conn, "operations", "before_snapshot_json"));
-        assert_eq!(read_schema_version(&conn).unwrap(), Some(2));
-        let note = migrate(&db_path, &conn).unwrap();
-        // v2 现走链式 v2→v5 迁移（v2→v3→v4→v5）。
-        assert!(note.contains("v2→v5"), "note={}", note);
-        assert_eq!(read_schema_version(&conn).unwrap(), Some(SCHEMA_VERSION));
-        assert!(column_exists(&conn, "operations", "before_snapshot_json"));
-    }
-
-    #[test]
-    fn migrate_v2_to_v3_is_idempotent() {
-        let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("ruT0datakit.db");
-        let conn = Connection::open(&db_path).unwrap();
-        build_v2_db(&conn);
-        migrate(&db_path, &conn).unwrap();
-        // 第二次：版本已是 SCHEMA_VERSION，走幂等补建分支（execute_batch SCHEMA_DDL）。
-        let note = migrate(&db_path, &conn).unwrap();
-        assert!(note.contains("ok"));
-        assert_eq!(read_schema_version(&conn).unwrap(), Some(SCHEMA_VERSION));
-        assert!(column_exists(&conn, "operations", "before_snapshot_json"));
-        // 直接调 migrate_v2_to_v3 也应幂等（不报 duplicate column）。
+        assert_eq!(read_schema_version(&conn).unwrap(), Some(V2));
         migrate_v2_to_v3(&conn).unwrap();
-        assert!(column_exists(&conn, "operations", "before_snapshot_json"));
+        assert_eq!(read_schema_version(&conn).unwrap(), Some(V3));
+        migrate_v3_to_v4(&conn).unwrap();
+        assert_eq!(read_schema_version(&conn).unwrap(), Some(V4));
+        migrate_v4_to_v5(&conn).unwrap();
+        assert_eq!(read_schema_version(&conn).unwrap(), Some(V5));
     }
 
     #[test]
-    fn idx_cells_sheet_col_exists_after_migrate() {
-        let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("ruT0datakit.db");
-        let conn = Connection::open(&db_path).unwrap();
-        build_v2_db(&conn);
-        assert!(!index_exists(&conn, "idx_cells_sheet_col"));
-        migrate(&db_path, &conn).unwrap();
-        assert!(index_exists(&conn, "idx_cells_sheet_col"));
-    }
+    fn migrate_supported_versions_to_v5_in_order_without_data_loss() {
+        let fixtures: [(i64, fn(&Connection)); 4] = [
+            (V1, build_v1_db),
+            (V2, build_v2_db),
+            (V3, build_v3_db),
+            (V4, build_v4_db),
+        ];
 
-    #[test]
-    fn migrate_v2_to_v3_preserves_existing_data() {
-        let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("ruT0datakit.db");
-        let conn = Connection::open(&db_path).unwrap();
-        build_v2_db(&conn);
-        conn.execute(
-            "INSERT INTO sessions(id, name, source_type, row_count, created_at, updated_at)
-             VALUES(1, 'keep', 'csv', 0, 't', 't')",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO operations(id, sheet_id, kind, params_json, result_snapshot_json, created_at)
-             VALUES(1, NULL, 'import', '{}', '{}', 't')",
-            [],
-        )
-        .unwrap();
-        migrate(&db_path, &conn).unwrap();
-        let name: String = conn
-            .query_row("SELECT name FROM sessions WHERE id=1", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(name, "keep");
-        // 旧 operation 行的 before_snapshot_json 应为 NULL。
-        let bs: Option<String> = conn
-            .query_row(
-                "SELECT before_snapshot_json FROM operations WHERE id=1",
+        for (source_version, build_fixture) in fixtures {
+            let dir = tempfile::tempdir().unwrap();
+            let db_path = dir.path().join(format!("v{source_version}.db"));
+            let conn = Connection::open(&db_path).unwrap();
+            build_fixture(&conn);
+
+            let note = migrate(&db_path, &conn).unwrap();
+
+            assert!(note.contains(&format!("v{source_version} -> v5")), "{note}");
+            assert_legacy_data_is_readable(&conn);
+            assert_v5_schema(&conn);
+
+            conn.execute(
+                "INSERT INTO rules(id, name, kind, enabled, description)
+                 VALUES('legacy-rule', 'legacy rule', 'validate', 1, '')",
                 [],
-                |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(bs, None);
-    }
-
-    /// v3 DB（含 before_snapshot_json + idx_cells_sheet_col，但 rules 无 template 列）。
-    fn build_v3_db(conn: &Connection) {
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS sessions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
-                source_path TEXT, source_type TEXT NOT NULL,
-                row_count INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-             CREATE TABLE IF NOT EXISTS sheets (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id INTEGER NOT NULL, name TEXT NOT NULL,
-                position INTEGER NOT NULL DEFAULT 0,
-                column_order TEXT, column_visibility TEXT,
-                created_at TEXT NOT NULL);
-             CREATE TABLE IF NOT EXISTS cells (
-                sheet_id INTEGER NOT NULL, row_idx INTEGER NOT NULL,
-                col_idx INTEGER NOT NULL, value TEXT,
-                PRIMARY KEY (sheet_id, row_idx, col_idx));
-             CREATE TABLE IF NOT EXISTS operations (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                sheet_id INTEGER, kind TEXT NOT NULL,
-                params_json TEXT, before_snapshot_json TEXT, result_snapshot_json TEXT,
-                created_at TEXT NOT NULL);
-             CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT);
-             CREATE TABLE IF NOT EXISTS rules (
-                id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL,
-                field TEXT, pattern TEXT, replacement TEXT,
-                enabled INTEGER NOT NULL DEFAULT 1, description TEXT NOT NULL DEFAULT '');
-             CREATE INDEX IF NOT EXISTS idx_cells_sheet_row ON cells(sheet_id, row_idx);
-             CREATE INDEX IF NOT EXISTS idx_cells_sheet_col ON cells(sheet_id, col_idx);
-             CREATE INDEX IF NOT EXISTS idx_operations_sheet ON operations(sheet_id);
-             CREATE INDEX IF NOT EXISTS idx_sheets_session ON sheets(session_id);
-             CREATE INDEX IF NOT EXISTS idx_rules_kind ON rules(kind);
-             INSERT INTO app_settings(key, value) VALUES('schema_version', '3');",
-        )
-        .unwrap();
+            let (template, params): (Option<String>, Option<String>) = conn
+                .query_row(
+                    "SELECT template, params FROM rules WHERE id='legacy-rule'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(template, None);
+            assert_eq!(params, None);
+        }
     }
 
     #[test]
-    fn migrate_v3_to_v4_adds_template_column() {
+    fn repeat_migration_is_idempotent() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("ruT0datakit.db");
         let conn = Connection::open(&db_path).unwrap();
-        build_v3_db(&conn);
-        assert!(!column_exists(&conn, "rules", "template"));
-        assert_eq!(read_schema_version(&conn).unwrap(), Some(3));
-        let note = migrate(&db_path, &conn).unwrap();
-        assert!(note.contains("v3→v5"), "note={}", note);
-        assert_eq!(read_schema_version(&conn).unwrap(), Some(SCHEMA_VERSION));
-        assert!(column_exists(&conn, "rules", "template"));
-    }
+        build_v1_db(&conn);
 
-    #[test]
-    fn migrate_v3_to_v4_is_idempotent() {
-        let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("ruT0datakit.db");
-        let conn = Connection::open(&db_path).unwrap();
-        build_v3_db(&conn);
         migrate(&db_path, &conn).unwrap();
-        // 第二次：版本已是 5，走幂等补建分支。
         let note = migrate(&db_path, &conn).unwrap();
-        assert!(note.contains("ok"));
-        assert_eq!(read_schema_version(&conn).unwrap(), Some(SCHEMA_VERSION));
-        assert!(column_exists(&conn, "rules", "template"));
-        assert!(column_exists(&conn, "rules", "params"));
-        // 直接调 migrate_v3_to_v4 也应幂等（不报 duplicate column）。
-        migrate_v3_to_v4(&conn).unwrap();
-        assert!(column_exists(&conn, "rules", "template"));
+
+        assert_eq!(note, "schema_version=5 ok");
+        assert_legacy_data_is_readable(&conn);
+        assert_v5_schema(&conn);
     }
 
     #[test]
-    fn migrate_v2_to_v4_chain_adds_template_column() {
+    fn failed_supported_migration_rolls_back_schema_and_version() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("ruT0datakit.db");
         let conn = Connection::open(&db_path).unwrap();
-        build_v2_db(&conn);
-        assert!(!column_exists(&conn, "operations", "before_snapshot_json"));
-        assert!(!column_exists(&conn, "rules", "template"));
-        assert_eq!(read_schema_version(&conn).unwrap(), Some(2));
-        let note = migrate(&db_path, &conn).unwrap();
-        assert!(note.contains("v2→v5"), "note={}", note);
-        assert_eq!(read_schema_version(&conn).unwrap(), Some(SCHEMA_VERSION));
-        assert!(column_exists(&conn, "operations", "before_snapshot_json"));
-        assert!(column_exists(&conn, "rules", "template"));
-        assert!(column_exists(&conn, "rules", "params"));
-    }
+        build_v1_db(&conn);
+        conn.execute_batch("CREATE VIEW rules AS SELECT 'placeholder' AS kind;")
+            .unwrap();
 
-    /// v4 DB（含 template，但 rules 无 params 列）。
-    fn build_v4_db(conn: &Connection) {
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS sessions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
-                source_path TEXT, source_type TEXT NOT NULL,
-                row_count INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-             CREATE TABLE IF NOT EXISTS sheets (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id INTEGER NOT NULL, name TEXT NOT NULL,
-                position INTEGER NOT NULL DEFAULT 0,
-                column_order TEXT, column_visibility TEXT,
-                created_at TEXT NOT NULL);
-             CREATE TABLE IF NOT EXISTS cells (
-                sheet_id INTEGER NOT NULL, row_idx INTEGER NOT NULL,
-                col_idx INTEGER NOT NULL, value TEXT,
-                PRIMARY KEY (sheet_id, row_idx, col_idx));
-             CREATE TABLE IF NOT EXISTS operations (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                sheet_id INTEGER, kind TEXT NOT NULL,
-                params_json TEXT, before_snapshot_json TEXT, result_snapshot_json TEXT,
-                created_at TEXT NOT NULL);
-             CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT);
-             CREATE TABLE IF NOT EXISTS rules (
-                id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL,
-                field TEXT, pattern TEXT, replacement TEXT, template TEXT,
-                enabled INTEGER NOT NULL DEFAULT 1, description TEXT NOT NULL DEFAULT '');
-             CREATE INDEX IF NOT EXISTS idx_cells_sheet_row ON cells(sheet_id, row_idx);
-             CREATE INDEX IF NOT EXISTS idx_cells_sheet_col ON cells(sheet_id, col_idx);
-             CREATE INDEX IF NOT EXISTS idx_operations_sheet ON operations(sheet_id);
-             CREATE INDEX IF NOT EXISTS idx_sheets_session ON sheets(session_id);
-             CREATE INDEX IF NOT EXISTS idx_rules_kind ON rules(kind);
-             INSERT INTO app_settings(key, value) VALUES('schema_version', '4');",
-        )
-        .unwrap();
+        let error = migrate(&db_path, &conn).unwrap_err();
+
+        assert!(matches!(error, DbError::Sqlite(_)));
+        assert_eq!(read_schema_version(&conn).unwrap(), Some(V1));
+        assert!(!table_exists(&conn, "rules"));
+        assert_legacy_data_is_readable(&conn);
     }
 
     #[test]
-    fn migrate_v4_to_v5_adds_params_column() {
+    fn future_schema_is_backed_up_and_left_unchanged() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("ruT0datakit.db");
         let conn = Connection::open(&db_path).unwrap();
-        build_v4_db(&conn);
-        assert!(!column_exists(&conn, "rules", "params"));
-        assert_eq!(read_schema_version(&conn).unwrap(), Some(4));
-        let note = migrate(&db_path, &conn).unwrap();
-        assert!(note.contains("v4→v5"), "note={}", note);
-        assert_eq!(read_schema_version(&conn).unwrap(), Some(SCHEMA_VERSION));
-        assert!(column_exists(&conn, "rules", "params"));
-    }
+        build_v1_db(&conn);
+        set_fixture_version(&conn, SCHEMA_VERSION + 1);
 
-    #[test]
-    fn migrate_v4_to_v5_is_idempotent() {
-        let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("ruT0datakit.db");
-        let conn = Connection::open(&db_path).unwrap();
-        build_v4_db(&conn);
-        migrate(&db_path, &conn).unwrap();
-        // 第二次：版本已是 5，走幂等补建分支。
-        let note = migrate(&db_path, &conn).unwrap();
-        assert!(note.contains("ok"));
-        assert_eq!(read_schema_version(&conn).unwrap(), Some(SCHEMA_VERSION));
-        assert!(column_exists(&conn, "rules", "params"));
-        // 直接调 migrate_v4_to_v5 也应幂等（不报 duplicate column）。
-        migrate_v4_to_v5(&conn).unwrap();
-        assert!(column_exists(&conn, "rules", "params"));
+        let error = migrate(&db_path, &conn).unwrap_err();
+
+        assert!(matches!(error, DbError::Migration(_)));
+        assert_eq!(
+            read_schema_version(&conn).unwrap(),
+            Some(SCHEMA_VERSION + 1)
+        );
+        assert!(!table_exists(&conn, "rules"));
+        assert_legacy_data_is_readable(&conn);
+
+        let backups: Vec<PathBuf> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("ruT0datakit.db.bak."))
+            })
+            .collect();
+        assert_eq!(backups.len(), 1);
+        let backup = Connection::open(&backups[0]).unwrap();
+        assert_eq!(
+            read_schema_version(&backup).unwrap(),
+            Some(SCHEMA_VERSION + 1)
+        );
+        assert_legacy_data_is_readable(&backup);
     }
 }
