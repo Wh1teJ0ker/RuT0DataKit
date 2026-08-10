@@ -1044,9 +1044,15 @@ impl DbManager {
     }
 
     /// 正则行级搜索：返回有命中 cell 的 **去重 row_idx**（按 row_idx 升序），
-    /// 服务端分页（`LIMIT/OFFSET` 作用于 distinct row_idx）。
+    /// 服务端分页（`offset/limit` 作用于 distinct row_idx）。
     /// 与 `search_matched_row_ids` 的区别：用 `regex::Regex` 二次精确匹配，
     /// 而非 `LIKE`。语义与 `search_cells_regex` 对齐。
+    ///
+    /// T59：改为复用 `scan_regex_matched_row_ids` 单次候选扫描——一次性取出
+    /// `(row_idx, value)` 全部候选 cell（`LIKE '%'` 预筛 + `row_idx>0`），在
+    /// Rust 侧逐 cell 跑 `regex::is_match`，按 `row_idx` 升序去重收集命中行，
+    /// 最后切片分页。不再对每个 row_idx 单独执行 `SELECT`（消除 N+1）。
+    /// NULL value（`None`）按既有语义跳过。
     pub fn search_matched_row_ids_regex(
         &self,
         sheet_id: i64,
@@ -1055,104 +1061,29 @@ impl DbManager {
         offset: u32,
         limit: u32,
     ) -> Result<Vec<u32>, DbError> {
-        let re = Regex::new(pattern)
-            .map_err(|e| DbError::Migration(format!("invalid regex `{}`: {}", pattern, e)))?;
-        let conn = self.conn.lock().expect("db mutex poisoned");
-        // 先取 distinct row_idx（按 row_idx 升序），再 regex 过滤，最后分页。
-        let sql = if col_idx.is_some() {
-            "SELECT DISTINCT row_idx FROM cells
-             WHERE sheet_id = ?1 AND col_idx = ?2 AND row_idx > 0
-               AND value LIKE ?3 ESCAPE '\\'
-             ORDER BY row_idx ASC"
-        } else {
-            "SELECT DISTINCT row_idx FROM cells
-             WHERE sheet_id = ?1 AND row_idx > 0
-               AND value LIKE ?2 ESCAPE '\\'
-             ORDER BY row_idx ASC"
-        };
-        let mut stmt = conn.prepare(sql)?;
-        let like_pattern = "%".to_string();
-        let rows: rusqlite::Result<Vec<u32>> = if let Some(c) = col_idx {
-            let mapped = stmt.query_map(params![sheet_id, c as i64, like_pattern], |r| {
-                r.get::<_, i64>(0).map(|v| v as u32)
-            })?;
-            let mut v = Vec::new();
-            for row in mapped {
-                v.push(row?);
-            }
-            Ok(v)
-        } else {
-            let mapped = stmt.query_map(params![sheet_id, like_pattern], |r| {
-                r.get::<_, i64>(0).map(|v| v as u32)
-            })?;
-            let mut v = Vec::new();
-            for row in mapped {
-                v.push(row?);
-            }
-            Ok(v)
-        };
-        let mut all = rows?;
-        // 取每个 row_idx 的 cell values 做 regex 过滤
-        let mut filtered: Vec<u32> = Vec::new();
-        for rid in all.drain(..) {
-            let matched = if let Some(c) = col_idx {
-                let val: Option<String> = conn.query_row(
-                    "SELECT value FROM cells WHERE sheet_id = ?1 AND col_idx = ?2 AND row_idx = ?3",
-                    params![sheet_id, c as i64, rid as i64],
-                    |r| r.get(0),
-                )?;
-                val.map(|v| re.is_match(&v)).unwrap_or(false)
-            } else {
-                // 任意列命中即可
-                let mut stmt2 = conn.prepare(
-                    "SELECT value FROM cells
-                     WHERE sheet_id = ?1 AND row_idx = ?2 AND value IS NOT NULL
-                     ORDER BY col_idx ASC",
-                )?;
-                let mut hit = false;
-                let vals = stmt2.query_map(params![sheet_id, rid as i64], |r| {
-                    r.get::<_, Option<String>>(0)
-                })?;
-                for v in vals {
-                    if let Some(ref s) = v? {
-                        if re.is_match(s) {
-                            hit = true;
-                            break;
-                        }
-                    }
-                }
-                hit
-            };
-            if matched {
-                filtered.push(rid);
-            }
-        }
-        let start = (offset as usize).min(filtered.len());
-        let end = (start + limit as usize).min(filtered.len());
-        Ok(filtered[start..end].to_vec())
+        let all = self.scan_regex_matched_row_ids(sheet_id, col_idx, pattern)?;
+        let start = (offset as usize).min(all.len());
+        let end = (start + limit as usize).min(all.len());
+        Ok(all[start..end].to_vec())
     }
 
-    /// 统计正则搜索命中的 **行数**（`COUNT(DISTINCT row_idx)` 后由 regex 过滤）。
+    /// 统计正则搜索命中的 **行数**。
+    ///
+    /// T59：改为复用 `scan_regex_matched_row_ids` 单次扫描取长度，
+    /// 不再通过 `search_matched_row_ids_regex(0, u32::MAX)` 递归复用完整搜索。
     pub fn count_matched_rows_regex(
         &self,
         sheet_id: i64,
         col_idx: Option<u32>,
         pattern: &str,
     ) -> Result<u32, DbError> {
-        // 复用 search_matched_row_ids_regex 逻辑，取全量再数 length。
-        // 性能：sheet 内行数有限（<1万），可接受；超大表需后续优化。
-        let rows = self.search_matched_row_ids_regex(sheet_id, col_idx, pattern, 0, u32::MAX)?;
-        Ok(rows.len() as u32)
+        let all = self.scan_regex_matched_row_ids(sheet_id, col_idx, pattern)?;
+        Ok(all.len() as u32)
     }
 
-    /// 正则行级搜索：单次扫描同时返回分页结果与 total，不再二次重扫。
-    ///
-    /// 等价于 `search_matched_row_ids_regex` + `count_matched_rows_regex`，
-    /// 但只扫描候选 cells 一次：`LIKE '%'` 预筛 + `regex::is_match` 过滤 +
-    /// 按 `row_idx` 升序去重（NULL value 跳过），在同一次遍历中同时收集
-    /// 命中 row_idx 列表和 total，最后对 row_idx 列表做 offset/limit 分页。
-    ///
-    /// 返回 `(本页 row_idx 列表, total 命中行数)`。
+    /// 正则行级搜索（单次扫描）：返回 `(当前页 row_idx, 命中行总数)`。
+    /// 一次候选扫描同时给出分页结果与 total，避免 `count_matched_rows_regex`
+    /// 通过 `u32::MAX` 递归复用完整搜索（T59）。
     pub fn search_matched_rows_regex_with_total(
         &self,
         sheet_id: i64,
@@ -1161,78 +1092,68 @@ impl DbManager {
         offset: u32,
         limit: u32,
     ) -> Result<(Vec<u32>, u32), DbError> {
+        let all = self.scan_regex_matched_row_ids(sheet_id, col_idx, pattern)?;
+        let total = all.len() as u32;
+        let start = (offset as usize).min(all.len());
+        let end = (start + limit as usize).min(all.len());
+        Ok((all[start..end].to_vec(), total))
+    }
+
+    /// 正则行级搜索的共享单次扫描核心（T59）。
+    ///
+    /// 一次性以 `LIKE '%' ESCAPE '\'` 预筛 `row_idx>0` 的全部候选 cell，
+    /// 取 `(row_idx, value)`，按 `row_idx`、`col_idx` 升序遍历，逐 cell 跑
+    /// `regex::is_match`（`None` value 跳过——保留 NULL 跳过语义），首次命中
+    /// 的 row_idx 入队（行已按 `row_idx` 排序，故去重只需比较前一行）。
+    /// 返回全部命中 row_idx（升序、去重），由调用方切片分页或取长度。
+    fn scan_regex_matched_row_ids(
+        &self,
+        sheet_id: i64,
+        col_idx: Option<u32>,
+        pattern: &str,
+    ) -> Result<Vec<u32>, DbError> {
         let re = Regex::new(pattern)
             .map_err(|e| DbError::Migration(format!("invalid regex `{}`: {}", pattern, e)))?;
         let conn = self.conn.lock().expect("db mutex poisoned");
-        // 先取 distinct row_idx（按 row_idx 升序），再 regex 过滤，
-        // 在同一次遍历里同时收集命中 row_idx 和 total，避免二次重扫。
-        let sql = if col_idx.is_some() {
-            "SELECT DISTINCT row_idx FROM cells
-             WHERE sheet_id = ?1 AND col_idx = ?2 AND row_idx > 0
-               AND value LIKE ?3 ESCAPE '\\'
-             ORDER BY row_idx ASC"
-        } else {
-            "SELECT DISTINCT row_idx FROM cells
-             WHERE sheet_id = ?1 AND row_idx > 0
-               AND value LIKE ?2 ESCAPE '\\'
-             ORDER BY row_idx ASC"
-        };
-        let mut stmt = conn.prepare(sql)?;
         let like_pattern = "%".to_string();
-        let mut all: Vec<u32> = Vec::new();
-        if let Some(c) = col_idx {
-            let mapped = stmt.query_map(params![sheet_id, c as i64, like_pattern], |r| {
-                r.get::<_, i64>(0).map(|v| v as u32)
-            })?;
-            for row in mapped {
-                all.push(row?);
-            }
+        let map_row = |r: &rusqlite::Row<'_>| -> rusqlite::Result<(u32, Option<String>)> {
+            Ok((r.get::<_, i64>(0)? as u32, r.get::<_, Option<String>>(1)?))
+        };
+        // 单次扫描：取 (row_idx, value) 全部候选行。col_idx 限定列时每行一值；
+        // 全表搜索时按 (row_idx, col_idx) 升序遍历，任意列命中即计入该行。
+        let mut stmt = if col_idx.is_some() {
+            conn.prepare(
+                "SELECT row_idx, value FROM cells
+                 WHERE sheet_id = ?1 AND col_idx = ?2 AND row_idx > 0
+                   AND value LIKE ?3 ESCAPE '\\'
+                 ORDER BY row_idx ASC, col_idx ASC",
+            )?
         } else {
-            let mapped = stmt.query_map(params![sheet_id, like_pattern], |r| {
-                r.get::<_, i64>(0).map(|v| v as u32)
-            })?;
-            for row in mapped {
-                all.push(row?);
-            }
-        }
-        // 取每个 row_idx 的 cell values 做 regex 过滤；命中收集到 filtered。
-        let mut filtered: Vec<u32> = Vec::new();
-        for rid in all.drain(..) {
-            let matched = if let Some(c) = col_idx {
-                let val: Option<String> = conn.query_row(
-                    "SELECT value FROM cells WHERE sheet_id = ?1 AND col_idx = ?2 AND row_idx = ?3",
-                    params![sheet_id, c as i64, rid as i64],
-                    |r| r.get(0),
-                )?;
-                val.map(|v| re.is_match(&v)).unwrap_or(false)
-            } else {
-                let mut stmt2 = conn.prepare(
-                    "SELECT value FROM cells
-                     WHERE sheet_id = ?1 AND row_idx = ?2 AND value IS NOT NULL
-                     ORDER BY col_idx ASC",
-                )?;
-                let mut hit = false;
-                let vals = stmt2.query_map(params![sheet_id, rid as i64], |r| {
-                    r.get::<_, Option<String>>(0)
-                })?;
-                for v in vals {
-                    if let Some(ref s) = v? {
-                        if re.is_match(s) {
-                            hit = true;
-                            break;
-                        }
-                    }
+            conn.prepare(
+                "SELECT row_idx, value FROM cells
+                 WHERE sheet_id = ?1 AND row_idx > 0
+                   AND value LIKE ?2 ESCAPE '\\'
+                 ORDER BY row_idx ASC, col_idx ASC",
+            )?
+        };
+        let rows = if let Some(c) = col_idx {
+            stmt.query_map(params![sheet_id, c as i64, like_pattern], map_row)?
+        } else {
+            stmt.query_map(params![sheet_id, like_pattern], map_row)?
+        };
+        let mut matched: Vec<u32> = Vec::new();
+        let mut prev: Option<u32> = None;
+        for row in rows {
+            let (rid, value) = row?;
+            // NULL 跳过：None value 不参与匹配。
+            if let Some(ref val) = value {
+                if re.is_match(val) && prev != Some(rid) {
+                    matched.push(rid);
+                    prev = Some(rid);
                 }
-                hit
-            };
-            if matched {
-                filtered.push(rid);
             }
         }
-        let total = filtered.len() as u32;
-        let start = (offset as usize).min(filtered.len());
-        let end = (start + limit as usize).min(filtered.len());
-        Ok((filtered[start..end].to_vec(), total))
+        Ok(matched)
     }
 
     /// 批量取多行的全部 cells（按 `row_idx IN (...)` 查询）。
