@@ -153,7 +153,7 @@ mod tests {
         assert_eq!(headers, vec!["a".to_string(), "b".into()]);
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].fields.get("a").map(|s| s.as_str()), Some("1"));
-        assert!(rows[0].fields.get("b").is_none());
+        assert!(!rows[0].fields.contains_key("b"));
         assert_eq!(rows[1].fields.get("b").map(|s| s.as_str()), Some("4"));
         assert_eq!(rows[1].fields.get("col2").map(|s| s.as_str()), Some("5"));
     }

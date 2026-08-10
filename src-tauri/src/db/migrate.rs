@@ -536,7 +536,8 @@ mod tests {
 
     #[test]
     fn migrate_supported_versions_to_v5_in_order_without_data_loss() {
-        let fixtures: [(i64, fn(&Connection)); 4] = [
+        type MigFixture = (i64, fn(&Connection));
+        let fixtures: [MigFixture; 4] = [
             (V1, build_v1_db),
             (V2, build_v2_db),
             (V3, build_v3_db),

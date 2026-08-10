@@ -265,9 +265,10 @@ mod tests {
     #[test]
     fn valid_file_round_trips() {
         let dir = tempdir().unwrap();
-        let mut s = AppSettings::default();
-        s.tshark_path = Some("/usr/bin/tshark".into());
-        s.page_size = Some(100);
+        let s = AppSettings {
+            tshark_path: Some("/usr/bin/tshark".into()),
+            page_size: Some(100),
+        };
         write_settings_to(dir.path(), &s).unwrap();
 
         match read_settings_from(dir.path()) {
@@ -314,8 +315,10 @@ mod tests {
     fn write_replaces_existing_atomically() {
         // 原子写入：第一次写成功后内容完整；第二次写覆盖第一次。
         let dir = tempdir().unwrap();
-        let mut s = AppSettings::default();
-        s.tshark_path = Some("/bin/tshark".into());
+        let mut s = AppSettings {
+            tshark_path: Some("/bin/tshark".into()),
+            page_size: None,
+        };
         write_settings_to(dir.path(), &s).unwrap();
         assert!(dir.path().join("settings.json").exists());
 
@@ -356,8 +359,10 @@ mod tests {
         let dir = tempdir().unwrap();
 
         // save_tshark_path 等价路径。
-        let mut s1 = AppSettings::default();
-        s1.tshark_path = Some("/usr/local/bin/tshark".into());
+        let s1 = AppSettings {
+            tshark_path: Some("/usr/local/bin/tshark".into()),
+            page_size: None,
+        };
         with_settings_lock(|| write_settings_to(dir.path(), &s1)).unwrap();
 
         let mut s2 = match read_settings_from(dir.path()) {
