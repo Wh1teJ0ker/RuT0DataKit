@@ -126,14 +126,31 @@ export function reducer(state, action) {
             action.payload.page,
             action.payload.pageSize ?? s.pageSize
           );
+          // T63：回填行状态高亮——翻页后从 statusHighlights map 恢复
+          // 脱敏/校验/提取标记。toRowObjects 默认 status="default"，这里按
+          // row.key 查 statusHighlights 覆盖。statusHighlights 由
+          // APPLY_ROW_STATUSES 写入，翻页不丢失（不在本 action 中清空）。
+          const rowsWithStatus = rows.map((r) => {
+            const savedStatus = s.statusHighlights?.[r.key];
+            return savedStatus ? { ...r, status: savedStatus } : r;
+          });
+          // T63：columnOrder 保留——用户拖拽重排列后翻页不丢失。
+          // 仅当 s.columnOrder 已存在且与 headers 集合一致时保留旧顺序；
+          // 否则（首次加载 / headers 变化）用 [...headers]。
+          const orderUnchanged =
+            s.columnOrder &&
+            s.columnOrder.length === headers.length &&
+            s.columnOrder.every((h) => headers.includes(h)) &&
+            headers.every((h) => s.columnOrder.includes(h));
+          const columnOrder = orderUnchanged ? s.columnOrder : [...headers];
           return {
             ...s,
             headers,
-            rows,
+            rows: rowsWithStatus,
             total: action.payload.total ?? s.total,
             page: action.payload.page ?? s.page,
             pageSize: action.payload.pageSize ?? s.pageSize,
-            columnOrder: [...headers],
+            columnOrder,
             // 单遍构造（Object.fromEntries），避免 reduce + spread 的 O(C²) 复制；
             // 保留 s.columnVisibility 既有值，未配置默认 true（与旧 reduce 语义一致）。
             columnVisibility: Object.fromEntries(
