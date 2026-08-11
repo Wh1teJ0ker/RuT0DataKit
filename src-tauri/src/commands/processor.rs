@@ -1018,6 +1018,383 @@ pub fn validate_rows_to_two_sheets(
 }
 
 // ---------------------------------------------------------------------------
+// 多规则行级校验 → 双 Tab 输出（T68）
+// ---------------------------------------------------------------------------
+
+/// 单条校验规则的跨字段配置（仅 idcard 规则用，camelCase）。
+///
+/// 前端为 idcard-validate 规则条目附上此配置：
+/// - `checkSex=true` + `sexColumn="sex"` → 比对性别列值与 idcard 第 17 位推断性别
+/// - `checkBirth=true` + `birthColumn="birth"` → 比对出生日期列值与 idcard[6..14]
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CrossFieldConfig {
+    /// 是否比对性别一致性。
+    pub check_sex: bool,
+    /// 性别列名（`checkSex=true` 时必填）。
+    pub sex_column: Option<String>,
+    /// 是否比对出生日期一致性。
+    pub check_birth: bool,
+    /// 出生日期列名（`checkBirth=true` 时必填）。
+    pub birth_column: Option<String>,
+}
+
+/// 一条「列 + 规则」校验组合（camelCase）。T68。
+///
+/// 前端为源 sheet 的每个待校验列各发一条：`column` = 源列名，
+/// `ruleId` 指向 DB `rules` 表（如 `username-validate` / `name-validate` /
+/// `idcard-validate` 等）。`crossField` 仅在 `ruleId` 为 idcard-validate 时
+/// 携带，用于触发跨字段联合校验。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MultiRuleValidation {
+    /// 要校验的源列名。
+    pub column: String,
+    /// 校验规则 id（指向 DB `rules` 表）。
+    pub rule_id: String,
+    /// 跨字段配置（仅 idcard-validate 规则用）。
+    #[serde(default)]
+    pub cross_field: Option<CrossFieldConfig>,
+}
+
+/// 多规则行级校验核心逻辑（接受 `&DbManager`，便于单测直接调用）。T68。
+///
+/// 与 [`validate_rows_to_two_sheets_inner`]（固定 7 字段映射）不同，本函数
+/// 接收任意「列名 + 规则 id」组合，逐行逐规则分发校验：
+/// - `phone-validate` → 直接调 [`is_valid_phone`]（整串 11 位 + 1 开头 + 前缀白名单）
+/// - `rule.params` 非空 → [`validate_extracted`]（函数式：Username/Sex/Birth/
+///   IdCard/Address/PhonePrefix/Luhn/Ipv4/Ipv6 分发）
+/// - `rule.pattern` 非空 → 正则 `is_match`（如 name-validate）
+/// - 其他 → 默认通过
+///
+/// 身份证跨字段联合校验（仅当 idcard-validate 规则带 `crossField` 配置 +
+/// idcard 本身校验通过）：
+/// - 比对性别：[`normalize_gender`](Self::normalize_gender)(sex_col_val) vs [`idcard_gender`](ruT0_data_kit_core::processor::func_validator::idcard_gender)
+/// - 比对出生日期：`idcard_val[6..14] == birth_col_val`（且 birth 是 8 位数字）
+///
+/// 整行分流：任一规则失败 → 整行入 invalid + 收集 [`RowInvalidReason`]；
+/// 全通过 → valid。双 Tab 写出（`{源sheet名}_校验通过` / `_校验失败`），
+/// 保留原列不新增。`phone_prefixes` 全局应用于 phone-validate 规则。
+pub fn validate_multi_rules_to_two_sheets_inner(
+    db: &DbManager,
+    sheet_id: i64,
+    session_id: i64,
+    rules: &[MultiRuleValidation],
+    phone_prefixes: &[String],
+) -> Result<TwoSheetResult, String> {
+    if rules.is_empty() {
+        return Err("请至少选择一条校验规则".into());
+    }
+
+    let sheet_name = db
+        .get_sheet_name(sheet_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("sheet {sheet_id} 不存在"))?;
+
+    // 表头（row_idx=0）。
+    let header_cells = db.query_row_cells(sheet_id, 0).map_err(|e| e.to_string())?;
+    let mut header_pairs: Vec<(u32, String)> = header_cells
+        .iter()
+        .map(|c| (c.col_idx, c.value.clone().unwrap_or_default()))
+        .collect();
+    header_pairs.sort_by_key(|(col, _)| *col);
+    let headers: Vec<String> = header_pairs.into_iter().map(|(_, v)| v).collect();
+    let col_count = headers.len();
+
+    // 分页读全部数据行 cells（query_cells 已排除 row_idx=0 表头）。
+    let total_rows = db.count_rows(sheet_id).map_err(|e| e.to_string())?;
+    let page_size: u32 = 500;
+    let pages = total_rows.div_ceil(page_size).max(1);
+    let mut all_cells: Vec<Cell> = Vec::new();
+    for p in 1..=pages {
+        let cells = db
+            .query_cells(sheet_id, p, page_size)
+            .map_err(|e| e.to_string())?;
+        all_cells.extend(cells);
+    }
+
+    // 按 row_idx 分组，组内按 col_idx 排序。
+    let mut grouped: BTreeMap<u32, Vec<(u32, Option<String>)>> = BTreeMap::new();
+    for c in all_cells {
+        grouped
+            .entry(c.row_idx)
+            .or_default()
+            .push((c.col_idx, c.value));
+    }
+
+    // 预解析每条规则：col_idx + Rule（从 DB 取，找不到 → 报错）。
+    // 同时预编译正则（rule.pattern 非空时），避免逐行重复编译。
+    struct ResolvedRule {
+        column: String,
+        col_idx: u32,
+        rule: ruT0_data_kit_core::processor::Rule,
+        re: Option<regex::Regex>,
+        cross_field: Option<CrossFieldConfig>,
+    }
+    let mut resolved: Vec<ResolvedRule> = Vec::with_capacity(rules.len());
+    for rv in rules {
+        let col_idx = db
+            .find_col_idx(sheet_id, &rv.column)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("列 `{}` 不存在", rv.column))?;
+        let rule = db
+            .get_rule(&rv.rule_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("规则 `{}` 不存在", rv.rule_id))?;
+        let re = if let Some(ref pattern) = rule.pattern {
+            Some(regex::Regex::new(pattern).map_err(|e| format!("正则编译失败: {e}"))?)
+        } else {
+            None
+        };
+        resolved.push(ResolvedRule {
+            column: rv.column.clone(),
+            col_idx,
+            rule,
+            re,
+            cross_field: rv.cross_field.clone(),
+        });
+    }
+
+    // 逐行逐规则校验。
+    let mut valid_rows: Vec<Vec<Option<String>>> = Vec::new();
+    let mut invalid_rows: Vec<Vec<Option<String>>> = Vec::new();
+    let mut invalid_reasons: Vec<RowInvalidReason> = Vec::new();
+
+    for (&row_idx, cells_row) in grouped.iter() {
+        debug_assert!(row_idx > 0, "T68: query_cells should exclude header");
+        // 行内按 col_idx 排序对齐到 col_count 列（缺列补 None）。
+        let mut row_vals: Vec<Option<String>> = vec![None; col_count];
+        let mut sorted_cells = cells_row.clone();
+        sorted_cells.sort_by_key(|(col, _)| *col);
+        for (col, val) in sorted_cells {
+            if (col as usize) < row_vals.len() {
+                row_vals[col as usize] = val;
+            }
+        }
+
+        let mut row_invalid_reasons: Vec<(String, String)> = Vec::new();
+        let mut idcard_valid = false;
+        let mut idcard_val = String::new();
+        let mut cross_field_config: Option<&CrossFieldConfig> = None;
+
+        for rr in &resolved {
+            let value = row_vals
+                .get(rr.col_idx as usize)
+                .cloned()
+                .flatten()
+                .unwrap_or_default();
+
+            // 分发校验：
+            // - phone-validate → is_valid_phone（整串严格校验）
+            // - rule.params 非空 → validate_extracted（函数式分发）
+            // - rule.pattern 非空 → 正则 is_match
+            // - 其他 → 默认通过
+            let (passed, msg) = if rr.rule.id == "phone-validate" {
+                let ok = is_valid_phone(&value, phone_prefixes);
+                (
+                    ok,
+                    if ok {
+                        String::new()
+                    } else {
+                        "手机号须为 11 位、1 开头".into()
+                    },
+                )
+            } else if rr.rule.params.is_some() {
+                validate_extracted(&rr.rule, &value)
+            } else if let Some(ref re) = rr.re {
+                let ok = re.is_match(&value);
+                (
+                    ok,
+                    if ok {
+                        String::new()
+                    } else {
+                        format!("值不匹配规则 {}", rr.rule.name)
+                    },
+                )
+            } else {
+                (true, String::new())
+            };
+
+            if !passed {
+                row_invalid_reasons.push((rr.column.clone(), msg));
+            }
+
+            // 记录 idcard 状态用于跨字段联合校验。
+            if rr.rule.id == "idcard-validate"
+                || rr.rule.params.as_ref() == Some(&ExtractParams::IdCard)
+            {
+                idcard_valid = passed;
+                idcard_val = value;
+                cross_field_config = rr.cross_field.as_ref();
+            }
+        }
+
+        // 跨字段联合校验（仅当 idcard 有效 + 配置了 cross_field）。
+        if idcard_valid {
+            if let Some(cf) = cross_field_config {
+                if cf.check_sex {
+                    if let Some(ref sex_col) = cf.sex_column {
+                        let sex_idx = db
+                            .find_col_idx(sheet_id, sex_col)
+                            .map_err(|e| e.to_string())?
+                            .ok_or_else(|| format!("性别列 `{sex_col}` 不存在"))?;
+                        let sex_val = row_vals
+                            .get(sex_idx as usize)
+                            .cloned()
+                            .flatten()
+                            .unwrap_or_default();
+                        if let Some(norm) = normalize_gender(&sex_val) {
+                            if let Some(inferred) = idcard_gender(&idcard_val) {
+                                if norm != inferred {
+                                    row_invalid_reasons.push((
+                                        sex_col.clone(),
+                                        format!(
+                                            "性别不一致: 身份证推断{inferred}，性别列{sex_val}"
+                                        ),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+                if cf.check_birth {
+                    if let Some(ref birth_col) = cf.birth_column {
+                        let birth_idx = db
+                            .find_col_idx(sheet_id, birth_col)
+                            .map_err(|e| e.to_string())?
+                            .ok_or_else(|| format!("出生日期列 `{birth_col}` 不存在"))?;
+                        let birth_val = row_vals
+                            .get(birth_idx as usize)
+                            .cloned()
+                            .flatten()
+                            .unwrap_or_default();
+                        if is_valid_birth(&birth_val) {
+                            // idcard_val 一定 18 位且前 17 纯数字（is_valid_idcard 已保证）
+                            let idcard_birth = &idcard_val[6..14];
+                            if birth_val != idcard_birth {
+                                row_invalid_reasons.push((
+                                    birth_col.clone(),
+                                    format!(
+                                        "出生日期与身份证号不一致: 身份证{idcard_birth}，出生日期{birth_val}"
+                                    ),
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if row_invalid_reasons.is_empty() {
+            valid_rows.push(row_vals);
+        } else {
+            for (field, reason) in row_invalid_reasons {
+                invalid_reasons.push(RowInvalidReason {
+                    source_row: row_idx,
+                    field,
+                    reason,
+                });
+            }
+            invalid_rows.push(row_vals);
+        }
+    }
+
+    // 双 Tab 写出（复用 validate_rows_to_two_sheets_inner 的模式）。
+    let valid_sheet_name = format!("{sheet_name}_校验通过");
+    let invalid_sheet_name = format!("{sheet_name}_校验失败");
+    let valid_sheet_id = db
+        .create_sheet(session_id, &valid_sheet_name, 0)
+        .map_err(|e| e.to_string())?;
+    let invalid_sheet_id = db
+        .create_sheet(session_id, &invalid_sheet_name, 0)
+        .map_err(|e| e.to_string())?;
+
+    let write_sheet = |sid: i64, rows: &[Vec<Option<String>>]| -> Result<u32, String> {
+        let mut cells: Vec<Cell> = Vec::with_capacity((rows.len() + 1) * col_count.max(1));
+        // 表头（row_idx=0）
+        for (col, header) in headers.iter().enumerate() {
+            cells.push(Cell {
+                sheet_id: sid,
+                row_idx: 0,
+                col_idx: col as u32,
+                value: Some(header.clone()),
+            });
+        }
+        // 数据行（从 row_idx=1 起）
+        for (r, row) in rows.iter().enumerate() {
+            for (c, val) in row.iter().enumerate() {
+                cells.push(Cell {
+                    sheet_id: sid,
+                    row_idx: (r + 1) as u32,
+                    col_idx: c as u32,
+                    value: val.clone(),
+                });
+            }
+        }
+        if !cells.is_empty() {
+            db.write_cells(sid, &cells).map_err(|e| e.to_string())?;
+        }
+        Ok(rows.len() as u32)
+    };
+
+    let valid_count = write_sheet(valid_sheet_id, &valid_rows)?;
+    let invalid_count = write_sheet(invalid_sheet_id, &invalid_rows)?;
+
+    db.log_operation(
+        Some(sheet_id),
+        "validate_multi_rules_to_two_sheets",
+        &serde_json::json!({
+            "sourceSheetId": sheet_id,
+            "sourceSheetName": sheet_name,
+            "validSheetId": valid_sheet_id,
+            "invalidSheetId": invalid_sheet_id,
+            "validCount": valid_count,
+            "invalidCount": invalid_count,
+            "rules": rules.iter().map(|r| {
+                serde_json::json!({ "column": r.column, "ruleId": r.rule_id })
+            }).collect::<Vec<_>>(),
+        })
+        .to_string(),
+        "{}",
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(TwoSheetResult {
+        valid_sheet: ParseResult {
+            new_sheet_id: valid_sheet_id,
+            headers: headers.clone(),
+            row_count: valid_count,
+            skipped: 0,
+        },
+        invalid_sheet: ParseResult {
+            new_sheet_id: invalid_sheet_id,
+            headers,
+            row_count: invalid_count,
+            skipped: 0,
+        },
+        invalid_reasons,
+    })
+}
+
+/// `validate_multi_rules_to_two_sheets` 的 Tauri 命令包装。T68。
+///
+/// 接收任意「列名 + 规则 id」组合（`rules`），逐行逐规则校验 → 整行按
+/// 通过/失败分流到两个新 Tab（`{源sheet名}_校验通过` / `_校验失败`），
+/// 保留原列不新增。`phone_prefixes` 全局应用于 phone-validate 规则。
+/// `rules[i].crossField` 仅在 `ruleId` 为 idcard-validate 时携带，用于触发
+/// 性别/出生日期跨字段联合校验。
+#[tauri::command]
+pub fn validate_multi_rules_to_two_sheets(
+    sheet_id: i64,
+    session_id: i64,
+    rules: Vec<MultiRuleValidation>,
+    phone_prefixes: Vec<String>,
+    db: tauri::State<'_, DbManager>,
+) -> Result<TwoSheetResult, String> {
+    validate_multi_rules_to_two_sheets_inner(&db, sheet_id, session_id, &rules, &phone_prefixes)
+}
+
+// ---------------------------------------------------------------------------
 // 撤销 / 重做 / 可撤销列表命令（v1.1.1）
 // ---------------------------------------------------------------------------
 
@@ -1155,8 +1532,9 @@ pub fn list_undoable_operations(
 #[cfg(test)]
 mod tests {
     use super::{
-        extract_validate_to_new_sheet_inner, validate_rows_to_two_sheets_inner, FieldColumnMapping,
-        RowValidation,
+        extract_validate_to_new_sheet_inner, validate_multi_rules_to_two_sheets_inner,
+        validate_rows_to_two_sheets_inner, CrossFieldConfig, FieldColumnMapping,
+        MultiRuleValidation, RowValidation,
     };
     use crate::db::{Cell, DbManager, OperationRow, UndoableOpRow};
     use ruT0_data_kit_core::processor::rules::RuleRegistry;
@@ -2094,6 +2472,324 @@ mod tests {
         assert_eq!(res.valid_sheet.row_count, 1);
         assert_eq!(res.invalid_sheet.row_count, 1);
         assert!(res.invalid_reasons.iter().any(|r| r.field == "phone"));
+    }
+
+    // ---- T68：多规则行级校验 → 双 Tab 集成测试 ----
+
+    /// 构造一个 7 列 sheet：username/name/sex/birth/idcard/phone/address。
+    /// 表头 + 每行数据；`rows` 为 7 元组切片。返回 (session_id, sheet_id)。
+    fn setup_multi_rules_sheet(
+        db: &DbManager,
+        rows: &[(&str, &str, &str, &str, &str, &str, &str)],
+    ) -> (i64, i64) {
+        let session_id = db
+            .create_session("multi-rules-test", None, "csv", 0)
+            .unwrap();
+        let sheet_id = db.create_sheet(session_id, "raw", 0).unwrap();
+        let headers = [
+            "username", "name", "sex", "birth", "idcard", "phone", "address",
+        ];
+        let mut cells: Vec<Cell> = Vec::with_capacity((rows.len() + 1) * 7);
+        for (c, h) in headers.iter().enumerate() {
+            cells.push(Cell {
+                sheet_id,
+                row_idx: 0,
+                col_idx: c as u32,
+                value: Some((*h).to_string()),
+            });
+        }
+        for (i, row) in rows.iter().enumerate() {
+            let r = (i + 1) as u32;
+            for (c, v) in [row.0, row.1, row.2, row.3, row.4, row.5, row.6]
+                .iter()
+                .enumerate()
+            {
+                cells.push(Cell {
+                    sheet_id,
+                    row_idx: r,
+                    col_idx: c as u32,
+                    value: Some((*v).to_string()),
+                });
+            }
+        }
+        db.write_cells(sheet_id, &cells).unwrap();
+        (session_id, sheet_id)
+    }
+
+    /// 3 条规则全映射，全有效行 → valid sheet 有 N 行，invalid sheet 0 行。
+    #[test]
+    fn validate_multi_rules_to_two_sheets_all_rules_pass() {
+        let (_dir, db) = setup_db();
+        db.seed_builtin_rules().unwrap();
+        // 110105194912310038 → 男，19491231，与 sex=男 / birth=19491231 一致
+        let rows = [
+            (
+                "admin",
+                "张三",
+                "男",
+                "19491231",
+                "110105194912310038",
+                "13412345678",
+                "北京市朝阳区1号101室",
+            ),
+            (
+                "lufe1jian",
+                "李四",
+                "女",
+                "19491231",
+                "11010519491231002X",
+                "15987654321",
+                "北京市朝阳区1号101室",
+            ),
+        ];
+        let (session_id, sheet_id) = setup_multi_rules_sheet(&db, &rows);
+        let rules = vec![
+            MultiRuleValidation {
+                column: "username".into(),
+                rule_id: "username-validate".into(),
+                cross_field: None,
+            },
+            MultiRuleValidation {
+                column: "idcard".into(),
+                rule_id: "idcard-validate".into(),
+                cross_field: Some(CrossFieldConfig {
+                    check_sex: true,
+                    sex_column: Some("sex".into()),
+                    check_birth: true,
+                    birth_column: Some("birth".into()),
+                }),
+            },
+            MultiRuleValidation {
+                column: "phone".into(),
+                rule_id: "phone-validate".into(),
+                cross_field: None,
+            },
+        ];
+        let res = validate_multi_rules_to_two_sheets_inner(&db, sheet_id, session_id, &rules, &[])
+            .unwrap();
+        assert_eq!(res.valid_sheet.row_count, 2);
+        assert_eq!(res.invalid_sheet.row_count, 0);
+        assert!(res.invalid_reasons.is_empty());
+        // 列数 = 7（保留原列）
+        let valid_cells = db
+            .query_cells(res.valid_sheet.new_sheet_id, 0, 100)
+            .unwrap();
+        let max_col = valid_cells.iter().map(|c| c.col_idx).max().unwrap();
+        assert_eq!(max_col, 6);
+    }
+
+    /// 部分行有效部分无效 → 正确分流。
+    #[test]
+    fn validate_multi_rules_to_two_sheets_mixed_pass_fail() {
+        let (_dir, db) = setup_db();
+        db.seed_builtin_rules().unwrap();
+        let rows = [
+            // 有效行
+            (
+                "admin",
+                "张三",
+                "男",
+                "19491231",
+                "110105194912310038",
+                "13412345678",
+                "北京市朝阳区1号101室",
+            ),
+            // 无效行：username 含非法字符（ab.cd）
+            (
+                "ab.cd",
+                "李四",
+                "女",
+                "19491231",
+                "11010519491231002X",
+                "15987654321",
+                "北京市朝阳区1号101室",
+            ),
+        ];
+        let (session_id, sheet_id) = setup_multi_rules_sheet(&db, &rows);
+        let rules = vec![
+            MultiRuleValidation {
+                column: "username".into(),
+                rule_id: "username-validate".into(),
+                cross_field: None,
+            },
+            MultiRuleValidation {
+                column: "idcard".into(),
+                rule_id: "idcard-validate".into(),
+                cross_field: None,
+            },
+        ];
+        let res = validate_multi_rules_to_two_sheets_inner(&db, sheet_id, session_id, &rules, &[])
+            .unwrap();
+        assert_eq!(res.valid_sheet.row_count, 1);
+        assert_eq!(res.invalid_sheet.row_count, 1);
+        assert_eq!(res.invalid_reasons.len(), 1);
+        assert_eq!(res.invalid_reasons[0].field, "username");
+        assert!(res.invalid_reasons[0].reason.contains("用户名"));
+    }
+
+    /// 跨字段：idcard 有效但 sex 列与 idcard 推断性别不一致 → invalid。
+    #[test]
+    fn validate_multi_rules_to_two_sheets_idcard_cross_field_sex_mismatch() {
+        let (_dir, db) = setup_db();
+        db.seed_builtin_rules().unwrap();
+        // idcard 110105194912310038 → 第 17 位 3 奇 → 男；sex 列写「女」
+        let rows = [(
+            "admin",
+            "张三",
+            "女",
+            "19491231",
+            "110105194912310038",
+            "13412345678",
+            "北京市朝阳区1号101室",
+        )];
+        let (session_id, sheet_id) = setup_multi_rules_sheet(&db, &rows);
+        let rules = vec![MultiRuleValidation {
+            column: "idcard".into(),
+            rule_id: "idcard-validate".into(),
+            cross_field: Some(CrossFieldConfig {
+                check_sex: true,
+                sex_column: Some("sex".into()),
+                check_birth: false,
+                birth_column: None,
+            }),
+        }];
+        let res = validate_multi_rules_to_two_sheets_inner(&db, sheet_id, session_id, &rules, &[])
+            .unwrap();
+        assert_eq!(res.invalid_sheet.row_count, 1);
+        assert!(res
+            .invalid_reasons
+            .iter()
+            .any(|r| r.field == "sex" && r.reason.contains("性别不一致")));
+    }
+
+    /// 跨字段：idcard 有效但 birth 与 idcard[6..14] 不一致 → invalid。
+    #[test]
+    fn validate_multi_rules_to_two_sheets_idcard_cross_field_birth_mismatch() {
+        let (_dir, db) = setup_db();
+        db.seed_builtin_rules().unwrap();
+        // idcard 出生日期 19491231；birth 列写 20000101
+        let rows = [(
+            "admin",
+            "张三",
+            "男",
+            "20000101",
+            "110105194912310038",
+            "13412345678",
+            "北京市朝阳区1号101室",
+        )];
+        let (session_id, sheet_id) = setup_multi_rules_sheet(&db, &rows);
+        let rules = vec![MultiRuleValidation {
+            column: "idcard".into(),
+            rule_id: "idcard-validate".into(),
+            cross_field: Some(CrossFieldConfig {
+                check_sex: false,
+                sex_column: None,
+                check_birth: true,
+                birth_column: Some("birth".into()),
+            }),
+        }];
+        let res = validate_multi_rules_to_two_sheets_inner(&db, sheet_id, session_id, &rules, &[])
+            .unwrap();
+        assert_eq!(res.invalid_sheet.row_count, 1);
+        assert!(res
+            .invalid_reasons
+            .iter()
+            .any(|r| r.field == "birth" && r.reason.contains("出生日期与身份证号不一致")));
+    }
+
+    /// 正则规则校验：用 name-validate（正则 `^[\u4e00-\u9fa5]{2,4}$`）校验列。
+    #[test]
+    fn validate_multi_rules_to_two_sheets_regex_rule_validation() {
+        let (_dir, db) = setup_db();
+        db.seed_builtin_rules().unwrap();
+        // 张三（2 字，通过）/ Zhang（非中文，不通过）/ 诸葛亮（3 字，通过）
+        let rows = [
+            (
+                "admin",
+                "张三",
+                "男",
+                "19491231",
+                "110105194912310038",
+                "13412345678",
+                "北京市朝阳区1号101室",
+            ),
+            (
+                "admin2",
+                "Zhang",
+                "男",
+                "19491231",
+                "110105194912310038",
+                "13412345678",
+                "北京市朝阳区1号101室",
+            ),
+            (
+                "admin3",
+                "诸葛亮",
+                "男",
+                "19491231",
+                "110105194912310038",
+                "13412345678",
+                "北京市朝阳区1号101室",
+            ),
+        ];
+        let (session_id, sheet_id) = setup_multi_rules_sheet(&db, &rows);
+        let rules = vec![MultiRuleValidation {
+            column: "name".into(),
+            rule_id: "name-validate".into(),
+            cross_field: None,
+        }];
+        let res = validate_multi_rules_to_two_sheets_inner(&db, sheet_id, session_id, &rules, &[])
+            .unwrap();
+        // 张三 / 诸葛亮 通过，Zhang 不通过
+        assert_eq!(res.valid_sheet.row_count, 2);
+        assert_eq!(res.invalid_sheet.row_count, 1);
+        assert_eq!(res.invalid_reasons.len(), 1);
+        assert_eq!(res.invalid_reasons[0].field, "name");
+        assert!(res.invalid_reasons[0].reason.contains("值不匹配规则"));
+    }
+
+    /// 只映射 1 条规则 → 单规则校验分流。
+    #[test]
+    fn validate_multi_rules_to_two_sheets_partial_mapping() {
+        let (_dir, db) = setup_db();
+        db.seed_builtin_rules().unwrap();
+        let rows = [
+            (
+                "admin",
+                "张三",
+                "男",
+                "19491231",
+                "110105194912310038",
+                "13412345678",
+                "北京市朝阳区1号101室",
+            ),
+            (
+                "ab.cd",
+                "李四",
+                "女",
+                "19491231",
+                "11010519491231002X",
+                "15987654321",
+                "北京市朝阳区1号101室",
+            ),
+        ];
+        let (session_id, sheet_id) = setup_multi_rules_sheet(&db, &rows);
+        let rules = vec![MultiRuleValidation {
+            column: "username".into(),
+            rule_id: "username-validate".into(),
+            cross_field: None,
+        }];
+        let res = validate_multi_rules_to_two_sheets_inner(&db, sheet_id, session_id, &rules, &[])
+            .unwrap();
+        // admin 有效，ab.cd 无效
+        assert_eq!(res.valid_sheet.row_count, 1);
+        assert_eq!(res.invalid_sheet.row_count, 1);
+        assert_eq!(res.invalid_reasons[0].field, "username");
+        // 无 idcard 映射 → 无跨字段原因
+        assert!(res
+            .invalid_reasons
+            .iter()
+            .all(|r| !r.reason.contains("身份证")));
     }
 
     // ---- T61：validate_column IPC 契约回归 ----

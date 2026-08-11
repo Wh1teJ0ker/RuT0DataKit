@@ -2,7 +2,6 @@ import { Button, Empty, Layout } from "antd";
 import MaskPanel from "../panels/MaskPanel";
 import ValidatePanel from "../panels/ValidatePanel";
 import ExtractPanel from "../panels/ExtractPanel";
-import RowValidatePanel from "../panels/RowValidatePanel";
 import ColumnOpsPanel from "../panels/ColumnOpsPanel";
 import CryptoPanel from "../panels/CryptoPanel";
 
@@ -11,12 +10,12 @@ const { Sider } = Layout;
 // v1.1.0：`rules` 能力改在 Workbench 主区渲染两栏布局，不再走 260px SidePanel。
 // v1.1.1：新增 `columnOps` 列操作面板。
 // v1.1.2：新增 `crypto` 加解密面板（Base64 从 columnOps 迁入，后续扩展哈希/AES 等）。
-// v1.1.3 T57：新增 `rowValidate` 行级多字段校验面板（7 字段 + 跨字段 → 双 Tab）。
+// v1.1.4 T67：行级校验从独立能力合并入「校验」模块（ValidatePanel 内 Tabs 双页），
+//   移除原 `rowValidate` 面板入口与 RowValidatePanel.jsx。
 const PANELS = {
   mask: MaskPanel,
   validate: ValidatePanel,
   extract: ExtractPanel,
-  rowValidate: RowValidatePanel,
   columnOps: ColumnOpsPanel,
   crypto: CryptoPanel,
 };

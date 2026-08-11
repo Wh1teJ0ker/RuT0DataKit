@@ -10,7 +10,6 @@ import {
   ColumnHeightOutlined,
   KeyOutlined,
   SettingOutlined,
-  SafetyOutlined,
 } from "@ant-design/icons";
 import { open } from "@tauri-apps/plugin-dialog";
 import { importFile } from "../../tauri";
@@ -18,11 +17,11 @@ import { useAppContext } from "../../state";
 import ExportModal from "../ExportModal";
 
 // 右组能力按钮配置：id 与 state.activeCapability 取值一致。
+// v1.1.4 T67：移除独立「行级校验」入口，其逻辑合并入「校验」模块的 Tabs 双页。
 const CAPABILITIES = [
   { id: "mask", label: "脱敏", icon: <SafetyCertificateOutlined /> },
   { id: "validate", label: "校验", icon: <CheckCircleOutlined /> },
   { id: "extract", label: "提取", icon: <FileSearchOutlined /> },
-  { id: "rowValidate", label: "行级校验", icon: <SafetyOutlined /> },
   { id: "columnOps", label: "列操作", icon: <ColumnHeightOutlined /> },
   { id: "crypto", label: "加解密", icon: <KeyOutlined /> },
   { id: "rules", label: "规则管理", icon: <ControlOutlined /> },
