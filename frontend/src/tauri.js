@@ -414,6 +414,17 @@ export function base64Column(sheetId, column, mode) {
 }
 
 /**
+ * 调用 `hash_column` IPC：对指定列就地计算哈希（MD5/SHA1/SHA256，可撤销，已入撤销栈）。
+ * @param {number} sheetId    Sheet ID
+ * @param {string} column     列名（headers 中的值）
+ * @param {string} algorithm  "md5" | "sha1" | "sha256"（后端 HashAlgorithm serde lowercase）
+ * @returns {Promise<{affected: number, skipped: number}>} HashResult（camelCase）
+ */
+export function hashColumn(sheetId, column, algorithm) {
+  return invoke("hash_column", { sheetId, column, algorithm });
+}
+
+/**
  * 调用 `replace_in_column` IPC：在指定列内替换匹配项。
  * @param {number} sheetId  Sheet ID
  * @param {string} column   列名
