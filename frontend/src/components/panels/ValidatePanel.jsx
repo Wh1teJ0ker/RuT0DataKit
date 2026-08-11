@@ -67,6 +67,20 @@ export default function ValidatePanel() {
       message.warning("请至少添加一条校验规则");
       return;
     }
+    // crossField 列必填校验：idcard-validate 行勾选了「对比性别/出生日期
+    // 一致性」却没选对应列时，后端会静默跳过比对（sexColumn/birthColumn 为
+    // null），用户以为开了比对实际被跳过。这里在组装契约前拦截。
+    for (const r of ruleRows) {
+      if (r?.ruleId !== "idcard-validate") continue;
+      if (r.checkSex && !r.sexColumn) {
+        message.warning("请选择性别列");
+        return;
+      }
+      if (r.checkBirth && !r.birthColumn) {
+        message.warning("请选择出生日期列");
+        return;
+      }
+    }
     // 组装后端契约：每条 { column, ruleId, crossField? }，crossField 仅在
     // idcard-validate 且勾选了性别/出生比对时传，否则传 null（后端忽略）。
     const multiRules = ruleRows
@@ -84,10 +98,10 @@ export default function ValidatePanel() {
               }
             : null,
       }));
-    // 手机号前缀白名单：只保留三位数字，应用于 phone-validate 规则（全局，
-    // 不是每行单独配）。
-    const phonePrefixes = (values.phonePrefixes || []).filter(
-      (p) => String(p).trim().length === 3,
+    // 手机号前缀白名单：只保留三位纯数字（"abc"/"1a3" 会被剔掉），应用于
+    // phone-validate 规则（全局，不是每行单独配）。
+    const phonePrefixes = (values.phonePrefixes || []).filter((p) =>
+      /^\d{3}$/.test(String(p).trim()),
     );
     setLoading(true);
     try {
