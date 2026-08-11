@@ -1,11 +1,19 @@
 import { useEffect, useState } from "react";
-import { Button, Form, Select, Space, Tabs, Typography, message } from "antd";
+import {
+  Button,
+  Checkbox,
+  Form,
+  Select,
+  Space,
+  Typography,
+  message,
+} from "antd";
+import { DeleteOutlined, PlusOutlined } from "@ant-design/icons";
 import { useAppContext } from "../../state";
 import {
-  validateColumn,
-  listRules,
   getSheetData,
-  validateRowsToTwoSheets,
+  listRules,
+  validateMultiRulesToTwoSheets,
 } from "../../tauri";
 import { PAGE_SIZE } from "../../constants";
 
@@ -13,31 +21,16 @@ const { Text } = Typography;
 
 // v1.1.0 单列校验面板：选择列 + 规则 → 校验 → 不通过行原位高亮 invalid。
 // v1.1.3 T57：新增行级多字段校验（7 字段 + 跨字段联合 → 双 Tab）。
-// v1.1.4 T67：行级校验从独立能力（RowValidatePanel）合并入「校验」模块，
-//   与单列校验并列为同一面板的两个 Tab，移除 TopToolbar/SidePanel 的 rowValidate 入口。
-
-// 行级校验字段定义：label / form key / 用户友好的规则说明。
-const ROW_FIELDS = [
-  { key: "username", label: "用户名", hint: "纯字母数字（admin / lufe1jian / 91xxev）" },
-  { key: "name", label: "姓名", hint: "2-4 位中文（张三 / 李四）" },
-  { key: "sex", label: "性别", hint: "男 / 女；与身份证第 17 位奇偶比对" },
-  { key: "birth", label: "出生日期", hint: "8 位数字；与身份证第 7-14 位比对" },
-  { key: "idcard", label: "身份证号", hint: "18 位 GB 11643-1999 校验码" },
-  { key: "phone", label: "手机号", hint: "11 位、1 开头；可配前缀白名单" },
-  { key: "address", label: "地址", hint: "全中文 + 号(1-1500) + 室(101-999)" },
-];
+// v1.1.4 T67：行级校验从独立能力合并入「校验」模块（Tabs 双页）。
+// v1.1.4 T69：重做为统一表单（非 Tabs）— 用户自由组合多条「列 + 校验规则」，
+//   一个「校验」按钮 → 调 validate_multi_rules_to_two_sheets → 双 Tab 落地。
+//   身份证规则行可勾选跨字段比对性别 / 出生日期列。
 
 export default function ValidatePanel() {
-  const { state, applyRowStatuses, dispatch, addSheetFromParse } = useAppContext();
-
-  // 单列校验表单
-  const [colForm] = Form.useForm();
-  const [colLoading, setColLoading] = useState(false);
+  const { state, dispatch, addSheetFromParse } = useAppContext();
+  const [form] = Form.useForm();
+  const [loading, setLoading] = useState(false);
   const [rules, setRules] = useState([]);
-
-  // 行级校验表单
-  const [rowForm] = Form.useForm();
-  const [rowLoading, setRowLoading] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -57,93 +50,55 @@ export default function ValidatePanel() {
 
   const sheet = state.sheets.find((s) => s.id === state.activeSheetId);
   const headers = sheet?.headers || [];
+  const ruleOptions = rules.map((r) => ({ label: r.name, value: r.id }));
+  const columnOptions = headers.map((h) => ({ label: h, value: h }));
 
-  // ===== 单列校验：validateColumn → applyRowStatuses 原位高亮 =====
-  const handleRunColumn = async () => {
+  const handleValidate = async () => {
     if (!sheet) {
       message.warning("请先导入数据");
       return;
     }
-    const column = colForm.getFieldValue("column");
-    const ruleId = colForm.getFieldValue("ruleId");
-    if (!column) {
-      message.warning("请选择要校验的列");
+    const values = form.getFieldsValue(true);
+    const ruleRows = values.rules || [];
+    if (
+      !ruleRows.length ||
+      ruleRows.every((r) => !r?.column || !r?.ruleId)
+    ) {
+      message.warning("请至少添加一条校验规则");
       return;
     }
-    if (!ruleId) {
-      message.warning("请选择校验规则");
-      return;
-    }
-    setColLoading(true);
-    try {
-      // validate_column 返回 Vec<RowValidation>（直接是数组，不是 { results: [...] }）。
-      // rowIdx 是 DB 绝对行号（row_idx=0 是表头行，数据行从 1 开始），与
-      // reducer.APPLY_SEARCH_HITS 的换算保持一致：
-      //   pageInnerIdx = rowIdx - 1 - pageBase
-      //   rowKey = `${sheetId}-${page}-${pageInnerIdx}`
-      const results = await validateColumn(sheet.id, column, ruleId);
-      const page = sheet.page || 1;
-      const base = (page - 1) * (sheet.pageSize || 50);
-      const rowStatuses = {};
-      let failedCount = 0;
-      (Array.isArray(results) ? results : []).forEach((r) => {
-        if (!r.passed) {
-          failedCount += 1;
-          const i = r.rowIdx - 1 - base;
-          if (i >= 0) {
-            rowStatuses[`${sheet.id}-${page}-${i}`] = "invalid";
-          }
-        }
-      });
-      if (Object.keys(rowStatuses).length > 0) {
-        applyRowStatuses({ sheetId: sheet.id, rowStatuses });
-      }
-      message.success(`校验完成：${failedCount} 行不通过`);
-    } catch (e) {
-      // eslint-disable-next-line no-console
-      console.error("validate_column failed:", e);
-      message.error(`校验失败：${e}`);
-    } finally {
-      setColLoading(false);
-    }
-  };
-
-  // ===== 行级校验：validateRowsToTwoSheets → 双 Tab 落地 =====
-  const handleRunRow = async () => {
-    if (!sheet) {
-      message.warning("请先导入数据");
-      return;
-    }
-    const values = rowForm.getFieldsValue(true);
-    // 收集映射：至少 1 个字段映射到非空列名。
-    const fieldColumns = {};
-    let mapped = 0;
-    for (const f of ROW_FIELDS) {
-      const v = values[f.key];
-      if (v && String(v).trim()) {
-        fieldColumns[f.key] = String(v).trim();
-        mapped += 1;
-      }
-    }
-    if (mapped === 0) {
-      message.warning("请至少为一个字段选择对应的列");
-      return;
-    }
+    // 组装后端契约：每条 { column, ruleId, crossField? }，crossField 仅在
+    // idcard-validate 且勾选了性别/出生比对时传，否则传 null（后端忽略）。
+    const multiRules = ruleRows
+      .filter((r) => r?.column && r?.ruleId)
+      .map((r) => ({
+        column: r.column,
+        ruleId: r.ruleId,
+        crossField:
+          r.ruleId === "idcard-validate" && (r.checkSex || r.checkBirth)
+            ? {
+                checkSex: !!r.checkSex,
+                sexColumn: r.sexColumn || null,
+                checkBirth: !!r.checkBirth,
+                birthColumn: r.birthColumn || null,
+              }
+            : null,
+      }));
+    // 手机号前缀白名单：只保留三位数字，应用于 phone-validate 规则（全局，
+    // 不是每行单独配）。
     const phonePrefixes = (values.phonePrefixes || []).filter(
-      (p) => String(p).trim().length === 3
+      (p) => String(p).trim().length === 3,
     );
-    setRowLoading(true);
+    setLoading(true);
     try {
-      const res = await validateRowsToTwoSheets(
+      const res = await validateMultiRulesToTwoSheets(
         sheet.id,
         sheet.sessionId,
-        fieldColumns,
-        phonePrefixes
+        multiRules,
+        phonePrefixes,
       );
-      // 双 Tab 落地：valid + invalid 各走 addSheetFromParse + getSheetData + SET_SHEET_DATA。
-      // 名称沿用后端的 `{name}_校验通过` / `{name}_校验失败`，这里用 column 字段
-      // 透传 newSheetId / headers / rowCount 即可（addSheetFromParse 用 newSheetId
-      // 作为 sheet.id）。
+      // 双 Tab 落地：valid + invalid 各走 addSheetFromParse + getSheetData +
+      // SET_SHEET_DATA（复用 v1.1.3 RowValidatePanel 的 landSheet 闭包模式）。
       const landSheet = async (parse, name, columnHint) => {
         addSheetFromParse({
           newSheetId: parse.newSheetId,
@@ -163,7 +118,7 @@ export default function ValidatePanel() {
       const srcName = sheet.name || `Sheet ${sheet.id}`;
       await landSheet(res.validSheet, `${srcName}_校验通过`, "valid");
       await landSheet(res.invalidSheet, `${srcName}_校验失败`, "invalid");
-      // 汇总消息：通过 / 失败行数 + top 失败原因。
+      // 汇总消息：通过 / 失败行数 + top 失败原因（按 field 计数）。
       const validCount = res.validSheet.rowCount ?? 0;
       const invalidCount = res.invalidSheet.rowCount ?? 0;
       let summary = `校验完成：${validCount} 行通过，${invalidCount} 行失败`;
@@ -182,109 +137,152 @@ export default function ValidatePanel() {
       message.success(summary);
     } catch (e) {
       // eslint-disable-next-line no-console
-      console.error("validate_rows_to_two_sheets failed:", e);
-      message.error(`行级校验失败：${e}`);
+      console.error("validate_multi_rules failed:", e);
+      message.error(`校验失败：${e}`);
     } finally {
-      setRowLoading(false);
+      setLoading(false);
     }
   };
 
-  // 单列校验 Tab 内容
-  const columnTab = (
-    <Form form={colForm} layout="vertical" size="small">
-      <Form.Item label="目标列" name="column">
-        <Select
-          placeholder="选择要校验的列"
-          options={headers.map((h) => ({ label: h, value: h }))}
-          showSearch
-          optionFilterProp="label"
-        />
-      </Form.Item>
-      <Form.Item label="校验规则" name="ruleId">
-        <Select
-          placeholder="选择校验规则"
-          options={rules.map((r) => ({
-            label: r.name,
-            value: r.id,
-          }))}
-          notFoundContent="无可用规则"
-        />
-      </Form.Item>
-      <Form.Item>
-        <Space>
-          <Button type="primary" loading={colLoading} onClick={handleRunColumn}>
-            执行校验
-          </Button>
-          <Button
-            onClick={() => {
-              colForm.resetFields();
-            }}
-          >
-            重置
-          </Button>
-        </Space>
-      </Form.Item>
-    </Form>
-  );
-
-  // 行级校验 Tab 内容
-  const rowTab = (
-    <Form form={rowForm} layout="vertical" size="small">
-      {ROW_FIELDS.map((f) => (
-        <Form.Item key={f.key} label={f.label} name={f.key} extra={f.hint}>
-          <Select
-            placeholder={`选择 ${f.label} 对应的列（可留空）`}
-            options={headers.map((h) => ({ label: h, value: h }))}
-            allowClear
-            showSearch
-            optionFilterProp="label"
-          />
-        </Form.Item>
-      ))}
-      <Form.Item
-        label="手机号前缀白名单"
-        name="phonePrefixes"
-        extra="可选：填三位数字前缀（如 134 / 159），空 = 仅检查 1 开头 + 11 位"
-      >
-        <Select
-          mode="tags"
-          placeholder="如 134、159（回车添加）"
-          tokenSeparators={[",", "，"]}
-          maxTagCount={3}
-        />
-      </Form.Item>
-      <Form.Item>
-        <Space direction="vertical" style={{ width: "100%" }}>
-          <Button block type="primary" loading={rowLoading} onClick={handleRunRow}>
-            行级校验并分流到双 Tab
-          </Button>
-          <Button
-            block
-            onClick={() => {
-              rowForm.resetFields();
-            }}
-          >
-            重置
-          </Button>
-        </Space>
-      </Form.Item>
-      <Text type="secondary" style={{ fontSize: 12 }}>
-        校验通过 / 失败的行分别写入两个新 Tab（保留原列，不新增列）。跨字段
-        联合校验（性别 / 出生日期 vs 身份证号）仅当相关字段都映射时生效。
-      </Text>
-    </Form>
-  );
-
   return (
     <div style={{ padding: 4 }}>
-      <Tabs
-        defaultActiveKey="column"
-        size="small"
-        items={[
-          { key: "column", label: "单列校验", children: columnTab },
-          { key: "row", label: "行级校验", children: rowTab },
-        ]}
-      />
+      <Form form={form} layout="vertical" size="small">
+        <Form.List name="rules" initialValue={[{}]}>
+          {(fields, { add, remove }) => (
+            <>
+              {fields.map(({ key, name }) => (
+                <div
+                  key={key}
+                  style={{
+                    borderBottom: "1px solid #f0f0f0",
+                    paddingBottom: 8,
+                    marginBottom: 8,
+                  }}
+                >
+                  <Space align="baseline" style={{ width: "100%" }}>
+                    <Form.Item
+                      name={[name, "column"]}
+                      style={{ flex: 1, marginBottom: 0 }}
+                    >
+                      <Select
+                        placeholder="选择列"
+                        options={columnOptions}
+                        showSearch
+                        optionFilterProp="label"
+                      />
+                    </Form.Item>
+                    <Form.Item
+                      name={[name, "ruleId"]}
+                      style={{ flex: 1, marginBottom: 0 }}
+                    >
+                      <Select
+                        placeholder="选择规则"
+                        options={ruleOptions}
+                        showSearch
+                        optionFilterProp="label"
+                      />
+                    </Form.Item>
+                    <Button
+                      icon={<DeleteOutlined />}
+                      onClick={() => remove(name)}
+                      size="small"
+                    />
+                  </Space>
+                  {/* 跨字段配置：仅 idcard-validate 时展开。用 shouldUpdate
+                      监听该行 ruleId 变化，避免渲染其他规则行。 */}
+                  <Form.Item
+                    shouldUpdate={(prev, cur) =>
+                      prev.rules?.[name]?.ruleId !== cur.rules?.[name]?.ruleId
+                    }
+                    noStyle
+                  >
+                    {({ getFieldValue }) =>
+                      getFieldValue(["rules", name, "ruleId"]) ===
+                      "idcard-validate" ? (
+                        <Space
+                          direction="vertical"
+                          style={{ width: "100%", marginTop: 4 }}
+                        >
+                          <Space>
+                            <Form.Item
+                              name={[name, "checkSex"]}
+                              valuePropName="checked"
+                              noStyle
+                            >
+                              <Checkbox>对比性别一致性</Checkbox>
+                            </Form.Item>
+                            <Form.Item name={[name, "sexColumn"]} noStyle>
+                              <Select
+                                placeholder="性别列"
+                                options={columnOptions}
+                                showSearch
+                                allowClear
+                                optionFilterProp="label"
+                              />
+                            </Form.Item>
+                          </Space>
+                          <Space>
+                            <Form.Item
+                              name={[name, "checkBirth"]}
+                              valuePropName="checked"
+                              noStyle
+                            >
+                              <Checkbox>对比出生日期一致性</Checkbox>
+                            </Form.Item>
+                            <Form.Item name={[name, "birthColumn"]} noStyle>
+                              <Select
+                                placeholder="出生日期列"
+                                options={columnOptions}
+                                showSearch
+                                allowClear
+                                optionFilterProp="label"
+                              />
+                            </Form.Item>
+                          </Space>
+                        </Space>
+                      ) : null
+                    }
+                  </Form.Item>
+                </div>
+              ))}
+              <Button
+                type="dashed"
+                block
+                icon={<PlusOutlined />}
+                onClick={() => add({})}
+              >
+                添加规则
+              </Button>
+            </>
+          )}
+        </Form.List>
+        <Form.Item
+          label="手机号前缀白名单"
+          name="phonePrefixes"
+          extra="可选：填三位数字前缀（如 134 / 159），应用于手机号校验规则"
+        >
+          <Select
+            mode="tags"
+            placeholder="如 134、159（回车添加）"
+            tokenSeparators={[",", "，"]}
+            maxTagCount={3}
+          />
+        </Form.Item>
+        <Form.Item>
+          <Space direction="vertical" style={{ width: "100%" }}>
+            <Button block type="primary" loading={loading} onClick={handleValidate}>
+              校验
+            </Button>
+            <Button block onClick={() => form.resetFields()}>
+              重置
+            </Button>
+          </Space>
+        </Form.Item>
+      </Form>
+      <Text type="secondary" style={{ fontSize: 12 }}>
+        添加多条「列 + 校验规则」组合，一个按钮校验。通过/失败的行分别写入两个新
+        Tab（保留原列，不新增列）。身份证规则可勾选跨字段比对性别/出生日期。
+      </Text>
     </div>
   );
 }
