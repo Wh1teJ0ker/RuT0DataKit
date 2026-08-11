@@ -1,7 +1,7 @@
 # v1.1.4 TASK-BOARD
 
 > 版本：v1.1.4
-> 状态：in_progress
+> 状态：qa_passed（T67/T68/T69 全部 verified_complete + E2E 全绿 + Release QA 审计通过 — 见 `docs/qa/versions/1.1.4/QA-审计报告.md`）
 > 前置：v1.1.3 已发布 tag `v1.1.3`（handoff 旧表归档至 `handoff/archive/TASK-BOARD-v1.1.3-20260807.md`）
 > 主题：校验模块重设计 — 统一校验页面（自由选多规则 + 一按钮 + 双 Tab 输出）
 
@@ -36,18 +36,18 @@ tasks:
   - id: T67
     title: 后端规则系统扩展（ExtractParams +4 变体 + validate_extracted 分发 + seed 6 条 validate 规则 + 测试）
     depends_on: []
-    status: planned
-    handoff: handoff/TASK-T67-HANDOFF.md
+    status: verified_complete
+    handoff: handoff/TASK-T67-HANDOFF.md（已清理）
   - id: T68
     title: 后端新命令 validate_multi_rules_to_two_sheets（多规则逐行校验 + 身份证跨字段可选 → 双 Tab）+ 集成测试
     depends_on: [T67]
-    status: planned
-    handoff: handoff/TASK-T68-HANDOFF.md
+    status: verified_complete
+    handoff: handoff/TASK-T68-HANDOFF.md（已清理）
   - id: T69
     title: 前端统一校验页面（重做 ValidatePanel.jsx + tauri.js wrapper + 注册命令 + 版本文档重写）
     depends_on: [T68]
-    status: planned
-    handoff: handoff/TASK-T69-HANDOFF.md
+    status: verified_complete
+    handoff: handoff/TASK-T69-HANDOFF.md（已清理）
 
 e2e_acceptance:
   - 校验页面是一个统一表单（非两个 Tab），可添加多条「列 + 校验规则」组合
