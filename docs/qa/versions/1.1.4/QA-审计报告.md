@@ -3,8 +3,8 @@
 > 版本：1.1.4
 > 审计类型：Release 前全局审计（v1.1.3 → v1.1.4 校验模块统一 — 统一校验页面重设计）+ 续轮增量审计（T70~T72）
 > 审计依据：[`docs/versions/1.1.4/更新日志.md`](../../versions/1.1.4/更新日志.md) + [`docs/04-版本标准.md`](../../04-版本标准.md) §2 里程碑索引 + [`handoff/TASK-BOARD.md`](../../../handoff/TASK-BOARD.md) T67~T72 任务定义 + E79~E100 验收项
-> 审计轮次：R1（2026-08-07 主会话基于实际命令输出 + 代码核查，覆盖 T67~T69）；R2（2026-08-11 主会话增量审计，覆盖续轮 T70~T72）
-> 结论：`qa_passed` — R1 覆盖 T67~T69（292 passed / 3 ignored / 0 failed + 3082 modules + 4 处版本一致 + DB schema 不变 + SQL 全参数绑定 + 凭据无新增）；R2 增量审计覆盖 T70~T72（302 passed / 3 ignored / 0 failed + 3083 modules + 4 处版本一致 + DB schema 不变 + SQL 全参数绑定 + params_override serde(default) 向后兼容 + validate_extracted wrapper 不变 + 4 处版本一致 1.1.4）。**安全声明**：本轮 R2 未重新运行 Mimosa 完整深度扫描（v1.1.3 R1+R2 两轮 Mimosa 深度扫描均 0 findings / 487 包 0 漏洞，v1.1.4 续轮改动为校验模块功能性增强（ExtractParams::Generic 变体 + clean_birth/is_valid_address/is_valid_birth 校验逻辑放宽 + params_override 字段 + 前端参数 UI 统一化），未引入新依赖 crate、未改 DB schema、未改 CSP/网络/fs 权限，沿用 v1.1.3 静态分析结论作为基线）。静态分析非运行时验证，不宣称项目安全，但无已识别 finding 阻碍发布。
+> 审计轮次：R1（2026-08-07 主会话基于实际命令输出 + 代码核查，覆盖 T67~T69）；R2（2026-08-11 主会话增量审计，覆盖续轮 T70~T72）；R3（2026-08-11 主会话增量审计，覆盖 R3 续轮 T73~T76）
+> 结论：`qa_passed` — R1 覆盖 T67~T69（292 passed / 3 ignored / 0 failed + 3082 modules + 4 处版本一致 + DB schema 不变 + SQL 全参数绑定 + 凭据无新增）；R2 增量审计覆盖 T70~T72（302 passed / 3 ignored / 0 failed + 3083 modules + 4 处版本一致 + DB schema 不变 + SQL 全参数绑定 + params_override serde(default) 向后兼容 + validate_extracted wrapper 不变 + 4 处版本一致 1.1.4）；**R3 增量审计覆盖 T73~T76（315 passed / 3 ignored / 0 failed + 3083 modules + 4 处版本一致 1.1.4 + DB schema 不变（SCHEMA_VERSION=5）+ hash_column 复用 base64_transform_column_cells 闭包式列变换 + DbReader quote_identifier 表名转义 + sqlite_master 受信来源 + 新增 4 crate 依赖 md-5/sha1/sha2/hex 均为 Rust 生态标准 crate 无安全顾虑）**。**安全声明**：本轮 R3 未重新运行 Mimosa 完整深度扫描（v1.1.3 R1+R2 两轮 Mimosa 深度扫描均 0 findings / 487 包 0 漏洞，v1.1.4 R3 改动为 codec + datasource 功能性增强（hash_column MD5/SHA1/SHA256 列式哈希 + DbReader 外部 SQLite 文件解析），新增 4 个 crate 依赖均为 Rust 生态标准 hash 编解码 crate（md-5/sha1/sha2/hex，RustCrypto 维护），未改 DB schema、未改 CSP/网络/fs 权限，沿用 v1.1.3 静态分析结论作为基线）。静态分析非运行时验证，不宣称项目安全，但无已识别 finding 阻碍发布。
 
 ## 1. 审计维度与结论
 
@@ -322,3 +322,127 @@ R2 为 v1.1.4 续轮（T70/T71/T72）的增量审计，沿用 R1 的 8 维度结
 | `docs/02-技术设计文档.md` | T72 §4.6 MultiRuleValidation 追加 params_override 字段 + 续轮 T70 增量说明段 + 版本覆盖说明追加 v1.1.4 段 | 人工核对 |
 | `handoff/TASK-BOARD.md` | T72 T70/T71/T72 状态全 verified_complete + 状态行更新为 qa_passed | 人工核对 |
 | `docs/qa/versions/1.1.4/QA-审计报告.md` | T72 本报告 §14 续轮 R2 增量审计章节（8 维度）+ 结论 qa_passed（续轮） | 本报告 |
+
+---
+
+## 16. R3 续轮增量审计（T73-T76，2026-08-11）
+
+R3 为 v1.1.4 第二次续轮（T73/T74/T75/T76）的增量审计，沿用 R1/R2 的 8 维度结构，仅审计 R3 续轮增量改动（不复核 R1 已通过的 T67~T69 与 R2 已通过的 T70~T72）。R3 续轮 2 项需求：CryptoPanel 扩展哈希函数（MD5/SHA1/SHA256 列式变换，可撤销）+ 新增 DbReader 数据源（`.db`/`.sqlite`/`.sqlite3` 外部 SQLite 文件解析，多表联合 + `__table` 列）。
+
+### 16.1 DAG 完整性
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| DAG 节点 | `pass` | T73（后端 hash_column，depends_on=[]）/ T74（前端 CryptoPanel，depends_on=[T73]）/ T75（后端 DbReader，depends_on=[]）/ T76（文档+E2E+QA，depends_on=[T73,T74,T75]）四节点，无环、无孤立、无缺失前置 |
+| 任务状态 | `pass` | `handoff/TASK-BOARD.md` 四任务全 `verified_complete` + `review_passed`；T73 commit 89d1aff+9e7bcd5 / T74 commit 12669e5 / T75 commit 797088a+1b613a5 / T76 本任务 |
+| HANDOFF 三件套 | `pass` | T73-HANDOFF.md / T74-HANDOFF.md / T75-HANDOFF.md / T76-HANDOFF.md 齐；T76-REPORT.md 本任务产出 |
+
+### 16.2 验收项覆盖（E101-E110）
+
+| 验收项 | 状态 | 证据 |
+|---|---|---|
+| E101（T73）hash_column MD5 已知向量 | `pass` | `src-tauri/src/commands/columns.rs` `hash_column_inner` MD5 分支 → `md5::Md5::digest` + `format!("{:x}")`；单测断言 md5("hello")="5d41402abc4b2a76b9719d911017c592" |
+| E102（T73）hash_column SHA1 已知向量 | `pass` | `hash_column_inner` SHA1 分支 → `sha1::Sha1::digest` + `hex::encode`；单测断言 sha1("hello")="aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d" |
+| E103（T73）hash_column SHA256 已知向量 | `pass` | `hash_column_inner` SHA256 分支 → `sha2::Sha256::digest` + `hex::encode`；单测断言 sha256("hello")="2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824" |
+| E104（T73）hash_column 可撤销 | `pass` | `log_operation_with_snapshot("hash_column", ...)` 入撤销栈；`list_undoable_operations` kind IN 白名单追加 `'hash_column'`（`db/mod.rs`，硬编码常量无注入）；单测断言 undo 恢复原文 |
+| E105（T74）CryptoPanel 哈希算法 UI | `pass` | `CryptoPanel.jsx` 算法 Select（Base64 编/解码 + MD5/SHA1/SHA256）+ 选哈希禁用解码按钮 + 执行后刷新 + undo 栈；`tauri.js` `hashColumn` wrapper；`pnpm build` 3083 modules pass |
+| E106（T75）detect_format .db/.sqlite/.sqlite3 → DbReader | `pass` | `crates/core/src/datasource/mod.rs` `detect_format` 新增 3 个 match arm 路由 `DbReader`；单测断言 3 个扩展名均返回 `DbReader` |
+| E107（T75）DbReader 单表读取跳过 sqlite_% | `pass` | `db.rs` 查 `sqlite_master` 过滤 `type='table' AND name NOT LIKE 'sqlite_%'`；单测断言单表 .db 文件读取 + 跳过 sqlite_sequence 等内部表 |
+| E108（T75）DbReader 多表联合 __table 列 | `pass` | `db.rs` `union_headers` 首列固定 `__table` + 各表列名首次出现顺序扩展（缺列补空）；单测断言多表 .db 文件联合输出含 `__table` 列标识来源 |
+| E109（T76）cargo fmt/clippy/test 全绿 | `pass` | R3 实测 `cargo fmt --all --check` exit 0 + `cargo clippy --all-targets --all-features -- -D warnings` exit 0 + `cargo test --all` 315 passed / 3 ignored / 0 failed（src-tauri 137 + core 165 + Doc-tests 13，较 R2 302 → R3 315，+13 测试覆盖 T73 hash_column 6 测试 + T75 DbReader 7 测试） |
+| E110（T76）pnpm build 全绿 + 版本号 4 处一致 | `pass` | R3 实测 `pnpm --prefix frontend build` exit 0（3083 modules，2.44s）+ grep 确认 Cargo.toml workspace.package.version=1.1.4 + tauri.conf.json version=1.1.4 + frontend/package.json version=1.1.4 + frontend/src/constants.js APP_VERSION="v1.1.4" |
+
+### 16.3 代码审查闭环
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| T73 review | `pass` | T73-HANDOFF 标 verified_complete；commit 89d1aff+9e7bcd5 落地；REVIEW review_passed 2026-08-11；scope_deviation 无越界（hash_column 复用 `base64_transform_column_cells` 闭包式列变换，函数名虽带 base64 但闭包 `F: Fn(&str)->Option<String>` 语义通用，沿用既有名不破坏调用链；`HashAlgorithm` enum 独立结构；`list_undoable_operations` 白名单追加 `hash_column` 属硬编码常量；新增 4 crate 依赖 md-5/sha1/sha2/hex 均为 RustCrypto 标准crate） |
+| T74 review | `pass` | T74-HANDOFF 标 verified_complete；commit 12669e5 落地；REVIEW review_passed 2026-08-11；scope_deviation 无越界（CryptoPanel 扩展算法 Select 复用既有面板；hashColumn wrapper 遵循既有 invoke 封装模式；不改 MaskPanel/ExtractPanel/state/App.jsx/capabilities） |
+| T75 review | `pass` | T75-HANDOFF 标 verified_complete；commit 797088a+1b613a5 落地；REVIEW review_passed 2026-08-11；scope_deviation 无越界（DbReader 是新增 `Reader` impl，trait 签名不变；`detect_format` 新增 3 个 match arm 不破坏旧格式；`quote_identifier` 表名转义 + `sqlite_master` 受信来源；无新依赖 `rusqlite` 已是 core 依赖；reviewer nit §4.11 编号重复已由 T76 修复） |
+| T76 review | `pass` | 本任务（文档同步 + E2E + QA R3 增量审计）；不改代码（out_of_scope 遵守）；scope_deviation 仅 docs/02 顶部版本覆盖说明追加 R3 标注 + 修复 §4.11 编号重复（4.11→4.12→4.13 顺延，justified：T75 reviewer 提到的 nit） |
+
+### 16.4 验证命令全绿
+
+| 命令 | 状态 | R3 实测结果 |
+|---|---|---|
+| `cargo fmt --all --check` | `pass` | exit 0（无格式差异，R1/R2 基线保持） |
+| `cargo clippy --all-targets --all-features -- -D warnings` | `pass` | exit 0（core + src-tauri 全零警告） |
+| `cargo test --all` | `pass` | src-tauri lib 137 + core 165 + Doc-tests 13 = 315 passed / 3 ignored / 0 failed（较 R2 302 → R3 315，+13 测试覆盖 T73 hash_column 6 测试 + T75 DbReader 7 测试） |
+| `pnpm --prefix frontend build` | `pass` | 3083 modules transformed，✓ built in 2.44s（与 R2 一致，T74 改 CryptoPanel 不新增模块文件）；chunk >500kB 为 antd 既有警告 |
+| 版本号 4 处一致 | `pass` | grep 确认 Cargo.toml workspace.package.version=1.1.4 + tauri.conf.json version=1.1.4 + frontend/package.json version=1.1.4 + frontend/src/constants.js APP_VERSION="v1.1.4" |
+
+### 16.5 文档同步
+
+| 文档 | 状态 | 证据 |
+|---|---|---|
+| `docs/versions/1.1.4/更新日志.md` | `pass` | 状态行更新为 qa_passed（首轮 + 续轮 + R3 续轮）；任务表追加 T73/T74/T75/T76 行（全 verified_complete）；新增「R3 续轮：哈希函数 + DB 文件解析」章节（背景 + 2 项设计决策 + T73/T74/T75/T76 改动 + E101-E110 验收项 + 不变项 + 安全约束） |
+| `docs/versions/1.1.4/RELEASE-NOTES.md` | `pass` | 状态更新为 qa_passed（首轮 + 续轮 R2 + R3 续轮）；概要段追加 R3 一句；改动段追加「R3 续轮：哈希函数 + DB 文件解析」小节；验收段追加 R3 验收项引用；安全说明追加 DbReader quote_identifier 说明 |
+| `docs/02-技术设计文档.md` | `pass` | 顶部版本覆盖说明段追加 v1.1.4 R3 增量标注（hash_column 命令 + HashAlgorithm enum + DbReader + 新增依赖 md-5/sha1/sha2/hex）；T73 已同步 §4.9 hash_column IPC 契约 + HashAlgorithm/HashResult 结构 + undo 白名单 + R3 实现要点；T75 已同步 §4.11 DbReader 设计说明 + 目录树 + 模块说明 + source_type 枚举；T76 修复 §4.11 编号重复（4.11 DbReader / 4.12 UI 布局 / 4.13 全局每页行数，顺延编号） |
+| `handoff/TASK-BOARD.md` | `pass` | 状态更新为 qa_passed（R3 续轮）；T73/T74/T75/T76 任务 status 全 verified_complete |
+| `docs/qa/versions/1.1.4/QA-审计报告.md` | `pass` | 本报告 §16 R3 续轮增量审计章节（8 维度）+ §17 R3 修复证据索引 + 结论 qa_passed（R3 续轮） |
+| `docs/04-版本标准.md` 里程碑表 | `pending` | v1.1.4 行保持 qa_passed（R3 续轮通过后仍保持；release_complete 待用户手工验证后另议，不自动 finalize） |
+
+### 16.6 安全与隐私
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| SQL 参数绑定 | `pass` | T73/T74/T75/T76 未改任何既有 SQL；T73 `hash_column` 复用 `base64_transform_column_cells`（既有参数绑定方法，无新 SQL）；T75 `DbReader` 表名不能参数绑定（SQLite 限制）→ 用 `quote_identifier`（双引号包裹 + 内部双引号翻倍）防御性转义 + 表名来源限定为 `sqlite_master`（受信系统表，`type='table' AND name NOT LIKE 'sqlite_%'`），无注入面；R1/R2 基线 53 处 `params![]` 绑定 + 0 处 `format!` SQL 拼接保持（DbReader 表名例外已在设计决策说明） |
+| 凭据 | `pass` | R3 续轮无新增凭据；updater 密钥沿用 v1.1.0 配置（环境变量读取，源码无字面量） |
+| 全本地处理 | `pass` | 哈希变换 / DbReader 文件读取全在本地，无网络调用；CSP/fs 权限/capabilities R3 未改 |
+| 身份证号隐私 | `pass` | R3 未改 `is_valid_idcard`（仍仅校验长度 + 校验码，不查行政区划表） |
+| Mimosa 深度扫描 | `info` | R3 未重新运行 Mimosa 完整深度扫描；沿用 v1.1.3 R1（scan-2026-08-10T16-40-17.470Z-31df73e0a37d）+ R2（scan-2026-08-10T21-49-17.114Z-3e0a1b2d600e）双轮 0 findings / 487 包 0 漏洞基线。v1.1.4 R3 改动为 codec + datasource 功能性增强（hash_column MD5/SHA1/SHA256 列式哈希 + DbReader 外部 SQLite 文件解析），新增 4 个 crate 依赖（md-5/sha1/sha2/hex）均为 RustCrypto 维护的 Rust 生态标准 hash 编解码 crate（无已知 CVE，sha2/hex 此前为传递依赖已在 Cargo.lock），未改 DB schema、未改 CSP/网络/fs 权限，静态分析基线有效。静态分析非运行时验证，不宣称项目安全；建议后续版本重新运行完整 Mimosa 密封扫描覆盖 v1.1.4 全量增量代码 |
+
+### 16.7 向后兼容
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| `base64_column` 命令不变 | `pass` | R3 未改 `base64_column` 命令签名或行为；`hash_column` 是新增独立命令，复用 DB 层 `base64_transform_column_cells` 闭包式列变换方法（函数名虽带 base64，但闭包 `F: Fn(&str) -> Option<String>` 语义通用，沿用既有名不破坏调用链） |
+| `SCHEMA_VERSION` 不变 | `pass` | `SCHEMA_VERSION=5`（R3 不变）；`hash_column` 复用 `operations.before_snapshot_json`/`result_snapshot_json` 既有列存 before/after 快照；`DbReader` 是数据源读取，不涉及 DB schema |
+| `detect_format` 新增 arm 不破坏旧格式 | `pass` | `detect_format` 新增 `.db`/`.sqlite`/`.sqlite3` 三个 match arm 路由 `DbReader`；既有 csv/xlsx/json/jsonl/txt/log/sql/pcap/pcapng 分支不变（新增 arm 不影响旧格式分发） |
+| `crates/core` processor/datasource trait 不变 | `pass` | `DbReader` 是新增 `Reader` impl，`Reader` trait 签名不变；`hash_column` 逻辑放在 src-tauri，core 的 processor 模块未引入 hash 依赖（保持 core 轻量，沿用 v1.1.2 base64 先例） |
+| `capabilities/default.json` 不变 | `pass` | R3 未改 capabilities（自定义命令 `hash_column` 无需注册权限，Tauri 自定义命令默认可调用） |
+| 既有 IPC 命令保留 | `pass` | `base64_column` / `validate_column` / `validate_rows_to_two_sheets` / `validate_multi_rules_to_two_sheets` 命令签名不变；`CryptoPanel` 扩展算法选择不破坏 Base64 编/解码入口 |
+| 前端路由不变 | `pass` | `App.jsx` 路由不变；CryptoPanel 入口 v1.1.2 已有（`crypto` 能力按钮，`KeyOutlined` 图标），T74 仅扩展面板内算法选择 |
+
+### 16.8 版本号一致性
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| Cargo.toml workspace.package.version | `pass` | 1.1.4（R3 grep 确认） |
+| src-tauri/tauri.conf.json version | `pass` | 1.1.4（R3 grep 确认） |
+| frontend/package.json version | `pass` | 1.1.4（R3 grep 确认） |
+| frontend/src/constants.js APP_VERSION | `pass` | "v1.1.4"（R3 grep 确认） |
+| 4 处一致 | `pass` | 全 1.1.4，无 1.1.3 残留，无 1.1.5 提前 |
+
+### 16.9 R3 续轮结论
+
+`qa_passed`（R3 续轮）— R3 增量审计覆盖 v1.1.4 R3 续轮全部交付（T73~T76）+ R1/R2 基线回归。T73~T76 全部 `verified_complete` + `review_passed`（E101~E110 验收项全绿）。R3 续轮核心交付：
+
+1. **后端 hash_column 命令**（T73）—— `hash_column` IPC 命令（MD5/SHA1/SHA256，hex 小写，不可逆）+ `HashAlgorithm` enum（serde `rename_all = "lowercase"`）+ `HashResult` 结构；复用 v1.1.2 `base64_transform_column_cells` 闭包式列变换（单事务 + before/after 快照，`log_operation_with_snapshot("hash_column")` 入撤销栈）；`list_undoable_operations` undo 白名单追加 `hash_column`；新增 4 crate 依赖 `md-5 = "0.10"` / `sha1 = "0.10"` / `sha2 = "0.10"` / `hex = "0.4"`（sha2/hex 此前为传递依赖，声明为直接依赖不额外拉取；md-5/sha1 为 RustCrypto 标准 crate）；6 个单测覆盖 MD5/SHA1/SHA256 已知向量 + 撤销 + 空值跳过 + undo 栈。
+2. **前端 CryptoPanel 哈希 UI**（T74）—— `CryptoPanel.jsx` 扩展算法 Select（Base64 编/解码 + MD5/SHA1/SHA256）+ 选哈希禁用解码按钮（哈希不可逆）+ 执行后刷新数据 + undo 栈；`tauri.js` 新增 `hashColumn(sheetId, column, algorithm)` IPC wrapper。
+3. **后端 DbReader 数据源**（T75）—— `crates/core/src/datasource/db.rs`（新建）`DbReader` 实现 `Reader` trait，`Connection::open(path)` 打开外部 SQLite 文件；查 `sqlite_master` 过滤用户表（跳过 `sqlite_%` 内部表）；多表联合输出 `__table` 首列 + 各表列名按首次出现顺序扩展（缺列补空）；表名用 `quote_identifier` 转义；`detect_format` 新增 3 个 match arm；7 个单测覆盖 detect_format 分发 + 单表 + 多表 + 跳过内部表 + 空库 + 路径不存在 + 非 SQLite 格式拒绝。
+4. **文档同步 + E2E + Release QA R3 增量审计**（T76）—— 更新日志 / RELEASE-NOTES / 02-技术设计文档 / TASK-BOARD / QA-审计报告 5 处同步；E2E 全绿（cargo fmt/clippy/test 315 passed + pnpm build 3083 modules + 版本号 4 处一致 1.1.4）；8 维度增量审计全 pass，结论 qa_passed（R3 续轮）；修复 T75 reviewer nit（§4.11 编号重复 → 4.11/4.12/4.13 顺延）。
+
+**门禁裁决**：无未修复的 critical/major 问题。全部 `info` 项均为非阻塞已知简化或已知边界（Mimosa 未重新运行 / antd chunk 警告既有 / docs/04 里程碑表待用户手工验证后另议）。**Mimosa 深度扫描**：R3 未重新运行，沿用 v1.1.3 R1+R2 双轮 0 findings / 487 包 0 漏洞基线；v1.1.4 R3 改动为 codec + datasource 功能性增强（新增 4 crate 依赖均为 RustCrypto 标准 hash 编解码 crate，无已知 CVE，sha2/hex 此前为传递依赖），未改 DB schema、未改 CSP/网络/fs 权限，静态分析基线有效。静态分析非运行时验证，不宣称项目安全。**结论推进至 `qa_passed`（R3 续轮）**。
+
+**发布前置门禁**（[`04-版本标准.md`](../../04-版本标准.md) §4）满足：静态 + 单元测试 + 前端构建全绿 + 版本一致性 + schema 迁移幂等 + 文档收口。CI 构建（四目标矩阵）待 git tag `v1.1.4` 触发（用户等待手工验证，不自动 finalize）。
+
+---
+
+## 17. R3 续轮修复证据索引
+
+| 文件 | 改动 | 验证 |
+|---|---|---|
+| `src-tauri/Cargo.toml` | T73 新增 `md-5 = "0.10"` / `sha1 = "0.10"` / `sha2 = "0.10"` / `hex = "0.4"` 直接依赖（sha2/hex 此前为传递依赖，声明为直接依赖不额外拉取） | `cargo build` 绿；`cargo test --all` src-tauri 137 passed |
+| `src-tauri/src/commands/columns.rs` | T73 `hash_column` IPC 命令 + `HashAlgorithm` enum（MD5/SHA1/SHA256，serde lowercase）+ `HashResult` 结构 + `hash_column_inner`（按算法分发 digest + hex）+ 复用 `base64_transform_column_cells` 闭包式列变换；6 单测覆盖 MD5/SHA1/SHA256 已知向量 + 撤销 + 空值 + undo 栈 | `cargo test --all` columns 测试全过 |
+| `src-tauri/src/db/mod.rs` | T73 `list_undoable_operations` kind IN 白名单追加 `'hash_column'`（硬编码常量无注入） | `cargo test --all` db 测试全过 |
+| `src-tauri/src/lib.rs` | T73 `generate_handler!` 注册 `hash_column` | `cargo check` 绿 |
+| `frontend/src/components/panels/CryptoPanel.jsx` | T74 扩展算法 Select（Base64 编/解码 + MD5/SHA1/SHA256）+ 选哈希禁用解码按钮 + 执行后刷新 + undo 栈 | `pnpm build` 绿（3083 modules） |
+| `frontend/src/tauri.js` | T74 新增 `hashColumn(sheetId, column, algorithm)` IPC wrapper + JSDoc | `pnpm build` 绿 |
+| `crates/core/src/datasource/db.rs`（新建） | T75 `DbReader` 实现 `Reader` trait（`Connection::open` + `sqlite_master` 过滤 + `quote_identifier` 转义 + 多表联合 `__table` 列 + 缺列补空 + 空库/非 SQLite 错误处理）；7 单测覆盖 detect_format 分发 + 单表 + 多表 + 跳过内部表 + 空库 + 路径不存在 + 非 SQLite 拒绝 | `cargo test --all` core 165 passed |
+| `crates/core/src/datasource/mod.rs` | T75 `detect_format` 新增 `.db`/`.sqlite`/`.sqlite3` 三个 match arm → `DbReader`；目录树 + 模块说明同步 | `cargo test --all` core 165 passed |
+| `docs/02-技术设计文档.md` | T73 §4.9 hash_column IPC 契约 + HashAlgorithm/HashResult + undo 白名单 + R3 实现要点（T73 coder 同步）；T75 §4.11 DbReader 设计说明 + 目录树 + source_type 枚举（T75 coder 同步）；T76 顶部版本覆盖说明追加 R3 标注 + 修复 §4.11 编号重复（4.11/4.12/4.13 顺延） | 人工核对 |
+| `docs/versions/1.1.4/更新日志.md` | T76 R3 章节 + T73/T74/T75/T76 行 + E101-E110 验收 + 2 项设计决策 + 不变项 + 安全约束 | 人工核对 |
+| `docs/versions/1.1.4/RELEASE-NOTES.md` | T76 状态更新为 qa_passed（首轮 + 续轮 R2 + R3 续轮）+ R3 功能段 + 验收引用 + DbReader 安全说明 | 人工核对 |
+| `handoff/TASK-BOARD.md` | T76 T73/T74/T75/T76 状态全 verified_complete + 状态行更新为 qa_passed（R3 续轮） | 人工核对 |
+| `docs/qa/versions/1.1.4/QA-审计报告.md` | T76 本报告 §16 R3 续轮增量审计章节（8 维度）+ §17 R3 修复证据索引 + 结论 qa_passed（R3 续轮） | 本报告 |

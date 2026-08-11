@@ -1,7 +1,7 @@
 # v1.1.4 TASK-BOARD（R3 续轮：哈希函数 + DB 文件解析）
 
 > 版本：v1.1.4
-> 状态：in_progress（T73/T74/T75 verified_complete + review_passed；T76 待派）
+> 状态：qa_passed（R3 续轮：T73/T74/T75/T76 全部 verified_complete + review_passed + E2E 全绿 + Release QA R3 增量审计通过）
 > 前置：v1.1.4 R2 续轮已 qa_passed（commit ba0b84f 合并 main）
 > 主题：v1.1.4 R3 续轮 — 2 项增强（哈希函数加密 MD5/SHA1/SHA256 + 外部 DB 文件解析）
 
@@ -40,7 +40,7 @@ tasks:
   - id: T76
     title: 文档 + E2E 验收 + Release QA R3 增量审计
     depends_on: [T73, T74, T75]
-    status: in_progress  # T73/T74/T75 verified_complete, 派 coder
+    status: verified_complete  # T73/T74/T75 verified_complete + 本任务 docs 同步 + E2E + QA R3 增量审计完成
     handoff: handoff/TASK-T76-HANDOFF.md
 
 e2e_acceptance:
