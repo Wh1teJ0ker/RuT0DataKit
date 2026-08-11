@@ -400,6 +400,38 @@ pub fn validate_extracted(rule: &Rule, value: &str) -> (bool, String) {
                 (false, "非合法身份证号".to_string())
             }
         }
+        // v1.1.4 T67：4 条新变体分发（用于 username/sex/birth/address validate 规则）
+        Some(ExtractParams::Username) => {
+            if is_valid_username(value) {
+                (true, String::new())
+            } else {
+                (false, "用户名须为纯字母数字".to_string())
+            }
+        }
+        Some(ExtractParams::Sex) => {
+            if is_valid_sex(value) {
+                (true, String::new())
+            } else {
+                (false, "性别须为「男」或「女」".to_string())
+            }
+        }
+        Some(ExtractParams::Birth) => {
+            if is_valid_birth(value) {
+                (true, String::new())
+            } else {
+                (false, "出生日期须为 8 位数字".to_string())
+            }
+        }
+        Some(ExtractParams::Address) => {
+            if is_valid_address(value) {
+                (true, String::new())
+            } else {
+                (
+                    false,
+                    "地址格式不符（全中文+号1-1500+室101-999）".to_string(),
+                )
+            }
+        }
     }
 }
 
@@ -626,6 +658,106 @@ mod tests {
         assert_eq!(note, "非合法身份证号");
         // 无效（长度不足）
         let (ok, _) = validate_extracted(&rule, "12345");
+        assert!(!ok);
+    }
+
+    // ---- v1.1.4 T67：4 条新变体分发测试 ----
+
+    #[test]
+    fn validate_extracted_username() {
+        // T67：Username 变体 → is_valid_username
+        let mut rule = RuleRegistry_like_name_extract();
+        rule.params = Some(ExtractParams::Username);
+        // 有效（纯字母数字）
+        assert!(validate_extracted(&rule, "admin").0);
+        let (ok, note) = validate_extracted(&rule, "lufe1jian");
+        assert!(ok);
+        assert_eq!(note, "");
+        // 无效（含点）
+        let (ok, note) = validate_extracted(&rule, "ab.cd");
+        assert!(!ok);
+        assert_eq!(note, "用户名须为纯字母数字");
+        // 无效（含下划线）
+        let (ok, _) = validate_extracted(&rule, "ad_1in");
+        assert!(!ok);
+        // 无效（空串）
+        let (ok, _) = validate_extracted(&rule, "");
+        assert!(!ok);
+    }
+
+    #[test]
+    fn validate_extracted_sex() {
+        // T67：Sex 变体 → is_valid_sex
+        let mut rule = RuleRegistry_like_name_extract();
+        rule.params = Some(ExtractParams::Sex);
+        // 有效
+        let (ok, note) = validate_extracted(&rule, "男");
+        assert!(ok);
+        assert_eq!(note, "");
+        assert!(validate_extracted(&rule, "女").0);
+        // trim 后匹配
+        assert!(validate_extracted(&rule, " 男 ").0);
+        // 无效
+        let (ok, note) = validate_extracted(&rule, "male");
+        assert!(!ok);
+        assert_eq!(note, "性别须为「男」或「女」");
+        let (ok, _) = validate_extracted(&rule, "");
+        assert!(!ok);
+        let (ok, _) = validate_extracted(&rule, "未知");
+        assert!(!ok);
+    }
+
+    #[test]
+    fn validate_extracted_birth() {
+        // T67：Birth 变体 → is_valid_birth
+        let mut rule = RuleRegistry_like_name_extract();
+        rule.params = Some(ExtractParams::Birth);
+        // 有效（8 位数字）
+        let (ok, note) = validate_extracted(&rule, "19491231");
+        assert!(ok);
+        assert_eq!(note, "");
+        assert!(validate_extracted(&rule, "20000101").0);
+        // 无效（含分隔符）
+        let (ok, note) = validate_extracted(&rule, "1949-12-31");
+        assert!(!ok);
+        assert_eq!(note, "出生日期须为 8 位数字");
+        // 无效（长度不足）
+        let (ok, _) = validate_extracted(&rule, "1949123");
+        assert!(!ok);
+        // 无效（长度超）
+        let (ok, _) = validate_extracted(&rule, "194912311");
+        assert!(!ok);
+        // 无效（空串）
+        let (ok, _) = validate_extracted(&rule, "");
+        assert!(!ok);
+    }
+
+    #[test]
+    fn validate_extracted_address() {
+        // T67：Address 变体 → is_valid_address
+        let mut rule = RuleRegistry_like_name_extract();
+        rule.params = Some(ExtractParams::Address);
+        // 有效
+        let (ok, note) =
+            validate_extracted(&rule, "内蒙古自治区呼和浩特市玉泉区大南街街道1340号540室");
+        assert!(ok);
+        assert_eq!(note, "");
+        assert!(validate_extracted(&rule, "北京市朝阳区1号101室").0);
+        // 无效（号超 1500）
+        let (ok, note) = validate_extracted(&rule, "北京市朝阳区1501号101室");
+        assert!(!ok);
+        assert_eq!(note, "地址格式不符（全中文+号1-1500+室101-999）");
+        // 无效（室不足 101）
+        let (ok, _) = validate_extracted(&rule, "北京市朝阳区1号100室");
+        assert!(!ok);
+        // 无效（前缀非中文）
+        let (ok, _) = validate_extracted(&rule, "1234号101室");
+        assert!(!ok);
+        // 无效（缺「室」）
+        let (ok, _) = validate_extracted(&rule, "北京市朝阳区1号101");
+        assert!(!ok);
+        // 无效（空串）
+        let (ok, _) = validate_extracted(&rule, "");
         assert!(!ok);
     }
 

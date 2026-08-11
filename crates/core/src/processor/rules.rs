@@ -207,6 +207,23 @@ pub enum ExtractParams {
     /// （比对指定性别列）在 `extract_validate_to_new_sheet_inner` 中进行。
     #[serde(rename = "idcard")]
     IdCard,
+    /// 用户名：纯字母数字（admin / lufe1jian / 91xxev）。
+    ///
+    /// v1.1.4 T67：用于 `username-validate` 函数式校验规则（kind=Validate，
+    /// 带 params 走 `validate_extracted` 分发）。
+    Username,
+    /// 性别：仅「男」/「女」。
+    ///
+    /// v1.1.4 T67：用于 `sex-validate` 函数式校验规则。
+    Sex,
+    /// 出生日期：8 位数字。
+    ///
+    /// v1.1.4 T67：用于 `birth-validate` 函数式校验规则。
+    Birth,
+    /// 地址：全中文 + 号(1-1500) + 室(101-999)。
+    ///
+    /// v1.1.4 T67：用于 `address-validate` 函数式校验规则。
+    Address,
 }
 
 impl Default for TemplateParams {
@@ -448,6 +465,12 @@ impl RuleRegistry {
     /// v1.1.3 T55b：拆分 `ip-extract` 为 `ip4-extract`（IPv4）+ `ip6-extract`
     /// （IPv6）两条独立规则，`with_defaults()` 共 9 条。旧 `ip-extract` 由
     /// `cleanup_deprecated_rules()` 删除。
+    /// v1.1.3 T55c：新增 `idcard-extract`（18 位身份证号 + 校验码 + 性别推断），
+    /// `with_defaults()` 共 10 条。
+    /// v1.1.4 T67：新增 6 条函数式校验规则（`username-validate` / `sex-validate` /
+    /// `birth-validate` / `idcard-validate` / `phone-validate` / `address-validate`），
+    /// kind=Validate 且带 `params` 走 `validate_extracted` 分发，
+    /// `with_defaults()` 共 16 条。
     pub fn with_defaults() -> Self {
         let mut reg = Self::new();
         reg.register(Self::name_validate_rule());
@@ -464,6 +487,14 @@ impl RuleRegistry {
         reg.register(Self::ip6_extract_rule());
         // v1.1.3 T55c：身份证号提取 + 校验码严格校验
         reg.register(Self::idcard_extract_rule());
+        // v1.1.4 T67：6 条函数式校验规则（kind=Validate，带 params 走
+        // validate_extracted 分发）。`with_defaults()` 共 16 条。
+        reg.register(Self::username_validate_rule());
+        reg.register(Self::sex_validate_rule());
+        reg.register(Self::birth_validate_rule());
+        reg.register(Self::idcard_validate_rule());
+        reg.register(Self::phone_validate_rule());
+        reg.register(Self::address_validate_rule());
         reg
     }
 
@@ -678,6 +709,126 @@ impl RuleRegistry {
         }
     }
 
+    // ---- v1.1.4 T67：6 条函数式校验规则（kind=Validate，带 params 走
+    // `func_validator::validate_extracted` 分发）。与 name-validate 不同，这些
+    // 规则不带正则 pattern（field=None），由调用方（T68 新命令）直接对单元格原值
+    // 调 `validate_extracted`。idcard/phone 复用现有 IdCard / PhonePrefix 变体：
+    // idcard-validate 的 IdCard 分支返回 (true, gender) 供跨字段比对；
+    // phone-validate 用 PhonePrefix 变体，但 validate 语义是整串校验而非提取
+    // 前缀（PhonePrefix 分支只调 check_phone_prefix 查前缀，整串严格校验在
+    // T68 新命令里直接调 is_valid_phone）。----
+
+    /// 用户名校验内置规则（v1.1.4 T67 新增）：`params = Username`，
+    /// 走 `validate_extracted` 的 Username 分支 → `is_valid_username`（纯字母数字）。
+    pub fn username_validate_rule() -> Rule {
+        Rule {
+            id: "username-validate".into(),
+            name: "用户名校验".into(),
+            kind: RuleKind::Validate,
+            field: None,
+            pattern: None,
+            replacement: None,
+            enabled: true,
+            description: "校验用户名为纯字母数字".into(),
+            template: None,
+            params: Some(ExtractParams::Username),
+        }
+    }
+
+    /// 性别校验内置规则（v1.1.4 T67 新增）：`params = Sex`，
+    /// 走 `validate_extracted` 的 Sex 分支 → `is_valid_sex`（仅「男」/「女」）。
+    pub fn sex_validate_rule() -> Rule {
+        Rule {
+            id: "sex-validate".into(),
+            name: "性别校验".into(),
+            kind: RuleKind::Validate,
+            field: None,
+            pattern: None,
+            replacement: None,
+            enabled: true,
+            description: "校验性别为「男」或「女」".into(),
+            template: None,
+            params: Some(ExtractParams::Sex),
+        }
+    }
+
+    /// 出生日期校验内置规则（v1.1.4 T67 新增）：`params = Birth`，
+    /// 走 `validate_extracted` 的 Birth 分支 → `is_valid_birth`（8 位数字）。
+    pub fn birth_validate_rule() -> Rule {
+        Rule {
+            id: "birth-validate".into(),
+            name: "出生日期校验".into(),
+            kind: RuleKind::Validate,
+            field: None,
+            pattern: None,
+            replacement: None,
+            enabled: true,
+            description: "校验出生日期为 8 位数字".into(),
+            template: None,
+            params: Some(ExtractParams::Birth),
+        }
+    }
+
+    /// 身份证号校验内置规则（v1.1.4 T67 新增）：`params = IdCard`（复用现有变体），
+    /// 走 `validate_extracted` 的 IdCard 分支 → `is_valid_idcard`
+    /// （GB 11643-1999 校验码）。有效时返回的 gender 字符串供 T68 新命令做
+    /// 跨字段比对（idcard 性别 vs 指定性别列）。
+    pub fn idcard_validate_rule() -> Rule {
+        Rule {
+            id: "idcard-validate".into(),
+            name: "身份证号校验".into(),
+            kind: RuleKind::Validate,
+            field: None,
+            pattern: None,
+            replacement: None,
+            enabled: true,
+            description: "校验 18 位身份证号（GB 11643-1999 校验码）；可选跨字段比对性别/出生日期"
+                .into(),
+            template: None,
+            params: Some(ExtractParams::IdCard),
+        }
+    }
+
+    /// 手机号校验内置规则（v1.1.4 T67 新增）：`params = PhonePrefix{[]}`，
+    /// 走 `validate_extracted` 的 PhonePrefix 分支 → `check_phone_prefix`。
+    /// 注意：PhonePrefix 分支只查前缀白名单，不检查 11 位/1 开头（这是提取规则
+    /// 的兜底语义）。整串严格校验（11 位 + 1 开头 + 纯数字）在 T68 新命令里
+    /// 直接调 `is_valid_phone`，不走 `validate_extracted` 的 PhonePrefix 分支。
+    pub fn phone_validate_rule() -> Rule {
+        Rule {
+            id: "phone-validate".into(),
+            name: "手机号校验".into(),
+            kind: RuleKind::Validate,
+            field: None,
+            pattern: None,
+            replacement: None,
+            enabled: true,
+            description: "校验 11 位手机号（1 开头），可选前缀白名单".into(),
+            template: None,
+            params: Some(ExtractParams::PhonePrefix {
+                allowed_prefixes: Vec::new(),
+            }),
+        }
+    }
+
+    /// 地址校验内置规则（v1.1.4 T67 新增）：`params = Address`，
+    /// 走 `validate_extracted` 的 Address 分支 → `is_valid_address`
+    /// （全中文 + 号1-1500 + 室101-999）。
+    pub fn address_validate_rule() -> Rule {
+        Rule {
+            id: "address-validate".into(),
+            name: "地址校验".into(),
+            kind: RuleKind::Validate,
+            field: None,
+            pattern: None,
+            replacement: None,
+            enabled: true,
+            description: "校验地址格式（全中文+号1-1500+室101-999）".into(),
+            template: None,
+            params: Some(ExtractParams::Address),
+        }
+    }
+
     /// 注册一条规则（若 id 已存在则覆盖）。
     pub fn register(&mut self, rule: Rule) {
         if let Some(existing) = self.rules.iter_mut().find(|r| r.id == rule.id) {
@@ -731,9 +882,10 @@ mod tests {
     fn with_defaults_loads_ten_rules() {
         let reg = RuleRegistry::with_defaults();
         let rules = reg.list();
-        // v1.1.3 T55c：3 条姓名 + simple-mask + segment-mask + 5 条 extract
-        // （name-extract + phone/bankcard/ip4/ip6/idcard）= 10 条
-        assert_eq!(rules.len(), 10);
+        // v1.1.4 T67：3 条姓名 + simple-mask + segment-mask + 5 条 extract
+        // （name-extract + phone/bankcard/ip4/ip6/idcard）+ 6 条 validate
+        // （username/sex/birth/idcard/phone/address）= 16 条
+        assert_eq!(rules.len(), 16);
         // 脱敏 / 校验 / 提取 三种 kind 都存在
         let kinds: Vec<RuleKind> = rules.iter().map(|r| r.kind).collect();
         assert!(kinds.contains(&RuleKind::Mask));
@@ -742,9 +894,12 @@ mod tests {
         // 3 条 mask 规则（name-mask + simple-mask + segment-mask）
         let mask_count = kinds.iter().filter(|k| **k == RuleKind::Mask).count();
         assert_eq!(mask_count, 3);
-        // T55c：6 条 extract 规则（name-extract + phone/bankcard/ip4/ip6/idcard）
+        // 6 条 extract 规则（name-extract + phone/bankcard/ip4/ip6/idcard）
         let extract_count = kinds.iter().filter(|k| **k == RuleKind::Extract).count();
         assert_eq!(extract_count, 6);
+        // v1.1.4 T67：7 条 validate 规则（name-validate + 6 条 T67 新增）
+        let validate_count = kinds.iter().filter(|k| **k == RuleKind::Validate).count();
+        assert_eq!(validate_count, 7);
     }
 
     #[test]
@@ -873,7 +1028,7 @@ mod tests {
 
     #[test]
     fn extract_params_serde_roundtrip() {
-        // T55c：ExtractParams 五变体 serde 闭环
+        // v1.1.4 T67：ExtractParams 九变体 serde 闭环
         let cases = vec![
             ExtractParams::PhonePrefix {
                 allowed_prefixes: vec!["134".into(), "159".into()],
@@ -882,6 +1037,10 @@ mod tests {
             ExtractParams::Ipv4,
             ExtractParams::Ipv6,
             ExtractParams::IdCard,
+            ExtractParams::Username,
+            ExtractParams::Sex,
+            ExtractParams::Birth,
+            ExtractParams::Address,
         ];
         for p in &cases {
             let json = serde_json::to_string(p).unwrap();
@@ -906,6 +1065,19 @@ mod tests {
         assert!(serde_json::to_string(&ExtractParams::IdCard)
             .unwrap()
             .contains("\"validator\":\"idcard\""));
+        // v1.1.4 T67：4 个新变体 camelCase 标签
+        assert!(serde_json::to_string(&ExtractParams::Username)
+            .unwrap()
+            .contains("\"validator\":\"username\""));
+        assert!(serde_json::to_string(&ExtractParams::Sex)
+            .unwrap()
+            .contains("\"validator\":\"sex\""));
+        assert!(serde_json::to_string(&ExtractParams::Birth)
+            .unwrap()
+            .contains("\"validator\":\"birth\""));
+        assert!(serde_json::to_string(&ExtractParams::Address)
+            .unwrap()
+            .contains("\"validator\":\"address\""));
     }
 
     #[test]
@@ -1094,6 +1266,13 @@ mod tests {
         assert!(reg.get("ip6-extract").is_some());
         // T55c：idcard-extract
         assert!(reg.get("idcard-extract").is_some());
+        // v1.1.4 T67：6 条新 validate 规则
+        assert!(reg.get("username-validate").is_some());
+        assert!(reg.get("sex-validate").is_some());
+        assert!(reg.get("birth-validate").is_some());
+        assert!(reg.get("idcard-validate").is_some());
+        assert!(reg.get("phone-validate").is_some());
+        assert!(reg.get("address-validate").is_some());
         // T55b：旧 ip-extract id 已不存在（拆分后由 cleanup_deprecated_rules 删除）
         assert!(reg.get("ip-extract").is_none());
         // T54：旧 general-mask id 已不存在（由 cleanup_deprecated_rules 删除）
@@ -1126,7 +1305,7 @@ mod tests {
         let mut r = RuleRegistry::name_validate_rule();
         r.description = "updated".into();
         reg.register(r);
-        assert_eq!(reg.list().len(), 10);
+        assert_eq!(reg.list().len(), 16);
         assert_eq!(reg.get("name-validate").unwrap().description, "updated");
     }
 
