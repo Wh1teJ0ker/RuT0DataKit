@@ -6,46 +6,54 @@
 
 ## 概要
 
-v1.1.4 是一个聚焦体验优化的版本：将 v1.1.3 作为独立能力入口的「行级校验」合并回「校验」模块，与单列校验并列为同一面板的两个 Tab，消除用户在两个按钮间切换的割裂感。本版为纯前端 UI 合并，后端校验命令与实现不变。
+v1.1.4 重做校验模块为**统一校验页面**：用户可动态添加任意多条「目标列 + 校验规则」组合，一个「校验」按钮即把通过 / 失败的行分流到两个新 Tab。身份证规则可勾选跨字段比对性别 / 出生日期。本版由 T67（后端规则系统扩展）+ T68（新命令 `validate_multi_rules_to_two_sheets`）+ T69（前端统一校验页面）三个任务组成。
 
 ## 改动
 
-### 校验模块统一（T67）
+### 统一校验页面（T69 前端）
 
-**问题**：v1.1.3 把行级多字段校验（T57）做成了独立能力（TopToolbar 单独按钮「行级校验」+ SidePanel 单独面板入口），与单列校验割裂。用户需在「校验」与「行级校验」两个按钮间切换，且两者本质都是「校验」能力。
+**问题**：v1.1.3 把行级多字段校验（T57）做成了独立能力（TopToolbar 单独按钮「行级校验」+ SidePanel 单独面板入口），与单列校验割裂；v1.1.4 初稿曾以 antd `Tabs` 把「单列校验」与「行级校验」并列入 `ValidatePanel`，但仍需用户在两个 Tab 间手动切换、且行级校验固定 7 字段、无法自由组合规则。
 
-**方案**：在 `ValidatePanel` 内用 antd `Tabs` 提供两个页签：
+**方案**：把 `ValidatePanel` 完全重写为单一表单（无 Tabs/Segmented 切换）：
 
-- **单列校验**：选列 + 规则 → 原位高亮无效行（`validateColumn` IPC，行为不变）
-- **行级校验**：7 字段（username/name/sex/birth/idcard/phone/address）→列映射 + 手机前缀白名单 → 通过/失败的行分别写入两个新 Tab（`validateRowsToTwoSheets` IPC，行为不变）
+- 用 antd `Form.List` 实现动态规则行增删，每行 = 目标列 Select + 校验规则 Select + 删除按钮
+- 校验规则 options 来自 `listRules()` 异步加载、`filter kind === "validate"`（T67 的 7 条规则）
+- 当选中规则是 `idcard-validate` 时，用 `Form.Item shouldUpdate` 条件渲染跨字段配置：勾选「对比性别一致性」+ Select 性别列；勾选「对比出生日期一致性」+ Select 出生日期列
+- 底部手机号前缀白名单 `Select mode="tags"`（可选，全局应用于 `phone-validate` 规则）
+- 一个「校验」按钮 → 调 `validateMultiRulesToTwoSheets` → 通过 / 失败行分别写入两个新 Tab（`{源sheet名}_校验通过` / `{源sheet名}_校验失败`）
+- 汇总消息：通过 / 失败行数 + top 失败原因
 
-两个 Tab 各持独立 `Form.useForm()` 实例，切 Tab 不丢数据。
+### 后端规则系统扩展（T67）
 
-**入口收编**：
+- `ExtractParams` 从单一形态扩展为 4 个变体（mask / extract / validate / 自定义）
+- 新增 6 条 `kind=validate` 规则（函数式 + 正则），加上既有的 `name-validate`，共 7 条 validate 规则：username-validate / sex-validate / birth-validate / idcard-validate / phone-validate / address-validate / name-validate
+- 规则分发逻辑泛化：按 `ruleId` 查表 → 路由到对应校验函数
+- DB seed 写入上述 7 条 validate 规则；`idcard-validate` 规则支持 crossField
 
-- TopToolbar 移除独立「行级校验」按钮，能力按钮从 7 个回到 6 个（脱敏 / 校验 / 提取 / 列操作 / 加解密 / 规则管理）
-- SidePanel 移除 `rowValidate` 面板入口与 `RowValidatePanel.jsx`（逻辑已合并入 ValidatePanel）
+### 新命令（T68）
 
-**版本号 bump**：1.1.3 → 1.1.4（`Cargo.toml` workspace / `tauri.conf.json` / `frontend/package.json` / `frontend/src/constants.js` 四处同步）
+- 新增 IPC 命令 `validate_multi_rules_to_two_sheets`，承接多规则列式校验
+- 参数：`sheetId / sessionId / rules: Array<{column, ruleId, crossField?}> / phonePrefixes?: string[]`
+- 返回：`{ validSheet: ParseResult, invalidSheet: ParseResult, invalidReasons: Array<{sourceRow, field, reason}> }`
+- `frontend/src/tauri.js` 新增 `validateMultiRulesToTwoSheets` wrapper
 
 ## 不变项
 
-- 后端 `validate_rows_to_two_sheets` / `validate_column` IPC 命令、实现、测试均不变
-- `frontend/src/tauri.js` wrapper 保留
-- `frontend/src/App.jsx` 路由不变
+- 既有 `validate_column` / `validate_rows_to_two_sheets` IPC 与 wrapper 保留（向后兼容）
+- `App.jsx` 路由不变（validate 走默认 SidePanel 分支）
 - DB schema / capabilities/default.json 不变
+- `TopToolbar.jsx` / `SidePanel.jsx` 沿用 v1.1.4 初稿已移除 rowValidate 入口的状态
 - v1.1.3 已发布文档与 GitHub Release 正文不改
 
 ## 验收
 
-- TopToolbar 不再有「行级校验」按钮（6 个能力按钮）
-- 点「校验」→ SidePanel 渲染 ValidatePanel，内含「单列校验」「行级校验」两个 Tab
-- 单列校验 Tab 行为与 v1.1.3 一致（原位高亮无效行）
-- 行级校验 Tab 行为与 v1.1.3 `RowValidatePanel` 一致（7 字段映射 + 跨字段联合 + 双 Tab 落地）
-- `RowValidatePanel.jsx` 已删除，构建无未解析导入
-- 版本号 4 处统一为 1.1.4
+- `ValidatePanel.jsx` 是单一表单（无 Tabs/Segmented 切换），顶部可动态添加多条规则行
+- 每条规则行：目标列 Select + 校验规则 Select + 删除按钮
+- 校验规则 options 包含 T67 的 7 条 validate 规则
+- 当选中规则是 `idcard-validate` 时展开跨字段配置
+- 底部有手机号前缀白名单 `Select mode="tags"`
+- 一个「校验」按钮 → 双 Tab 落地 + 汇总消息
 - `pnpm --prefix frontend build` 通过
-- `cargo fmt --all && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all` 通过（后端未改，预期全绿）
 
 ## 安全说明
 
