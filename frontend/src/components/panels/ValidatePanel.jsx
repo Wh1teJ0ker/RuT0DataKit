@@ -298,11 +298,11 @@ export default function ValidatePanel() {
                           style={{ width: "100%", marginTop: 4 }}
                         >
                           <Form.Item
+                            name={[name, "charClasses"]}
                             label="允许的字符类"
                             style={{ marginBottom: 0 }}
                           >
                             <Checkbox.Group
-                              name={[name, "charClasses"]}
                               options={[
                                 { label: "纯数字", value: "digits" },
                                 { label: "纯字母", value: "letters" },

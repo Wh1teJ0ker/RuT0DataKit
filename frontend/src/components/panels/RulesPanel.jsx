@@ -159,8 +159,11 @@ export default function RulesPanel() {
       }
       // T55：提取规则带 params 时初始化允许前缀草稿。
       // phonePrefix 的 allowedPrefixes 空 = 默认（正则保证 1 开头）。
+      // v1.1.4 续轮 T71 rework：条件扩展为 extract||validate，与可填参数 Card 分支一致，
+      // 否则选中 phone-validate（kind=validate）时草稿被清空，用户直接保存会覆盖 DB 已配置前缀。
       if (
-        selected.kind === "extract" &&
+        (selected.kind === "extract" ||
+          selected.kind === "validate") &&
         selected.params?.validator === "phonePrefix"
       ) {
         setDraftAllowedPrefixes(
