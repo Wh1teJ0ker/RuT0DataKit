@@ -8,11 +8,13 @@
 //! - TXT：整段文本读成单 cell `content`。
 //! - SQL：用 `rusqlite` in-memory 执行全部语句并收集所有 SELECT 结果。
 //! - PCAP：调 `crate::pcap::PcapReader`（tshark 子进程）提取 HTTP 请求字段。
+//! - DB：用 `rusqlite::Connection::open(path)` 打开外部 .db / .sqlite / .sqlite3
+//!   二进制 SQLite 文件，读取全部用户表（v1.1.4 / T75）。
 //!
 //! v1.1+ 新增数据源只需实现 `Reader` trait 并在 `detect_format`
 //! 工厂按扩展名分发，不改动 processor / db / table 模块。
 //!
-//! 各格式实现位于独立子模块：[`csv`]、[`xlsx`]、[`json`]、[`txt`]、
+//! 各格式实现位于独立子模块：[`csv`]、[`db`]、[`json`]、[`txt`]、
 //! [`sql`]、[`pcap`]；共享 helper 在 [`util`]。
 
 use std::path::Path;
@@ -21,6 +23,7 @@ use crate::error::{CoreError, CoreResult};
 use crate::model::Record;
 
 mod csv;
+mod db;
 mod json;
 mod log;
 mod pcap;
@@ -30,6 +33,7 @@ mod util;
 mod xlsx;
 
 pub use csv::CsvReader;
+pub use db::DbReader;
 pub use json::JsonReader;
 pub use log::LogReader;
 pub use pcap::PcapReader;
@@ -91,7 +95,8 @@ pub trait Reader: Send + Sync {
 /// 支持扩展名：`.csv` → `CsvReader`、`.xlsx` → `XlsxReader`、
 /// `.json`/`.jsonl` → `JsonReader`、`.txt` → `TxtReader`、
 /// `.log` → `LogReader`、`.sql` → `SqlReader`、
-/// `.pcap`/`.pcapng` → `PcapReader`。
+/// `.pcap`/`.pcapng` → `PcapReader`、
+/// `.db`/`.sqlite`/`.sqlite3` → `DbReader`（v1.1.4 / T75）。
 /// 其它扩展名返回 `NotImplemented`。
 pub fn detect_format(path: &str) -> CoreResult<Box<dyn Reader>> {
     let p = Path::new(path);
@@ -105,6 +110,9 @@ pub fn detect_format(path: &str) -> CoreResult<Box<dyn Reader>> {
         Some("sql") => Ok(Box::new(SqlReader::new(path))),
         Some("pcap") => Ok(Box::new(PcapReader::new(path))),
         Some("pcapng") => Ok(Box::new(PcapReader::new(path))),
+        Some("db") => Ok(Box::new(DbReader::new(path))),
+        Some("sqlite") => Ok(Box::new(DbReader::new(path))),
+        Some("sqlite3") => Ok(Box::new(DbReader::new(path))),
         _ => Err(CoreError::NotImplemented("datasource::detect_format")),
     }
 }
@@ -125,6 +133,10 @@ mod tests {
         assert!(detect_format("/tmp/foo.pcap").is_ok());
         assert!(detect_format("/tmp/foo.pcapng").is_ok());
         assert!(detect_format("/tmp/foo.log").is_ok());
+        // v1.1.4 / T75：db/sqlite/sqlite3 路由到 DbReader。
+        assert!(detect_format("/tmp/foo.db").is_ok());
+        assert!(detect_format("/tmp/foo.sqlite").is_ok());
+        assert!(detect_format("/tmp/foo.sqlite3").is_ok());
         // 不支持的扩展名仍返回 NotImplemented。
         let err = detect_format("/tmp/foo.unknown").err().unwrap();
         assert!(matches!(err, CoreError::NotImplemented(_)));
