@@ -1,7 +1,7 @@
 # RuT0DataKit v1.1.4
 
 > Git tag：`v1.1.4`（待推送）
-> 状态：开发中
+> 状态：qa_passed（首轮 + 续轮 Release QA 增量审计通过）
 > 前置：v1.1.3 已发布 tag `v1.1.3`
 
 ## 概要
