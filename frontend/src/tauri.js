@@ -284,8 +284,9 @@ export function validateRowsToTwoSheets(
  *
  * @param {number} sheetId    源 Sheet ID
  * @param {number} sessionId  当前会话 ID（两个新 Tab 挂到本会话）
- * @param {Array<{column: string, ruleId: string, crossField?: {checkSex: boolean, sexColumn: string|null, checkBirth: boolean, birthColumn: string|null} | null}>} rules
- *   多条「列 + 校验规则」组合；crossField 仅在 ruleId 为 idcard-validate 时生效
+ * @param {Array<{column: string, ruleId: string, crossField?: {checkSex: boolean, sexColumn: string|null, checkBirth: boolean, birthColumn: string|null} | null, paramsOverride?: object | null}>} rules
+ *   多条「列 + 校验规则」组合；crossField 仅在 ruleId 为 idcard-validate 时生效；
+ *   paramsOverride 仅在 ruleId 为 generic-validate 时携带，覆盖 DB 默认 params
  * @param {string[]} [phonePrefixes=[]]  手机号三位前缀白名单；空数组 = 仅检查 1 开头 + 11 位
  * @returns {Promise<{validSheet: {newSheetId: number, headers: string[], rowCount: number, skipped: number}, invalidSheet: {newSheetId: number, headers: string[], rowCount: number, skipped: number}, invalidReasons: Array<{sourceRow: number, field: string, reason: string}>}>}
  */

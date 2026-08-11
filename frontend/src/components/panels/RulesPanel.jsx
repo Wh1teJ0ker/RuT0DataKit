@@ -3,6 +3,7 @@ import {
   Alert,
   Button,
   Card,
+  Checkbox,
   Col,
   Empty,
   Form,
@@ -38,6 +39,13 @@ import {
   previewMask,
   templateFromPreset,
 } from "./maskTemplate";
+// v1.1.4 续轮 T71：校验规则参数共享模块（Generic 参数构造 + 校验提示文案）。
+import {
+  EMPTY_GENERIC_PARAMS,
+  normalizeGenericParams,
+  buildGenericParamsForRun,
+  VALIDATE_HINTS,
+} from "./validateParams";
 
 const { Title, Text } = Typography;
 
@@ -53,6 +61,20 @@ const { Title, Text } = Typography;
 //     · name-mask：旧逻辑（≥3 保留首尾，2 保留首字符）
 //   - T54：原 general-mask 拆为 simple-mask（整段）+ segment-mask（分段）两条独立规则，
 //     各承载一种模板类型，不再需要「模板类型」Select 切换。
+// v1.1.4 续轮 T71：validate 规则校验类型只读 Tag 文案映射。
+const VALIDATE_LABELS = {
+  generic: "通用校验",
+  phonePrefix: "手机前缀",
+  luhn: "Luhn",
+  ipv4: "IPv4",
+  ipv6: "IPv6",
+  idcard: "身份证",
+  username: "用户名",
+  sex: "性别",
+  birth: "出生日期",
+  address: "地址",
+};
+
 const KIND_LABEL = { mask: "脱敏", validate: "校验", extract: "提取" };
 const KIND_COLOR = { mask: "orange", validate: "red", extract: "blue" };
 const KIND_ORDER = ["mask", "validate", "extract"];
@@ -72,6 +94,8 @@ export default function RulesPanel() {
   const [presetKey, setPresetKey] = useState("empty");
   // T55：提取规则编辑态。phonePrefix 的允许前缀草稿（空数组=默认1开头）。
   const [draftAllowedPrefixes, setDraftAllowedPrefixes] = useState([]);
+  // v1.1.4 续轮 T71：generic-validate 参数草稿（字符类 + 长度限制）。
+  const [draftGenericParams, setDraftGenericParams] = useState({ ...EMPTY_GENERIC_PARAMS });
   const [saving, setSaving] = useState(false);
   // 测试输入 + 结果。
   const [testInput, setTestInput] = useState("");
@@ -135,8 +159,11 @@ export default function RulesPanel() {
       }
       // T55：提取规则带 params 时初始化允许前缀草稿。
       // phonePrefix 的 allowedPrefixes 空 = 默认（正则保证 1 开头）。
+      // v1.1.4 续轮 T71 rework：条件扩展为 extract||validate，与可填参数 Card 分支一致，
+      // 否则选中 phone-validate（kind=validate）时草稿被清空，用户直接保存会覆盖 DB 已配置前缀。
       if (
-        selected.kind === "extract" &&
+        (selected.kind === "extract" ||
+          selected.kind === "validate") &&
         selected.params?.validator === "phonePrefix"
       ) {
         setDraftAllowedPrefixes(
@@ -146,6 +173,13 @@ export default function RulesPanel() {
         );
       } else {
         setDraftAllowedPrefixes([]);
+      }
+      // v1.1.4 续轮 T71：generic-validate 参数草稿初始化。
+      // 仅 generic validator 走字符类 + 长度草稿；其他规则走空默认。
+      if (selected.params?.validator === "generic") {
+        setDraftGenericParams(normalizeGenericParams(selected.params));
+      } else {
+        setDraftGenericParams({ ...EMPTY_GENERIC_PARAMS });
       }
       setTestResult(null);
       setTestInput("");
@@ -189,10 +223,21 @@ export default function RulesPanel() {
       ) {
         const tpl = buildTemplateForRun(draftTemplate);
         await updateRuleTemplate(selected.id, tpl);
-      } else if (selected.kind === "extract" && selected.params) {
-        // T55：提取规则走专用的 extract config 命令（写 pattern + params）。
-        const pattern = draftPattern ?? null;
+      } else if (selected.params?.validator === "generic") {
+        // v1.1.4 续轮 T71：generic-validate 走专用的 extract config 命令
+        // （写 params，pattern 传 null：generic 不依赖正则）。
+        await updateRuleExtractConfig(
+          selected.id,
+          null,
+          buildGenericParamsForRun(draftGenericParams)
+        );
+      } else if (
+        (selected.kind === "extract" || selected.kind === "validate") &&
+        selected.params
+      ) {
+        // T55：提取/校验规则带 params 时持久化 pattern + params。
         // phonePrefix 用允许前缀草稿；其他 validator 原样回写。
+        const pattern = draftPattern ?? null;
         let params = selected.params;
         if (params.validator === "phonePrefix") {
           params = {
@@ -728,25 +773,86 @@ export default function RulesPanel() {
                           />
                         </Form.Item>
                       )
-                    ) : selected.kind === "extract" && selected.params ? (
-                      // T55/T55b/T55c：提取规则带 params 时展示校验类型只读 Tag + phone 前缀编辑。
-                      <>
-                        <Form.Item label="校验类型">
-                          <Tag color="blue" style={{ margin: 0 }}>
-                            {selected.params.validator === "phonePrefix"
-                              ? "手机前缀"
-                              : selected.params.validator === "luhn"
-                                ? "Luhn"
-                                : selected.params.validator === "ipv4"
-                                  ? "IPv4"
-                                  : selected.params.validator === "ipv6"
-                                    ? "IPv6"
-                                    : selected.params.validator === "idcard"
-                                      ? "身份证"
-                                      : selected.params.validator}
-                          </Tag>
-                        </Form.Item>
-                        {selected.params.validator === "phonePrefix" && (
+                    ) : (selected.kind === "extract" || selected.kind === "validate") && selected.params ? (
+                      // T55/T55b/T55c/T71：extract/validate 规则带 params 时按
+                      //   params.validator 分支渲染：
+                      //   - generic：字符类 Checkbox + 长度 InputNumber
+                      //   - phonePrefix：校验类型 Tag + 允许前缀 Select + 正则输入框
+                      //   - 其他 validator（luhn/ipv4/ipv6/idcard/username/sex/birth/address）：
+                      //     只读 Tag + hint 文案（不显示空正则输入框）
+                      selected.params.validator === "generic" ? (
+                        // v1.1.4 续轮 T71：generic-validate 字符类 + 长度限制。
+                        <>
+                          <Form.Item label="校验类型">
+                            <Tag color="blue" style={{ margin: 0 }}>
+                              通用校验
+                            </Tag>
+                          </Form.Item>
+                          <Form.Item label="允许的字符类">
+                            <Checkbox.Group
+                              value={[
+                                draftGenericParams.allowDigits && "digits",
+                                draftGenericParams.allowLetters && "letters",
+                                draftGenericParams.allowSpecial && "special",
+                              ].filter(Boolean)}
+                              onChange={(vals) =>
+                                setDraftGenericParams((prev) => ({
+                                  ...prev,
+                                  allowDigits: vals.includes("digits"),
+                                  allowLetters: vals.includes("letters"),
+                                  allowSpecial: vals.includes("special"),
+                                }))
+                              }
+                              options={[
+                                { label: "纯数字 (0-9)", value: "digits" },
+                                { label: "纯字母 (a-zA-Z)", value: "letters" },
+                                {
+                                  label: "特殊符号（含标点/空格/中文等）",
+                                  value: "special",
+                                },
+                              ]}
+                            />
+                          </Form.Item>
+                          <Form.Item label="最小长度（空=不限）">
+                            <InputNumber
+                              value={draftGenericParams.minLen}
+                              onChange={(v) =>
+                                setDraftGenericParams((prev) => ({
+                                  ...prev,
+                                  minLen: v,
+                                }))
+                              }
+                              placeholder="不限"
+                              min={0}
+                              style={{ width: "100%" }}
+                            />
+                          </Form.Item>
+                          <Form.Item label="最大长度（空=不限）">
+                            <InputNumber
+                              value={draftGenericParams.maxLen}
+                              onChange={(v) =>
+                                setDraftGenericParams((prev) => ({
+                                  ...prev,
+                                  maxLen: v,
+                                }))
+                              }
+                              placeholder="不限"
+                              min={0}
+                              style={{ width: "100%" }}
+                            />
+                          </Form.Item>
+                          <Text type="secondary">
+                            {VALIDATE_HINTS["generic-validate"] || ""}
+                          </Text>
+                        </>
+                      ) : selected.params.validator === "phonePrefix" ? (
+                        // phonePrefix（extract/validate 共用）：Tag + 允许前缀 + 正则输入框。
+                        <>
+                          <Form.Item label="校验类型">
+                            <Tag color="blue" style={{ margin: 0 }}>
+                              手机前缀
+                            </Tag>
+                          </Form.Item>
                           <Form.Item
                             label="允许前缀"
                             extra="输入 3 位前缀回车添加；空列表=默认 1 开头"
@@ -761,27 +867,50 @@ export default function RulesPanel() {
                               style={{ width: "100%" }}
                             />
                           </Form.Item>
-                        )}
+                          <Form.Item label="正则模式">
+                            <Input
+                              value={draftPattern ?? ""}
+                              onChange={(e) => setDraftPattern(e.target.value)}
+                              placeholder="提取正则（宽松召回，严格校验交给校验函数）"
+                            />
+                          </Form.Item>
+                        </>
+                      ) : (
+                        // 其他 validator（luhn/ipv4/ipv6/idcard/username/sex/birth/address）：
+                        // 只读 Tag + hint 文案，不显示空正则输入框。
+                        <>
+                          <Form.Item label="校验类型">
+                            <Tag color="blue" style={{ margin: 0 }}>
+                              {VALIDATE_LABELS[selected.params.validator] ||
+                                selected.params.validator}
+                            </Tag>
+                          </Form.Item>
+                          <Text type="secondary">
+                            {VALIDATE_HINTS[selected.id] || ""}
+                          </Text>
+                        </>
+                      )
+                    ) : (
+                      // 无 params 的 validate 规则（如 name-validate）：hint 文案 + 正则输入框。
+                      <>
+                        {selected.kind === "validate" &&
+                          VALIDATE_HINTS[selected.id] && (
+                            <Text type="secondary" style={{ display: "block", marginBottom: 8 }}>
+                              {VALIDATE_HINTS[selected.id]}
+                            </Text>
+                          )}
                         <Form.Item label="正则模式">
                           <Input
                             value={draftPattern ?? ""}
                             onChange={(e) => setDraftPattern(e.target.value)}
-                            placeholder="提取正则（宽松召回，严格校验交给校验函数）"
+                            placeholder={
+                              selected.kind === "validate"
+                                ? "如 ^[\u4e00-\u9fa5]{2,4}$"
+                                : "如 [\u4e00-\u9fa5]{2,4}"
+                            }
                           />
                         </Form.Item>
                       </>
-                    ) : (
-                      <Form.Item label="正则模式">
-                        <Input
-                          value={draftPattern ?? ""}
-                          onChange={(e) => setDraftPattern(e.target.value)}
-                          placeholder={
-                            selected.kind === "validate"
-                              ? "如 ^[\u4e00-\u9fa5]{2,4}$"
-                              : "如 [\u4e00-\u9fa5]{2,4}"
-                          }
-                        />
-                      </Form.Item>
                     )}
                     <Space>
                       <Button
@@ -809,14 +938,21 @@ export default function RulesPanel() {
                                 : DEFAULT_MASK_CHAR
                             );
                           } else if (
-                            selected.kind === "extract" &&
                             selected.params?.validator === "phonePrefix"
                           ) {
+                            // v1.1.4 续轮 T71：phonePrefix 重置（extract/validate 共用）。
                             setDraftPattern(selected.pattern ?? "");
                             setDraftAllowedPrefixes(
                               Array.isArray(selected.params.allowedPrefixes)
                                 ? selected.params.allowedPrefixes.slice()
                                 : []
+                            );
+                          } else if (
+                            selected.params?.validator === "generic"
+                          ) {
+                            // v1.1.4 续轮 T71：generic-validate 重置 → 用 DB params 回填。
+                            setDraftGenericParams(
+                              normalizeGenericParams(selected.params)
                             );
                           } else {
                             setDraftPattern(selected.pattern ?? "");

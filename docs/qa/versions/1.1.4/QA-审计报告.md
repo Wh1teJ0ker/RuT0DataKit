@@ -1,10 +1,10 @@
 # v1.1.4 QA 审计报告
 
 > 版本：1.1.4
-> 审计类型：Release 前全局审计（v1.1.3 → v1.1.4 校验模块统一 — 统一校验页面重设计）
-> 审计依据：[`docs/versions/1.1.4/更新日志.md`](../../versions/1.1.4/更新日志.md) + [`docs/04-版本标准.md`](../../04-版本标准.md) §2 里程碑索引 + [`handoff/TASK-BOARD.md`](../../../handoff/TASK-BOARD.md) T67~T69 任务定义 + E79~E84 验收项
-> 审计轮次：R1（2026-08-07 主会话基于实际命令输出 + 代码核查）
-> 结论：`qa_passed` — R1 覆盖 T67~T69（292 passed / 3 ignored / 0 failed + 3082 modules + 4 处版本一致 + DB schema 不变 + SQL 全参数绑定 + 凭据无新增）。**安全声明**：本轮未重新运行 Mimosa 完整深度扫描（v1.1.3 R1+R2 两轮 Mimosa 深度扫描均 0 findings / 487 包 0 漏洞，v1.1.4 改动为校验模块功能性扩展，未引入新依赖 crate、未改 DB schema、未改 CSP/网络/fs 权限，沿用 v1.1.3 静态分析结论作为基线）。静态分析非运行时验证，不宣称项目安全，但无已识别 finding 阻碍发布。
+> 审计类型：Release 前全局审计（v1.1.3 → v1.1.4 校验模块统一 — 统一校验页面重设计）+ 续轮增量审计（T70~T72）
+> 审计依据：[`docs/versions/1.1.4/更新日志.md`](../../versions/1.1.4/更新日志.md) + [`docs/04-版本标准.md`](../../04-版本标准.md) §2 里程碑索引 + [`handoff/TASK-BOARD.md`](../../../handoff/TASK-BOARD.md) T67~T72 任务定义 + E79~E100 验收项
+> 审计轮次：R1（2026-08-07 主会话基于实际命令输出 + 代码核查，覆盖 T67~T69）；R2（2026-08-11 主会话增量审计，覆盖续轮 T70~T72）
+> 结论：`qa_passed` — R1 覆盖 T67~T69（292 passed / 3 ignored / 0 failed + 3082 modules + 4 处版本一致 + DB schema 不变 + SQL 全参数绑定 + 凭据无新增）；R2 增量审计覆盖 T70~T72（302 passed / 3 ignored / 0 failed + 3083 modules + 4 处版本一致 + DB schema 不变 + SQL 全参数绑定 + params_override serde(default) 向后兼容 + validate_extracted wrapper 不变 + 4 处版本一致 1.1.4）。**安全声明**：本轮 R2 未重新运行 Mimosa 完整深度扫描（v1.1.3 R1+R2 两轮 Mimosa 深度扫描均 0 findings / 487 包 0 漏洞，v1.1.4 续轮改动为校验模块功能性增强（ExtractParams::Generic 变体 + clean_birth/is_valid_address/is_valid_birth 校验逻辑放宽 + params_override 字段 + 前端参数 UI 统一化），未引入新依赖 crate、未改 DB schema、未改 CSP/网络/fs 权限，沿用 v1.1.3 静态分析结论作为基线）。静态分析非运行时验证，不宣称项目安全，但无已识别 finding 阻碍发布。
 
 ## 1. 审计维度与结论
 
@@ -193,6 +193,132 @@
 | `src-tauri/tauri.conf.json` | version=1.1.4 | `cargo check` 绿 |
 | `Cargo.toml` | workspace.package.version=1.1.4 + v1.1.4 注释行 + `serde_json` `preserve_order` feature | `cargo check` 绿 |
 | `docs/versions/1.1.4/更新日志.md` | T67~T69 进度表 + E79~E84 验收 + 关键设计决策 + 已知边界 | 人工核对 |
-| `docs/versions/1.1.4/RELEASE-NOTES.md` | 用户面向「统一校验页面：自由选多规则 + 一按钮 + 双 Tab 输出」 | 人工核对 |
+| `docs/versions/1.1.4/RELEASE-NOTES.md`（新文件） | 用户面向「统一校验页面：自由选多规则 + 一按钮 + 双 Tab 输出」 | 人工核对 |
 | `docs/qa/versions/1.1.4/QA-审计报告.md`（新文件） | 8 维度审计 + qa_passed 结论 | 本报告 |
 | `handoff/TASK-BOARD.md` | T67~T69 任务 DAG + E79~E84 验收 + Release QA 门禁；3 任务全 verified_complete | 人工核对 |
+
+---
+
+## 14. 续轮 R2 增量审计（T70~T72，2026-08-11）
+
+R2 为 v1.1.4 续轮（T70/T71/T72）的增量审计，沿用 R1 的 8 维度结构，仅审计续轮增量改动（不复核 R1 已通过的 T67~T69）。续轮 4 项需求：通用校验规则（Generic 变体 + 字符类 / 长度范围参数覆盖）/ 地址校验放宽为结构化校验 / 出生日期校验支持分隔符格式（clean_birth 归一化）/ 前端参数 UI 统一化。
+
+### 14.1 任务 DAG 完整性
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| DAG 节点 | `pass` | T70（后端，depends_on=[]）/ T71（前端，depends_on=[T70]）/ T72（文档+E2E+QA，depends_on=[T71]）三节点链式依赖，无环、无孤立、无缺失前置 |
+| 任务状态 | `pass` | `handoff/TASK-BOARD.md` 三任务全 `verified_complete`；T70 commit a24609a + T71 commit cfadf5b/b858c6a + T72 本 commit |
+| HANDOFF 三件套 | `pass` | T70-HANDOFF.md / T71-HANDOFF.md / T72-HANDOFF.md 齐；T72-REPORT.md 本任务产出 |
+
+### 14.2 验收项覆盖（E85-E100）
+
+| 验收项 | 状态 | 证据 |
+|---|---|---|
+| E85（T70）ExtractParams::Generic serde camelCase roundtrip | `pass` | `rules.rs` `#[serde(rename = "generic", rename_all = "camelCase")]` + `extract_params_serde_roundtrip` 测试覆盖 Generic 变体（allowDigits/allowLetters/allowSpecial/minLen/maxLen） |
+| E86（T70）is_valid_generic 字符类白名单 + 长度范围 | `pass` | `func_validator.rs` `is_valid_generic` 函数 + 单测覆盖（全 false 判否 / 字符类越界 / 长度越界）+ doc-test `is_valid_generic` passed |
+| E87（T70）is_valid_birth 支持 clean_birth 分隔符格式 | `pass` | `func_validator.rs` `clean_birth` + `is_valid_birth` 改造 + 单测覆盖 `20031223` / `2003-12-23` / `2003/12/23` / `2003.12.23` / ` 2003 12 23 ` + 反例（月13/日0/6位/超长/含字母/空串）+ doc-test `clean_birth` + `is_valid_birth` passed |
+| E88（T70）is_valid_address 结构化校验 | `pass` | `func_validator.rs` `is_valid_address` 改造（trim + 长度 4-200 + 中文字符 ≥ 2 + 地址关键词）+ 单测覆盖（北京市朝阳区建国路88号 / 内蒙古长地址 / 1234号101室 / 北京路1 + 反例 hello world / 张 / 张三 / 李四王五 / 空串 / 空白）+ doc-test `is_valid_address` passed |
+| E89（T70）validate_extracted_with_params 抽取 + wrapper 向后兼容 | `pass` | `func_validator.rs` `validate_extracted_with_params(params, value) -> (bool, String)` 抽取 + `validate_extracted(rule, value)` 改 wrapper 委托；`extract_validate_to_new_sheet_inner` 调用点不变 |
+| E90（T70）MultiRuleValidation.params_override + clean_birth 跨字段 | `pass` | `processor.rs` `MultiRuleValidation.params_override: Option<ExtractParams>`（`#[serde(default)]`）+ `validate_multi_rules_to_two_sheets_inner` 优先取 `params_override` 回落 `rule.params`（L1218）+ 跨字段 birth 比对改 `clean_birth`（L902-903 + L1291-1292）；集成测试 `validate_multi_rules_to_two_sheets_generic_with_params_override` + clean_birth 跨字段用例 passed |
+| E91（T71）pnpm build 通过 | `pass` | R2 实测 `pnpm --prefix frontend build` exit 0（3083 modules，2.44s） |
+| E92（T71）RulesPanel generic-validate 字符类 Checkbox + 长度 InputNumber | `pass` | `RulesPanel.jsx` draftGenericParams state + Checkbox.Group + InputNumber + handleSaveParams generic 分支调 updateRuleExtractConfig |
+| E93（T71）RulesPanel birth/address/idcard 显示 hint 不显示空正则 | `pass` | `RulesPanel.jsx` 按 params.validator 分支：其他 validator 只读 Tag + hint 文案（VALIDATE_HINTS） |
+| E94（T71）RulesPanel phone-validate 能编辑允许前缀 | `pass` | `RulesPanel.jsx` phonePrefix 分支 Select + 正则输入框（extract/validate 共用） |
+| E95（T71）ValidatePanel generic-validate 行展开字符类 + 长度 | `pass` | `ValidatePanel.jsx` Form.List 每行 shouldUpdate 监听 ruleId + Checkbox.Group name=[name,"charClasses"] + InputNumber minLen/maxLen |
+| E96（T71）ValidatePanel 组装 multiRules 附带 paramsOverride | `pass` | `ValidatePanel.jsx` L114 `item.paramsOverride = buildGenericParamsForRun(...)`（generic-validate 行）；`tauri.js` JSDoc `paramsOverride?: object \| null` |
+| E97（T72）cargo fmt/clippy/test 全绿 | `pass` | R2 实测 `cargo fmt --all` exit 0 + `cargo clippy --all-targets --all-features -- -D warnings` exit 0 + `cargo test --all` 302 passed / 3 ignored / 0 failed（src-tauri 131 + core 158 + Doc-tests 13） |
+| E98（T72）pnpm build 全绿 | `pass` | R2 实测 `pnpm --prefix frontend build` exit 0（3083 modules，2.44s） |
+| E99（T72）版本号 4 处一致 1.1.4 | `pass` | grep 确认 Cargo.toml workspace.package.version=1.1.4 + tauri.conf.json version=1.1.4 + frontend/package.json version=1.1.4 + frontend/src/constants.js APP_VERSION="v1.1.4" |
+| E100（T72）QA 报告结论 qa_passed（续轮） | `pass` | 本报告 §14.8 结论 qa_passed（续轮） |
+
+### 14.3 代码审查闭环
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| T70 review | `pass` | T70-HANDOFF 标 verified_complete；commit a24609a 落地；scope_deviation 无越界（ExtractParams::Generic 复用既有 typed enum 模式 / clean_birth/is_valid_birth/is_valid_address 改造复用既有函数签名 / validate_extracted_with_params 抽取不改既有调用点 / MultiRuleValidation.params_override `#[serde(default)]` 向后兼容） |
+| T71 review | `pass` | T71-HANDOFF 标 verified_complete；commit cfadf5b + b858c6a（rework charClasses Form.Item name + phonePrefix useEffect kind 条件）落地；scope_deviation 无越界（validateParams.js 新建共享模块 / RulesPanel 按 params.validator 分支 / ValidatePanel Form.List shouldUpdate 条件渲染 / tauri.js JSDoc 追加；不改 MaskPanel/ExtractPanel/state/App.jsx/capabilities） |
+| T72 review | `pass` | 本任务（文档同步 + E2E + QA 增量审计）；不改代码（out_of_scope 遵守）；scope_deviation 仅 docs/02 技术设计文档同步 ExtractParams::Generic + params_override 契约（justified：新变体 + 新字段需在技术设计文档登记） |
+
+### 14.4 验证命令全绿
+
+| 命令 | 状态 | R2 实测结果 |
+|---|---|---|
+| `cargo fmt --all` | `pass` | exit 0（无格式差异，R1 基线保持） |
+| `cargo clippy --all-targets --all-features -- -D warnings` | `pass` | exit 0（core + src-tauri 全零警告） |
+| `cargo test --all` | `pass` | src-tauri lib 131 + core 158 + Doc-tests 13 = 302 passed / 3 ignored / 0 failed（较 R1 292 → R2 302，+10 测试覆盖 T70 Generic/clean_birth/is_valid_address/is_valid_generic/params_override + T71 无新单测） |
+| `pnpm --prefix frontend build` | `pass` | 3083 modules transformed，✓ built in 2.44s（较 R1 3082 → R2 3083，+1 模块 = validateParams.js 新建）；chunk >500kB 为 antd 既有警告 |
+
+### 14.5 文档同步
+
+| 文档 | 状态 | 证据 |
+|---|---|---|
+| `docs/versions/1.1.4/更新日志.md` | `pass` | 状态行更新为 qa_passed（首轮 + 续轮）；任务表追加 T70/T71/T72 行（全 verified_complete）；新增「续轮：通用校验 + 地址放宽 + 生日清理 + 前端统一化」章节（背景 + 4 项设计决策 + T70/T71/T72 改动）；验收项 E85-E100 全列 |
+| `docs/versions/1.1.4/RELEASE-NOTES.md` | `pass` | 状态更新为 qa_passed（首轮 + 续轮）；续轮功能段已追加（通用校验 / 地址放宽 / 生日清理 / 前端统一化） |
+| `docs/02-技术设计文档.md` | `pass` | §4.6 IPC 契约 `MultiRuleValidation` 结构追加 `params_override: Option<ExtractParams>` 字段（`#[serde(default)]`）+ 续轮 T70 增量说明段（ExtractParams::Generic 变体 / is_valid_generic / clean_birth / is_valid_birth / is_valid_address 结构化 / validate_extracted_with_params 抽取 / 跨字段 birth 比对改 clean_birth）；版本覆盖说明追加 v1.1.4 段 |
+| `handoff/TASK-BOARD.md` | `pass` | 状态更新为 qa_passed（首轮 + 续轮）；T70/T71/T72 任务 status 全 verified_complete |
+| `docs/qa/versions/1.1.4/QA-审计报告.md` | `pass` | 本报告 §14 续轮增量审计章节（8 维度）+ 结论 qa_passed（续轮） |
+| `docs/04-版本标准.md` 里程碑表 | `pending` | v1.1.4 行待补（续轮 Release QA 通过后由主会话同步状态推进） |
+
+### 14.6 安全与隐私
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| SQL 参数绑定 | `pass` | T70/T71/T72 未改任何 SQL（T70 改 `func_validator.rs` + `rules.rs` + `processor.rs` 校验逻辑，T71 改前端，T72 改文档）；R1 基线 53 处 `params![]` 绑定 + 0 处 `format!` SQL 拼接保持 |
+| 凭据 | `pass` | 续轮无新增凭据；updater 密钥沿用 v1.1.0 配置（环境变量读取，源码无字面量） |
+| 全本地处理 | `pass` | 校验规则分发 / clean_birth 归一化 / 结构化地址校验 / params_override 覆盖全在本地，无网络调用；CSP/fs 权限/capabilities 续轮未改 |
+| 身份证号隐私 | `pass` | `is_valid_idcard` 未改（仅校验长度 + 校验码）；跨字段 birth 比对改 clean_birth 不涉及额外隐私暴露（birth 列本就在比对范围内） |
+| Mimosa 深度扫描 | `info` | R2 未重新运行 Mimosa 完整深度扫描；沿用 v1.1.3 R1+R2 双轮 0 findings / 487 包 0 漏洞基线。v1.1.4 续轮改动为校验模块功能性增强（ExtractParams::Generic 变体 / clean_birth/is_valid_address/is_valid_birth 校验逻辑放宽 / params_override 字段 / 前端参数 UI 统一化），未引入新依赖 crate、未改 DB schema、未改 CSP/网络/fs 权限，静态分析基线有效。静态分析非运行时验证，不宣称项目安全；建议后续版本重新运行完整 Mimosa 密封扫描覆盖 v1.1.4 全量增量代码 |
+
+### 14.7 向后兼容
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| `params_override` serde(default) | `pass` | `MultiRuleValidation.params_override: Option<ExtractParams>` 加 `#[serde(default)]`，旧前端 JSON 无此字段 → 反序列化为 `None` → 回落 `rule.params`（向后兼容，旧前端调用 `validate_multi_rules_to_two_sheets` 不破坏） |
+| `validate_extracted` wrapper 不变 | `pass` | `validate_extracted(rule, value) -> (bool, String)` 签名保持，改 wrapper 委托 `validate_extracted_with_params`；`extract_validate_to_new_sheet_inner` 调用点不变（既有 `validate_column` / `validate_rows_to_two_sheets` 不破坏） |
+| `validate_rows_to_two_sheets` 命令签名不变 | `pass` | 续轮未改命令签名（内部 birth 比对改 clean_birth，对外行为：原 `19491231` 仍 valid，新增 `1949-12-31` 也 valid — 行为放宽，不破坏既有 valid 用例） |
+| `is_valid_address` 行为放宽 | `pass` | 原严格正则（号1-1500+室101-999）→ 结构化校验（中文≥2 + 地址关键词）。原 valid 用例（如「北京市朝阳区1号101室」）仍 valid（含中文 + 关键词），原 invalid 用例（如「hello world」）仍 invalid。行为放宽，不破坏既有 valid 用例 |
+| `is_valid_birth` 行为放宽 | `pass` | 原 `^\d{8}$` → clean_birth 后 8 位 + 日期有效性。原 valid 用例（`20031223`）仍 valid，新增分隔符格式（`2003-12-23`）也 valid。行为放宽，不破坏既有 valid 用例 |
+| DB schema 不变 | `pass` | `SCHEMA_VERSION=5`（续轮不变）；ExtractParams::Generic 复用既有 `rules.params TEXT` 列存 JSON；`with_defaults()` 17 条（R1 16 + T70 +1 generic-validate），`seed_builtin_rules` upsert-missing 补 generic-validate（老用户升级自动补，已存在 16 条不动） |
+| 既有 IPC 命令保留 | `pass` | `validate_column` / `validate_rows_to_two_sheets` / `validate_multi_rules_to_two_sheets` 命令签名不变；`extract_validate_to_new_sheet_inner` 不改 |
+
+### 14.8 版本号一致性
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| Cargo.toml workspace.package.version | `pass` | 1.1.4（R2 grep 确认） |
+| src-tauri/tauri.conf.json version | `pass` | 1.1.4（R2 grep 确认） |
+| frontend/package.json version | `pass` | 1.1.4（R2 grep 确认） |
+| frontend/src/constants.js APP_VERSION | `pass` | "v1.1.4"（R2 grep 确认） |
+| 4 处一致 | `pass` | 全 1.1.4，无 1.1.3 残留，无 1.1.5 提前 |
+
+### 14.9 续轮 R2 结论
+
+`qa_passed`（续轮）— R2 增量审计覆盖 v1.1.4 续轮全部交付（T70~T72）+ R1 基线回归。T70~T72 全部 `verified_complete`（E85~E100 验收项全绿）。续轮核心交付：
+
+1. **后端通用校验 + 地址放宽 + 生日清理 + params_override 契约**（T70）—— `ExtractParams::Generic` 变体（字符类白名单 + 长度范围，`#[serde(rename = "generic", rename_all = "camelCase")]`）+ `generic-validate` 内置规则（with_defaults 16→17）+ `is_valid_generic` 函数式校验器；`clean_birth` + `is_valid_birth` 改造（支持 `2003-12-23` 等分隔符格式）+ `is_valid_address` 放宽为结构化校验（中文≥2 + 地址关键词）；`validate_extracted_with_params` 抽取 + `validate_extracted` wrapper 委托；`MultiRuleValidation.params_override` 字段（`#[serde(default)]` 向后兼容）+ 跨字段 birth 比对改 `clean_birth`。
+2. **前端参数 UI 统一化**（T71）—— `validateParams.js` 共享模块（EMPTY_GENERIC_PARAMS + normalizeGenericParams + buildGenericParamsForRun + VALIDATE_HINTS）+ `RulesPanel` 按 `params.validator` 分支渲染（generic 字符类 Checkbox + 长度 InputNumber / phonePrefix 前缀 Select / 其他 hint）+ `ValidatePanel` Form.List generic-validate 行参数区 + paramsOverride 组装 + `tauri.js` JSDoc。
+3. **文档同步 + E2E + Release QA 增量审计**（T72）—— 更新日志 / RELEASE-NOTES / 02-技术设计文档 / TASK-BOARD / QA-审计报告 5 处同步；E2E 全绿（cargo fmt/clippy/test 302 passed + pnpm build 3083 modules）；8 维度增量审计全 pass，结论 qa_passed（续轮）。
+
+**门禁裁决**：无未修复的 critical/major 问题。全部 `info` 项均为非阻塞已知简化或已知边界（Mimosa 未重新运行 / T71 GUI 交互属构建级验收 / antd chunk 警告既有 / docs/04 里程碑表待主会话同步）。**Mimosa 深度扫描**：R2 未重新运行，沿用 v1.1.3 R1+R2 双轮 0 findings / 487 包 0 漏洞基线；v1.1.4 续轮改动为校验模块功能性增强（无新依赖 crate、无 schema 变更、无 CSP/网络/fs 权限变更），静态分析基线有效。静态分析非运行时验证，不宣称项目安全。**结论推进至 `qa_passed`（续轮）**。
+
+**发布前置门禁**（[`04-版本标准.md`](../../04-版本标准.md) §4）满足：静态 + 单元测试 + 前端构建全绿 + 版本一致性 + schema 迁移幂等 + 文档收口。CI 构建（四目标矩阵）待 git tag `v1.1.4` 触发。
+
+---
+
+## 15. 续轮 R2 修复证据索引
+
+| 文件 | 改动 | 验证 |
+|---|---|---|
+| `crates/core/src/processor/rules.rs` | T70 `ExtractParams::Generic` 变体（L229-242）+ `generic_validate_rule()` 构造器（L854-880）+ `with_defaults()` 注册（17 条）；测试：`extract_params_serde_roundtrip` 覆盖 Generic camelCase | `cargo test --all` core 158 passed |
+| `crates/core/src/processor/func_validator.rs` | T70 `clean_birth`（L291）+ `is_valid_birth` 改造（L318）+ `is_valid_address` 结构化（L370）+ `is_valid_generic` + `validate_extracted_with_params` 抽取（L482）+ `validate_extracted` wrapper（L581-590）；单测覆盖分隔符 / 结构化地址 / 字符类边界 | `cargo test --all` func_validator 单测 + 13 doc-tests passed |
+| `src-tauri/src/commands/processor.rs` | T70 `MultiRuleValidation.params_override: Option<ExtractParams>`（L1067，`#[serde(default)]`）+ `validate_multi_rules_to_two_sheets_inner` 优先取 params_override（L1218）+ 跨字段 birth 比对改 clean_birth（L902-903 + L1291-1292）；集成测试 `validate_multi_rules_to_two_sheets_generic_with_params_override` + clean_birth 跨字段用例 | `cargo test --all` processor 测试全过 |
+| `frontend/src/components/panels/validateParams.js` | T71 新建共享模块（EMPTY_GENERIC_PARAMS + normalizeGenericParams + buildGenericParamsForRun + VALIDATE_HINTS） | `pnpm build` 绿（3083 modules） |
+| `frontend/src/components/panels/RulesPanel.jsx` | T71 按 params.validator 分支渲染（generic Checkbox+InputNumber / phonePrefix Select / 其他 hint）+ draftGenericParams state + handleSaveParams generic 分支 | `pnpm build` 绿 |
+| `frontend/src/components/panels/ValidatePanel.jsx` | T71 Form.List generic-validate 行参数区（Checkbox.Group charClasses + InputNumber minLen/maxLen）+ paramsOverride 组装（L114） | `pnpm build` 绿 |
+| `frontend/src/tauri.js` | T71 `validateMultiRulesToTwoSheets` JSDoc 追加 `paramsOverride?: object \| null` 字段说明 | `pnpm build` 绿 |
+| `docs/versions/1.1.4/更新日志.md` | T72 续轮章节 + T70/T71/T72 行 + E85-E100 验收 + 4 项设计决策 | 人工核对 |
+| `docs/versions/1.1.4/RELEASE-NOTES.md` | T72 状态更新为 qa_passed（首轮 + 续轮） | 人工核对 |
+| `docs/02-技术设计文档.md` | T72 §4.6 MultiRuleValidation 追加 params_override 字段 + 续轮 T70 增量说明段 + 版本覆盖说明追加 v1.1.4 段 | 人工核对 |
+| `handoff/TASK-BOARD.md` | T72 T70/T71/T72 状态全 verified_complete + 状态行更新为 qa_passed | 人工核对 |
+| `docs/qa/versions/1.1.4/QA-审计报告.md` | T72 本报告 §14 续轮 R2 增量审计章节（8 维度）+ 结论 qa_passed（续轮） | 本报告 |

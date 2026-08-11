@@ -216,14 +216,30 @@ pub enum ExtractParams {
     ///
     /// v1.1.4 T67：用于 `sex-validate` 函数式校验规则。
     Sex,
-    /// 出生日期：8 位数字。
+    /// 出生日期：8 位数字（清理分隔符后）。
     ///
-    /// v1.1.4 T67：用于 `birth-validate` 函数式校验规则。
+    /// v1.1.4 T67 新增；T70 续轮改进为先 `clean_birth` 清理分隔符再校验。
+    /// 用于 `birth-validate` 函数式校验规则。
     Birth,
-    /// 地址：全中文 + 号(1-1500) + 室(101-999)。
+    /// 地址：结构化校验（中文 ≥ 2 + 地址关键词）。
     ///
-    /// v1.1.4 T67：用于 `address-validate` 函数式校验规则。
+    /// v1.1.4 T67 新增；T70 续轮放宽为结构化校验（原严格正则号1-1500+
+    /// 室101-999 已废弃）。用于 `address-validate` 函数式校验规则。
     Address,
+    /// 通用校验：字符类白名单 + 长度范围（v1.1.4 续轮 T70 新增）。
+    ///
+    /// `allow_digits` / `allow_letters` / `allow_special` 至少一个为 true
+    /// （全 false 直接判否）。`min_len` / `max_len` 为 `None` 时不限。
+    /// 用于 `generic-validate` 函数式校验规则，前端可发送 `params_override`
+    /// 覆盖 DB 默认值。
+    #[serde(rename = "generic", rename_all = "camelCase")]
+    Generic {
+        allow_digits: bool,
+        allow_letters: bool,
+        allow_special: bool,
+        min_len: Option<usize>,
+        max_len: Option<usize>,
+    },
 }
 
 impl Default for TemplateParams {
@@ -471,6 +487,8 @@ impl RuleRegistry {
     /// `birth-validate` / `idcard-validate` / `phone-validate` / `address-validate`），
     /// kind=Validate 且带 `params` 走 `validate_extracted` 分发，
     /// `with_defaults()` 共 16 条。
+    /// v1.1.4 续轮 T70：新增 `generic-validate`（字符类白名单 + 长度范围），
+    /// `with_defaults()` 共 17 条。
     pub fn with_defaults() -> Self {
         let mut reg = Self::new();
         reg.register(Self::name_validate_rule());
@@ -488,13 +506,16 @@ impl RuleRegistry {
         // v1.1.3 T55c：身份证号提取 + 校验码严格校验
         reg.register(Self::idcard_extract_rule());
         // v1.1.4 T67：6 条函数式校验规则（kind=Validate，带 params 走
-        // validate_extracted 分发）。`with_defaults()` 共 16 条。
+        // validate_extracted 分发）。
         reg.register(Self::username_validate_rule());
         reg.register(Self::sex_validate_rule());
         reg.register(Self::birth_validate_rule());
         reg.register(Self::idcard_validate_rule());
         reg.register(Self::phone_validate_rule());
         reg.register(Self::address_validate_rule());
+        // v1.1.4 续轮 T70：通用校验规则（字符类白名单 + 长度范围）。
+        // `with_defaults()` 共 17 条。
+        reg.register(Self::generic_validate_rule());
         reg
     }
 
@@ -753,7 +774,8 @@ impl RuleRegistry {
     }
 
     /// 出生日期校验内置规则（v1.1.4 T67 新增）：`params = Birth`，
-    /// 走 `validate_extracted` 的 Birth 分支 → `is_valid_birth`（8 位数字）。
+    /// 走 `validate_extracted` 的 Birth 分支 → `is_valid_birth`
+    /// （清理分隔符后 8 位数字 + 日期有效性，T70 续轮改进）。
     pub fn birth_validate_rule() -> Rule {
         Rule {
             id: "birth-validate".into(),
@@ -763,7 +785,7 @@ impl RuleRegistry {
             pattern: None,
             replacement: None,
             enabled: true,
-            description: "校验出生日期为 8 位数字".into(),
+            description: "校验出生日期（清理分隔符后 8 位有效日期）".into(),
             template: None,
             params: Some(ExtractParams::Birth),
         }
@@ -813,7 +835,7 @@ impl RuleRegistry {
 
     /// 地址校验内置规则（v1.1.4 T67 新增）：`params = Address`，
     /// 走 `validate_extracted` 的 Address 分支 → `is_valid_address`
-    /// （全中文 + 号1-1500 + 室101-999）。
+    /// （结构化校验：中文 ≥ 2 + 地址关键词，T70 续轮放宽原严格正则）。
     pub fn address_validate_rule() -> Rule {
         Rule {
             id: "address-validate".into(),
@@ -823,9 +845,35 @@ impl RuleRegistry {
             pattern: None,
             replacement: None,
             enabled: true,
-            description: "校验地址格式（全中文+号1-1500+室101-999）".into(),
+            description: "校验地址格式（中文+地址关键词）".into(),
             template: None,
             params: Some(ExtractParams::Address),
+        }
+    }
+
+    /// 通用校验内置规则（v1.1.4 续轮 T70 新增）：`params = Generic`，
+    /// 走 `validate_extracted` 的 Generic 分支 → `is_valid_generic`
+    /// （字符类白名单 + 长度范围）。默认允许数字+字母，不限长度。
+    /// 前端可发送 `params_override` 覆盖 DB 默认值（如临时加 `min_len` /
+    /// `max_len` 或 `allow_special=true`）。
+    pub fn generic_validate_rule() -> Rule {
+        Rule {
+            id: "generic-validate".into(),
+            name: "通用校验".into(),
+            kind: RuleKind::Validate,
+            field: None,
+            pattern: None,
+            replacement: None,
+            enabled: true,
+            description: "通用校验：可选字符类（数字/字母/特殊符号）+ 长度限制".into(),
+            template: None,
+            params: Some(ExtractParams::Generic {
+                allow_digits: true,
+                allow_letters: true,
+                allow_special: false,
+                min_len: None,
+                max_len: None,
+            }),
         }
     }
 
@@ -882,10 +930,10 @@ mod tests {
     fn with_defaults_loads_ten_rules() {
         let reg = RuleRegistry::with_defaults();
         let rules = reg.list();
-        // v1.1.4 T67：3 条姓名 + simple-mask + segment-mask + 5 条 extract
-        // （name-extract + phone/bankcard/ip4/ip6/idcard）+ 6 条 validate
-        // （username/sex/birth/idcard/phone/address）= 16 条
-        assert_eq!(rules.len(), 16);
+        // v1.1.4 续轮 T70：3 条姓名 + simple-mask + segment-mask + 5 条 extract
+        // （name-extract + phone/bankcard/ip4/ip6/idcard）+ 7 条 validate
+        // （name + username/sex/birth/idcard/phone/address + generic）= 17 条
+        assert_eq!(rules.len(), 17);
         // 脱敏 / 校验 / 提取 三种 kind 都存在
         let kinds: Vec<RuleKind> = rules.iter().map(|r| r.kind).collect();
         assert!(kinds.contains(&RuleKind::Mask));
@@ -897,9 +945,9 @@ mod tests {
         // 6 条 extract 规则（name-extract + phone/bankcard/ip4/ip6/idcard）
         let extract_count = kinds.iter().filter(|k| **k == RuleKind::Extract).count();
         assert_eq!(extract_count, 6);
-        // v1.1.4 T67：7 条 validate 规则（name-validate + 6 条 T67 新增）
+        // v1.1.4 续轮 T70：8 条 validate 规则（name-validate + 6 条 T67 + generic）
         let validate_count = kinds.iter().filter(|k| **k == RuleKind::Validate).count();
-        assert_eq!(validate_count, 7);
+        assert_eq!(validate_count, 8);
     }
 
     #[test]
@@ -1028,7 +1076,7 @@ mod tests {
 
     #[test]
     fn extract_params_serde_roundtrip() {
-        // v1.1.4 T67：ExtractParams 九变体 serde 闭环
+        // v1.1.4 续轮 T70：ExtractParams 十变体 serde 闭环
         let cases = vec![
             ExtractParams::PhonePrefix {
                 allowed_prefixes: vec!["134".into(), "159".into()],
@@ -1041,6 +1089,13 @@ mod tests {
             ExtractParams::Sex,
             ExtractParams::Birth,
             ExtractParams::Address,
+            ExtractParams::Generic {
+                allow_digits: true,
+                allow_letters: true,
+                allow_special: false,
+                min_len: Some(3),
+                max_len: None,
+            },
         ];
         for p in &cases {
             let json = serde_json::to_string(p).unwrap();
@@ -1078,6 +1133,51 @@ mod tests {
         assert!(serde_json::to_string(&ExtractParams::Address)
             .unwrap()
             .contains("\"validator\":\"address\""));
+        // v1.1.4 续轮 T70：Generic 变体 camelCase 标签 + 字段
+        let generic_json = serde_json::to_string(&ExtractParams::Generic {
+            allow_digits: true,
+            allow_letters: true,
+            allow_special: false,
+            min_len: Some(3),
+            max_len: None,
+        })
+        .unwrap();
+        assert!(generic_json.contains("\"validator\":\"generic\""));
+        assert!(generic_json.contains("\"allowDigits\":true"));
+        assert!(generic_json.contains("\"allowLetters\":true"));
+        assert!(generic_json.contains("\"allowSpecial\":false"));
+        assert!(generic_json.contains("\"minLen\":3"));
+        assert!(generic_json.contains("\"maxLen\":null"));
+    }
+
+    #[test]
+    fn generic_validate_rule_default_params() {
+        // v1.1.4 续轮 T70：generic-validate 默认参数
+        let r = RuleRegistry::generic_validate_rule();
+        assert_eq!(r.id, "generic-validate");
+        assert_eq!(r.kind, RuleKind::Validate);
+        assert!(r.pattern.is_none());
+        assert!(r.template.is_none());
+        let params = r
+            .params
+            .as_ref()
+            .expect("generic-validate must have params");
+        match params {
+            ExtractParams::Generic {
+                allow_digits,
+                allow_letters,
+                allow_special,
+                min_len,
+                max_len,
+            } => {
+                assert!(*allow_digits, "default allow_digits = true");
+                assert!(*allow_letters, "default allow_letters = true");
+                assert!(!*allow_special, "default allow_special = false");
+                assert_eq!(*min_len, None, "default min_len = None");
+                assert_eq!(*max_len, None, "default max_len = None");
+            }
+            other => panic!("expected Generic, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1273,6 +1373,8 @@ mod tests {
         assert!(reg.get("idcard-validate").is_some());
         assert!(reg.get("phone-validate").is_some());
         assert!(reg.get("address-validate").is_some());
+        // v1.1.4 续轮 T70：generic-validate
+        assert!(reg.get("generic-validate").is_some());
         // T55b：旧 ip-extract id 已不存在（拆分后由 cleanup_deprecated_rules 删除）
         assert!(reg.get("ip-extract").is_none());
         // T54：旧 general-mask id 已不存在（由 cleanup_deprecated_rules 删除）
@@ -1305,7 +1407,7 @@ mod tests {
         let mut r = RuleRegistry::name_validate_rule();
         r.description = "updated".into();
         reg.register(r);
-        assert_eq!(reg.list().len(), 16);
+        assert_eq!(reg.list().len(), 17);
         assert_eq!(reg.get("name-validate").unwrap().description, "updated");
     }
 
