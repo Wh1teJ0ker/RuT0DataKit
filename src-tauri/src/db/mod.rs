@@ -1454,10 +1454,11 @@ impl DbManager {
 
     /// 列出某 sheet 的可撤销操作（最近 `limit` 条，按 `created_at` DESC）。
     ///
-    /// 仅返回 kind ∈ {`mask`, `replace_in_column`, `replace_all`} 的操作——
-    /// 即「就地变更」类操作；`import`/`validate`/`extract`/`undo`/`redo` 等
-    /// 只读或辅助操作不入撤销栈。`kind` 值是硬编码常量（非用户输入），
-    /// IN 子句无注入风险；`sheet_id`/`limit` 仍用 `?N` + `params![]` 绑定。
+    /// 仅返回 kind ∈ {`mask`, `replace_in_column`, `replace_all`,
+    /// `base64_column`, `hash_column`} 的操作——即「就地变更」类操作；
+    /// `import`/`validate`/`extract`/`undo`/`redo` 等只读或辅助操作不入撤销栈。
+    /// `kind` 值是硬编码常量（非用户输入），IN 子句无注入风险；
+    /// `sheet_id`/`limit` 仍用 `?N` + `params![]` 绑定。
     pub fn list_undoable_operations(
         &self,
         sheet_id: i64,
@@ -1466,7 +1467,7 @@ impl DbManager {
         let conn = self.conn.lock().expect("db mutex poisoned");
         let mut stmt = conn.prepare(
             "SELECT id, kind, created_at FROM operations
-             WHERE sheet_id = ?1 AND kind IN ('mask', 'replace_in_column', 'replace_all', 'base64_column')
+             WHERE sheet_id = ?1 AND kind IN ('mask', 'replace_in_column', 'replace_all', 'base64_column', 'hash_column')
              ORDER BY created_at DESC
              LIMIT ?2",
         )?;

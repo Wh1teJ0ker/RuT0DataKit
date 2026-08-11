@@ -65,6 +65,7 @@ pub fn run() {
             commands::columns::parse_column_as_json,
             commands::columns::replace_in_column,
             commands::columns::base64_column,
+            commands::columns::hash_column,
         ])
         .setup(|app| {
             let dir = app.path().app_config_dir()?;

@@ -16,7 +16,10 @@
 use std::collections::BTreeMap;
 
 use base64::{engine::general_purpose::STANDARD, Engine};
+use md5::Digest;
 use serde::{Deserialize, Serialize};
+use sha1::Sha1;
+use sha2::Sha256;
 
 use crate::db::{Cell, DbManager};
 
@@ -326,6 +329,112 @@ pub fn base64_column(
     db: tauri::State<'_, DbManager>,
 ) -> Result<Base64Result, String> {
     base64_column_inner(&db, sheet_id, &column, mode)
+}
+
+// ---------------------------------------------------------------------------
+// hash_column
+// ---------------------------------------------------------------------------
+
+/// 哈希算法选择（serde lowercase，与前端 mode 字符串对齐）。
+///
+/// - `MD5`：MD5（128-bit，32 hex 字符）。
+/// - `SHA1`：SHA-1（160-bit，40 hex 字符）。
+/// - `SHA256`：SHA-256（256-bit，64 hex 字符）。
+///
+/// 全部输出 hex 小写。哈希不可逆，无 `Decode` 模式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HashAlgorithm {
+    MD5,
+    SHA1,
+    SHA256,
+}
+
+/// 哈希操作结果（camelCase，与 `Base64Result` 同形）。
+///
+/// - `affected`：实际被改写的行数（哈希后的 hex 与原文不同；正常情况等于非空行数）。
+/// - `skipped`：被跳过的行数（哈希永远成功，正常为 0；保留字段以与
+///   `base64_transform_column_cells` 闭包语义一致，便于未来扩展）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HashResult {
+    pub affected: u32,
+    pub skipped: u32,
+}
+
+/// 对指定列做 MD5 / SHA1 / SHA256 哈希（就地变更，单事务 + before/after 快照，可撤销）。
+///
+/// 哈希永远成功（任意字节均可哈希），闭包始终返回 `Some(hex_string)`，
+/// 故 `skipped` 正常为 0。空值行（`None`）不参与变换，不计入 `affected`
+/// 也不计入 `skipped`（与 `base64_column` 语义一致）。
+///
+/// 复用既有 `base64_transform_column_cells` 闭包式列变换 DB 方法
+/// （函数名虽带 base64，但闭包 `F: Fn(&str) -> Option<String>` 语义通用）。
+pub fn hash_column_inner(
+    db: &DbManager,
+    sheet_id: i64,
+    column: &str,
+    algorithm: HashAlgorithm,
+) -> Result<HashResult, String> {
+    let col_idx = db
+        .find_col_idx(sheet_id, column)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("列 `{column}` 不存在"))?;
+
+    // 闭包按 algorithm 分发哈希；任意 &str 均可哈希，永远返回 Some(hex)。
+    let transform = |val: &str| match algorithm {
+        HashAlgorithm::MD5 => {
+            let digest = md5::Md5::digest(val.as_bytes());
+            Some(format!("{:x}", digest))
+        }
+        HashAlgorithm::SHA1 => {
+            let digest = Sha1::digest(val.as_bytes());
+            Some(hex::encode(digest))
+        }
+        HashAlgorithm::SHA256 => {
+            let digest = Sha256::digest(val.as_bytes());
+            Some(hex::encode(digest))
+        }
+    };
+
+    let (affected, skipped, before_cells, after_cells) = db
+        .base64_transform_column_cells(sheet_id, col_idx, transform)
+        .map_err(|e| e.to_string())?;
+
+    let before_json = serde_json::to_string(&before_cells).map_err(|e| e.to_string())?;
+    let after_json = serde_json::to_string(&after_cells).map_err(|e| e.to_string())?;
+
+    db.log_operation_with_snapshot(
+        Some(sheet_id),
+        "hash_column",
+        &serde_json::json!({
+            "column": column,
+            "algorithm": match algorithm {
+                HashAlgorithm::MD5 => "md5",
+                HashAlgorithm::SHA1 => "sha1",
+                HashAlgorithm::SHA256 => "sha256",
+            },
+            "affected": affected,
+            "skipped": skipped
+        })
+        .to_string(),
+        Some(&before_json),
+        &after_json,
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(HashResult { affected, skipped })
+}
+
+/// `hash_column` 的 Tauri 命令包装。
+#[tauri::command]
+pub fn hash_column(
+    sheet_id: i64,
+    column: String,
+    algorithm: HashAlgorithm,
+    db: tauri::State<'_, DbManager>,
+) -> Result<HashResult, String> {
+    hash_column_inner(&db, sheet_id, &column, algorithm)
 }
 
 // ---------------------------------------------------------------------------
@@ -722,5 +831,188 @@ mod tests {
         db.write_cells(sheet_id, &before_cells).unwrap();
         let restored = column_values(&db, sheet_id, 0);
         assert_eq!(restored, vec!["hello".to_string(), "world".to_string()]);
+    }
+
+    // 13. hash_column MD5 对 "hello" → "5d41402abc4b2a76b9719d911017c592"
+    #[test]
+    fn hash_column_md5_known_vector() {
+        let (_dir, db) = setup_db();
+        let (_session_id, sheet_id) = setup_sheet(
+            &db,
+            &[
+                cell(0, 0, "payload"),
+                cell(1, 0, "hello"),
+                cell(2, 0, "world"),
+                cell(3, 0, ""),
+            ],
+        );
+
+        let result = hash_column_inner(&db, sheet_id, "payload", HashAlgorithm::MD5).unwrap();
+        // 3 行数据：hello / world / ""（空串仍是非 None，会哈希成空串的 md5）。
+        assert_eq!(result.affected, 3);
+        assert_eq!(result.skipped, 0);
+
+        let vals = column_values(&db, sheet_id, 0);
+        assert_eq!(
+            vals[0], "5d41402abc4b2a76b9719d911017c592",
+            "md5(hello) 已知向量"
+        );
+        let world_md5 = format!("{:x}", md5::Md5::digest(b"world"));
+        assert_eq!(vals[1], world_md5);
+        // 空串 md5 = "d41d8cd98f00b204e9800998ecf8427e"。
+        assert_eq!(vals[2], "d41d8cd98f00b204e9800998ecf8427e");
+    }
+
+    // 14. hash_column SHA1 对 "hello" → "aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d"
+    #[test]
+    fn hash_column_sha1_known_vector() {
+        let (_dir, db) = setup_db();
+        let (_session_id, sheet_id) = setup_sheet(
+            &db,
+            &[
+                cell(0, 0, "payload"),
+                cell(1, 0, "hello"),
+                cell(2, 0, "world"),
+            ],
+        );
+
+        let result = hash_column_inner(&db, sheet_id, "payload", HashAlgorithm::SHA1).unwrap();
+        assert_eq!(result.affected, 2);
+        assert_eq!(result.skipped, 0);
+
+        let vals = column_values(&db, sheet_id, 0);
+        assert_eq!(
+            vals[0], "aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d",
+            "sha1(hello) 已知向量"
+        );
+        let world_sha1 = hex::encode(sha1::Sha1::digest(b"world"));
+        assert_eq!(vals[1], world_sha1);
+    }
+
+    // 15. hash_column SHA256 对 "hello" → "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+    #[test]
+    fn hash_column_sha256_known_vector() {
+        let (_dir, db) = setup_db();
+        let (_session_id, sheet_id) = setup_sheet(
+            &db,
+            &[
+                cell(0, 0, "payload"),
+                cell(1, 0, "hello"),
+                cell(2, 0, "world"),
+            ],
+        );
+
+        let result = hash_column_inner(&db, sheet_id, "payload", HashAlgorithm::SHA256).unwrap();
+        assert_eq!(result.affected, 2);
+        assert_eq!(result.skipped, 0);
+
+        let vals = column_values(&db, sheet_id, 0);
+        assert_eq!(
+            vals[0], "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+            "sha256(hello) 已知向量"
+        );
+        let world_sha256 = hex::encode(sha2::Sha256::digest(b"world"));
+        assert_eq!(vals[1], world_sha256);
+    }
+
+    // 16. hash_column 写入 operations 表，before_snapshot 含原文，undo 可恢复
+    #[test]
+    fn hash_column_undo_restores_original() {
+        let (_dir, db) = setup_db();
+        let (_session_id, sheet_id) = setup_sheet(
+            &db,
+            &[
+                cell(0, 0, "payload"),
+                cell(1, 0, "hello"),
+                cell(2, 0, "world"),
+            ],
+        );
+
+        let result = hash_column_inner(&db, sheet_id, "payload", HashAlgorithm::MD5).unwrap();
+        assert_eq!(result.affected, 2);
+
+        // 查最近一条 hash_column 操作，断言 before_snapshot_json 含原文。
+        let undoable = db.list_undoable_operations(sheet_id, 50).unwrap();
+        let hash_op = undoable
+            .iter()
+            .find(|r| r.kind == "hash_column")
+            .expect("应有 hash_column 操作记录");
+        let op = db.query_operation_by_id(hash_op.id).unwrap().unwrap();
+        assert!(
+            op.before_snapshot_json.is_some(),
+            "before_snapshot_json 必须存在供撤销"
+        );
+        let before_json = op.before_snapshot_json.unwrap();
+        assert!(before_json.contains("hello"), "before 快照应含原始值 hello");
+
+        // 撤销：把 before 快照回写 → 恢复原文。
+        let before_cells: Vec<Cell> = serde_json::from_str(&before_json).unwrap();
+        db.write_cells(sheet_id, &before_cells).unwrap();
+        let restored = column_values(&db, sheet_id, 0);
+        assert_eq!(restored, vec!["hello".to_string(), "world".to_string()]);
+    }
+
+    // 17. hash_column 操作在 list_undoable_operations 结果中（kind 白名单生效）
+    #[test]
+    fn hash_column_in_undo_list() {
+        let (_dir, db) = setup_db();
+        let (_session_id, sheet_id) = setup_sheet(
+            &db,
+            &[
+                cell(0, 0, "payload"),
+                cell(1, 0, "hello"),
+                cell(2, 0, "world"),
+            ],
+        );
+
+        // 操作前无 hash_column 操作。
+        let before = db.list_undoable_operations(sheet_id, 50).unwrap();
+        assert!(
+            !before.iter().any(|r| r.kind == "hash_column"),
+            "操作前不应有 hash_column 记录"
+        );
+
+        hash_column_inner(&db, sheet_id, "payload", HashAlgorithm::SHA256).unwrap();
+
+        let after = db.list_undoable_operations(sheet_id, 50).unwrap();
+        let hash_ops: Vec<_> = after.iter().filter(|r| r.kind == "hash_column").collect();
+        assert_eq!(hash_ops.len(), 1, "应有且仅有一条 hash_column 操作记录");
+    }
+
+    // 18. hash_column 空值行（None）不计入 affected 也不计入 skipped
+    #[test]
+    fn hash_column_empty_value_not_counted() {
+        let (_dir, db) = setup_db();
+        // row_idx=2 显式写入 None 值（占位行），row_idx=1/3 写入字符串。
+        let (_session_id, sheet_id) = setup_sheet(
+            &db,
+            &[
+                cell(0, 0, "payload"),
+                cell(1, 0, "hello"),
+                Cell {
+                    sheet_id: 0,
+                    row_idx: 2,
+                    col_idx: 0,
+                    value: None,
+                },
+                cell(3, 0, "world"),
+            ],
+        );
+
+        let result = hash_column_inner(&db, sheet_id, "payload", HashAlgorithm::MD5).unwrap();
+        // 仅 2 行非空数据参与变换（row_idx=2 因 None 被跳过且不计 affected/skipped）。
+        assert_eq!(result.affected, 2);
+        assert_eq!(result.skipped, 0);
+
+        let vals = column_values(&db, sheet_id, 0);
+        // query_column_cells 返回 3 行（含 None），None 在 column_values 中变空串。
+        assert_eq!(vals.len(), 3);
+        assert_eq!(
+            vals[0], "5d41402abc4b2a76b9719d911017c592",
+            "md5(hello) 已知向量"
+        );
+        assert_eq!(vals[1], "", "None 行应保持为空（None 不被哈希）");
+        let world_md5 = format!("{:x}", md5::Md5::digest(b"world"));
+        assert_eq!(vals[2], world_md5);
     }
 }
