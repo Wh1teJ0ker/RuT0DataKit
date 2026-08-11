@@ -55,6 +55,7 @@ pub fn run() {
             commands::processor::update_rule_extract_config,
             commands::processor::extract_validate_to_new_sheet,
             commands::processor::validate_rows_to_two_sheets,
+            commands::processor::validate_multi_rules_to_two_sheets,
             commands::processor::undo_operation,
             commands::processor::redo_operation,
             commands::processor::list_undoable_operations,
