@@ -3,6 +3,7 @@ import {
   Button,
   Checkbox,
   Form,
+  InputNumber,
   Select,
   Space,
   Typography,
@@ -16,6 +17,11 @@ import {
   validateMultiRulesToTwoSheets,
 } from "../../tauri";
 import { PAGE_SIZE } from "../../constants";
+// v1.1.4 续轮 T71：generic-validate 行级参数共享模块。
+// 行内字段直接由 Form.List 收集，组装 multiRules 时把 charClasses 数组映射为
+// allowDigits/allowLetters/allowSpecial 布尔，minLen/maxLen 直接回传。
+// buildGenericParamsForRun 用于构造与后端 ExtractParams::Generic 对齐的对象。
+import { buildGenericParamsForRun } from "./validateParams";
 
 const { Text } = Typography;
 
@@ -81,23 +87,40 @@ export default function ValidatePanel() {
         return;
       }
     }
-    // 组装后端契约：每条 { column, ruleId, crossField? }，crossField 仅在
-    // idcard-validate 且勾选了性别/出生比对时传，否则传 null（后端忽略）。
+    // 组装后端契约：每条 { column, ruleId, crossField?, paramsOverride? }。
+    // crossField 仅在 idcard-validate 且勾选了性别/出生比对时传，否则传 null。
+    // paramsOverride 仅在 generic-validate 时携带，覆盖 DB 默认 params
+    // （字符类 + 长度限制），其他规则传 null（后端忽略）。
     const multiRules = ruleRows
       .filter((r) => r?.column && r?.ruleId)
-      .map((r) => ({
-        column: r.column,
-        ruleId: r.ruleId,
-        crossField:
-          r.ruleId === "idcard-validate" && (r.checkSex || r.checkBirth)
-            ? {
-                checkSex: !!r.checkSex,
-                sexColumn: r.sexColumn || null,
-                checkBirth: !!r.checkBirth,
-                birthColumn: r.birthColumn || null,
-              }
-            : null,
-      }));
+      .map((r) => {
+        const item = {
+          column: r.column,
+          ruleId: r.ruleId,
+          crossField:
+            r.ruleId === "idcard-validate" && (r.checkSex || r.checkBirth)
+              ? {
+                  checkSex: !!r.checkSex,
+                  sexColumn: r.sexColumn || null,
+                  checkBirth: !!r.checkBirth,
+                  birthColumn: r.birthColumn || null,
+                }
+              : null,
+          paramsOverride: null,
+        };
+        // v1.1.4 续轮 T71：generic-validate 行附带 paramsOverride。
+        if (r.ruleId === "generic-validate") {
+          const classes = r.charClasses || [];
+          item.paramsOverride = buildGenericParamsForRun({
+            allowDigits: classes.includes("digits"),
+            allowLetters: classes.includes("letters"),
+            allowSpecial: classes.includes("special"),
+            minLen: r.minLen ?? null,
+            maxLen: r.maxLen ?? null,
+          });
+        }
+        return item;
+      });
     // 手机号前缀白名单：只保留三位纯数字（"abc"/"1a3" 会被剔掉），应用于
     // phone-validate 规则（全局，不是每行单独配）。
     const phonePrefixes = (values.phonePrefixes || []).filter((p) =>
@@ -257,6 +280,64 @@ export default function ValidatePanel() {
                       ) : null
                     }
                   </Form.Item>
+                  {/* v1.1.4 续轮 T71：generic-validate 行级参数配置。
+                      用 shouldUpdate 监听该行 ruleId 变化，仅 generic-validate 时展开。
+                      字段名 [name, "charClasses"] / [name, "minLen"] / [name, "maxLen"]
+                      与下方 multiRules 组装逻辑对齐。 */}
+                  <Form.Item
+                    shouldUpdate={(prev, cur) =>
+                      prev.rules?.[name]?.ruleId !== cur.rules?.[name]?.ruleId
+                    }
+                    noStyle
+                  >
+                    {({ getFieldValue }) =>
+                      getFieldValue(["rules", name, "ruleId"]) ===
+                      "generic-validate" ? (
+                        <Space
+                          direction="vertical"
+                          style={{ width: "100%", marginTop: 4 }}
+                        >
+                          <Form.Item
+                            label="允许的字符类"
+                            style={{ marginBottom: 0 }}
+                          >
+                            <Checkbox.Group
+                              name={[name, "charClasses"]}
+                              options={[
+                                { label: "纯数字", value: "digits" },
+                                { label: "纯字母", value: "letters" },
+                                { label: "特殊符号", value: "special" },
+                              ]}
+                            />
+                          </Form.Item>
+                          <Space>
+                            <Form.Item
+                              name={[name, "minLen"]}
+                              label="最小长度"
+                              noStyle
+                            >
+                              <InputNumber
+                                placeholder="不限"
+                                min={0}
+                                style={{ width: 100 }}
+                              />
+                            </Form.Item>
+                            <Form.Item
+                              name={[name, "maxLen"]}
+                              label="最大长度"
+                              noStyle
+                            >
+                              <InputNumber
+                                placeholder="不限"
+                                min={0}
+                                style={{ width: 100 }}
+                              />
+                            </Form.Item>
+                          </Space>
+                        </Space>
+                      ) : null
+                    }
+                  </Form.Item>
                 </div>
               ))}
               <Button
@@ -296,6 +377,7 @@ export default function ValidatePanel() {
       <Text type="secondary" style={{ fontSize: 12 }}>
         添加多条「列 + 校验规则」组合，一个按钮校验。通过/失败的行分别写入两个新
         Tab（保留原列，不新增列）。身份证规则可勾选跨字段比对性别/出生日期。
+        通用校验规则可在行内设置字符类与长度限制。
       </Text>
     </div>
   );
