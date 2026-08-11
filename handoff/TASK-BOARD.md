@@ -1,7 +1,7 @@
 # v1.1.4 TASK-BOARD（R3 续轮：哈希函数 + DB 文件解析）
 
 > 版本：v1.1.4
-> 状态：in_progress（T73/T75 verified_complete + review_passed；T74 派 coder 进行中；T76 待派）
+> 状态：in_progress（T73/T74/T75 verified_complete + review_passed；T76 待派）
 > 前置：v1.1.4 R2 续轮已 qa_passed（commit ba0b84f 合并 main）
 > 主题：v1.1.4 R3 续轮 — 2 项增强（哈希函数加密 MD5/SHA1/SHA256 + 外部 DB 文件解析）
 
@@ -30,7 +30,7 @@ tasks:
   - id: T74
     title: 前端 — CryptoPanel 哈希 UI + hashColumn IPC wrapper
     depends_on: [T73]
-    status: in_progress  # T73 verified_complete, coder 派遣中
+    status: verified_complete  # commit 12669e5; REVIEW review_passed 2026-08-11
     handoff: handoff/TASK-T74-HANDOFF.md
   - id: T75
     title: 后端 — DbReader 数据源（.db/.sqlite/.sqlite3 外部 SQLite 文件解析）+ detect_format 分发 + 测试
@@ -40,7 +40,7 @@ tasks:
   - id: T76
     title: 文档 + E2E 验收 + Release QA R3 增量审计
     depends_on: [T73, T74, T75]
-    status: pending  # 待 T74 verified_complete
+    status: in_progress  # T73/T74/T75 verified_complete, 派 coder
     handoff: handoff/TASK-T76-HANDOFF.md
 
 e2e_acceptance:
