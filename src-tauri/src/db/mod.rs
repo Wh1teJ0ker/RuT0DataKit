@@ -690,9 +690,12 @@ impl DbManager {
     /// v1.1.4 T67：新增 6 条函数式校验规则（`username-validate` / `sex-validate` /
     /// `birth-validate` / `idcard-validate` / `phone-validate` / `address-validate`），
     /// `with_defaults()` 共 16 条。seed 幂等（只加行不加列），不改 SCHEMA_VERSION。
+    /// v1.1.4 续轮 T70：新增 `generic-validate` 函数式校验规则（字符类白名单 +
+    /// 长度范围），`with_defaults()` 共 17 条。
     pub fn seed_builtin_rules(&self) -> Result<(), DbError> {
-        // 用 core 的 RuleRegistry::with_defaults() 拿到全部内置规则（v1.1.4 T67 起
-        // 16 条：3 name + simple-mask + segment-mask + 5 条 extract + 6 条 validate）。
+        // 用 core 的 RuleRegistry::with_defaults() 拿到全部内置规则（v1.1.4 续轮
+        // T70 起 17 条：3 name + simple-mask + segment-mask + 5 条 extract +
+        // 6 条 T67 函数式校验 + 1 条 generic-validate）。
         let reg = RuleRegistry::with_defaults();
         for rule in reg.list() {
             if self.get_rule(&rule.id)?.is_none() {
@@ -1812,16 +1815,17 @@ mod tests {
         let (_dir, mgr) = open();
         assert_eq!(mgr.count_rules().unwrap(), 0);
         mgr.seed_builtin_rules().unwrap();
-        // v1.1.4 T67：3 name + simple-mask + segment-mask + 5 条 extract
-        // + 6 条 validate（username/sex/birth/idcard/phone/address）= 16 条
-        assert_eq!(mgr.count_rules().unwrap(), 16);
+        // v1.1.4 续轮 T70：3 name + simple-mask + segment-mask + 5 条 extract
+        // + 6 条 T67 validate（username/sex/birth/idcard/phone/address）
+        // + 1 条 generic-validate = 17 条
+        assert_eq!(mgr.count_rules().unwrap(), 17);
         let kinds: Vec<RuleKind> = mgr.list_rules().unwrap().iter().map(|r| r.kind).collect();
         assert!(kinds.contains(&RuleKind::Mask));
         assert!(kinds.contains(&RuleKind::Validate));
         assert!(kinds.contains(&RuleKind::Extract));
         // 再次 seed 不重复插入（已存在的 id 跳过）
         mgr.seed_builtin_rules().unwrap();
-        assert_eq!(mgr.count_rules().unwrap(), 16);
+        assert_eq!(mgr.count_rules().unwrap(), 17);
     }
 
     #[test]
@@ -1856,9 +1860,9 @@ mod tests {
         mgr.update_rule_params("name-validate", Some(r"^[\u4e00-\u9fa5]{2,8}$"), None)
             .unwrap();
         // 再次 seed → 补 simple-mask + segment-mask + 5 条 extract 规则 + 6 条
-        // T67 validate 规则，已存在的不动
+        // T67 validate 规则 + 1 条 T70 generic-validate，已存在的不动
         mgr.seed_builtin_rules().unwrap();
-        assert_eq!(mgr.count_rules().unwrap(), 16);
+        assert_eq!(mgr.count_rules().unwrap(), 17);
         // 用户修改的 pattern 仍在
         let got = mgr.get_rule("name-validate").unwrap().unwrap();
         assert_eq!(got.pattern.as_deref(), Some(r"^[\u4e00-\u9fa5]{2,8}$"));
@@ -1928,9 +1932,9 @@ mod tests {
             mgr.upsert_rule(&rule).unwrap();
         }
         assert_eq!(mgr.count_rules().unwrap(), 6);
-        // seed → 补 16 条内置规则 + 清理 6 条废弃 id = 16 条
+        // seed → 补 17 条内置规则 + 清理 6 条废弃 id = 17 条
         mgr.seed_builtin_rules().unwrap();
-        assert_eq!(mgr.count_rules().unwrap(), 16);
+        assert_eq!(mgr.count_rules().unwrap(), 17);
         // 6 条废弃 id 已删除
         assert!(mgr.get_rule("idcard-mask").unwrap().is_none());
         assert!(mgr.get_rule("phone-mask").unwrap().is_none());
@@ -1939,7 +1943,7 @@ mod tests {
         assert!(mgr.get_rule("general-mask").unwrap().is_none());
         assert!(mgr.get_rule("ip-extract").unwrap().is_none());
         // 10 条内置规则仍在（3 name + simple-mask + segment-mask + 5 extract
-        // + 6 条 T67 validate 规则也已被 seed）
+        // + 6 条 T67 validate 规则也已被 seed + 1 条 T70 generic-validate）
         assert!(mgr.get_rule("name-validate").unwrap().is_some());
         assert!(mgr.get_rule("name-mask").unwrap().is_some());
         assert!(mgr.get_rule("name-extract").unwrap().is_some());
@@ -1951,6 +1955,8 @@ mod tests {
         assert!(mgr.get_rule("ip6-extract").unwrap().is_some());
         // T55c：idcard-extract 是新规则，不在废弃列表，应存在
         assert!(mgr.get_rule("idcard-extract").unwrap().is_some());
+        // T70：generic-validate 是新规则，应存在
+        assert!(mgr.get_rule("generic-validate").unwrap().is_some());
     }
 
     #[test]
@@ -1992,8 +1998,9 @@ mod tests {
         }
         let list = mgr.list_rules().unwrap();
         // T55c 起 16 条内置规则（3 name + simple-mask + segment-mask + 5 extract
-        // + 6 条 T67 validate：username/sex/birth/idcard/phone/address）
-        assert_eq!(list.len(), 16);
+        // + 6 条 T67 validate：username/sex/birth/idcard/phone/address）。
+        // v1.1.4 续轮 T70：+ generic-validate = 17 条
+        assert_eq!(list.len(), 17);
         for r in &list {
             // 确认 kind 字符串化 + 反序列化闭环
             let s = r.kind.to_string();

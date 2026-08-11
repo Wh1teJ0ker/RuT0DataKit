@@ -12,8 +12,8 @@ use std::collections::{BTreeMap, HashMap};
 use serde::{Deserialize, Serialize};
 
 use ruT0_data_kit_core::processor::func_validator::{
-    idcard_gender, is_valid_address, is_valid_birth, is_valid_idcard, is_valid_phone, is_valid_sex,
-    is_valid_username, validate_extracted,
+    clean_birth, idcard_gender, is_valid_address, is_valid_birth, is_valid_idcard, is_valid_phone,
+    is_valid_sex, is_valid_username, validate_extracted, validate_extracted_with_params,
 };
 use ruT0_data_kit_core::processor::rules::{ExtractParams, TemplateParams};
 use ruT0_data_kit_core::processor::{
@@ -844,7 +844,10 @@ pub fn validate_rows_to_two_sheets_inner(
         if let Some(col) = birth_col {
             let v = cell_str(Some(col));
             if !is_valid_birth(&v) {
-                row_invalid_reasons.push(("birth".into(), "出生日期须为 8 位数字".into()));
+                row_invalid_reasons.push((
+                    "birth".into(),
+                    "出生日期格式不符（清理后须为 8 位有效日期）".into(),
+                ));
             }
         }
         let idcard_val = idcard_col.map(|c| cell_str(Some(c))).unwrap_or_default();
@@ -869,7 +872,7 @@ pub fn validate_rows_to_two_sheets_inner(
             if !is_valid_address(&v) {
                 row_invalid_reasons.push((
                     "address".into(),
-                    "地址格式不符（全中文+号1-1500+室101-999）".into(),
+                    "地址格式不符（须含中文+地址关键词）".into(),
                 ));
             }
         }
@@ -895,9 +898,11 @@ pub fn validate_rows_to_two_sheets_inner(
             if birth_col.is_some() {
                 let birth_val = cell_str(birth_col);
                 if is_valid_birth(&birth_val) {
-                    // idcard_val 一定 18 位且前 17 纯数字（is_valid_idcard 已保证）
+                    // idcard_val 一定 18 位且前 17 纯数字（is_valid_idcard 已保证）。
+                    // T70：birth 可能含分隔符（如 "1949-12-31"），用 clean_birth 归一化后比对。
+                    let cleaned_birth = clean_birth(&birth_val);
                     let idcard_birth = &idcard_val[6..14];
-                    if birth_val != idcard_birth {
+                    if cleaned_birth != idcard_birth {
                         row_invalid_reasons.push((
                             "birth".into(),
                             format!(
@@ -1055,6 +1060,11 @@ pub struct MultiRuleValidation {
     /// 跨字段配置（仅 idcard-validate 规则用）。
     #[serde(default)]
     pub cross_field: Option<CrossFieldConfig>,
+    /// 参数覆盖（v1.1.4 续轮 T70）：允许前端为每行发送参数覆盖 DB 默认值。
+    /// 目前主要服务于 `generic-validate` 规则（前端 UI 编辑字符类开关 +
+    /// 长度范围后下发）。`None` = 用 DB `rule.params`。
+    #[serde(default)]
+    pub params_override: Option<ExtractParams>,
 }
 
 /// 多规则行级校验核心逻辑（接受 `&DbManager`，便于单测直接调用）。T68。
@@ -1130,6 +1140,8 @@ pub fn validate_multi_rules_to_two_sheets_inner(
         rule: ruT0_data_kit_core::processor::Rule,
         re: Option<regex::Regex>,
         cross_field: Option<CrossFieldConfig>,
+        /// v1.1.4 续轮 T70：参数覆盖（None = 用 rule.params）。
+        params_override: Option<ExtractParams>,
     }
     let mut resolved: Vec<ResolvedRule> = Vec::with_capacity(rules.len());
     for rv in rules {
@@ -1152,6 +1164,7 @@ pub fn validate_multi_rules_to_two_sheets_inner(
             rule,
             re,
             cross_field: rv.cross_field.clone(),
+            params_override: rv.params_override.clone(),
         });
     }
 
@@ -1186,7 +1199,8 @@ pub fn validate_multi_rules_to_two_sheets_inner(
 
             // 分发校验：
             // - phone-validate → is_valid_phone（整串严格校验）
-            // - rule.params 非空 → validate_extracted（函数式分发）
+            // - rule.params 或 params_override 非空 → validate_extracted_with_params
+            //   （override 优先于 DB rule.params；T70 新增 generic-validate 支持）
             // - rule.pattern 非空 → 正则 is_match
             // - 其他 → 默认通过
             let (passed, msg) = if rr.rule.id == "phone-validate" {
@@ -1199,20 +1213,24 @@ pub fn validate_multi_rules_to_two_sheets_inner(
                         "手机号须为 11 位、1 开头".into()
                     },
                 )
-            } else if rr.rule.params.is_some() {
-                validate_extracted(&rr.rule, &value)
-            } else if let Some(ref re) = rr.re {
-                let ok = re.is_match(&value);
-                (
-                    ok,
-                    if ok {
-                        String::new()
-                    } else {
-                        format!("值不匹配规则 {}", rr.rule.name)
-                    },
-                )
             } else {
-                (true, String::new())
+                // 合并 params：override 优先，否则用 rule.params。
+                let effective_params = rr.params_override.as_ref().or(rr.rule.params.as_ref());
+                if let Some(params) = effective_params {
+                    validate_extracted_with_params(params, &value)
+                } else if let Some(ref re) = rr.re {
+                    let ok = re.is_match(&value);
+                    (
+                        ok,
+                        if ok {
+                            String::new()
+                        } else {
+                            format!("值不匹配规则 {}", rr.rule.name)
+                        },
+                    )
+                } else {
+                    (true, String::new())
+                }
             };
 
             if !passed {
@@ -1269,9 +1287,11 @@ pub fn validate_multi_rules_to_two_sheets_inner(
                             .flatten()
                             .unwrap_or_default();
                         if is_valid_birth(&birth_val) {
-                            // idcard_val 一定 18 位且前 17 纯数字（is_valid_idcard 已保证）
+                            // idcard_val 一定 18 位且前 17 纯数字（is_valid_idcard 已保证）。
+                            // T70：birth 可能含分隔符（如 "1949-12-31"），用 clean_birth 归一化后比对。
+                            let cleaned_birth = clean_birth(&birth_val);
                             let idcard_birth = &idcard_val[6..14];
-                            if birth_val != idcard_birth {
+                            if cleaned_birth != idcard_birth {
                                 row_invalid_reasons.push((
                                     birth_col.clone(),
                                     format!(
@@ -1537,7 +1557,7 @@ mod tests {
         MultiRuleValidation, RowValidation,
     };
     use crate::db::{Cell, DbManager, OperationRow, UndoableOpRow};
-    use ruT0_data_kit_core::processor::rules::RuleRegistry;
+    use ruT0_data_kit_core::processor::rules::{ExtractParams, RuleRegistry};
     use ruT0_data_kit_core::processor::{Masker, RegexValidator, SimpleMasker, Validator};
 
     /// 构造一个 tempdir + 空 DbManager。返回 TempDir 以保活（TempDir drop 会
@@ -2548,6 +2568,7 @@ mod tests {
                 column: "username".into(),
                 rule_id: "username-validate".into(),
                 cross_field: None,
+                params_override: None,
             },
             MultiRuleValidation {
                 column: "idcard".into(),
@@ -2558,11 +2579,13 @@ mod tests {
                     check_birth: true,
                     birth_column: Some("birth".into()),
                 }),
+                params_override: None,
             },
             MultiRuleValidation {
                 column: "phone".into(),
                 rule_id: "phone-validate".into(),
                 cross_field: None,
+                params_override: None,
             },
         ];
         let res = validate_multi_rules_to_two_sheets_inner(&db, sheet_id, session_id, &rules, &[])
@@ -2611,11 +2634,13 @@ mod tests {
                 column: "username".into(),
                 rule_id: "username-validate".into(),
                 cross_field: None,
+                params_override: None,
             },
             MultiRuleValidation {
                 column: "idcard".into(),
                 rule_id: "idcard-validate".into(),
                 cross_field: None,
+                params_override: None,
             },
         ];
         let res = validate_multi_rules_to_two_sheets_inner(&db, sheet_id, session_id, &rules, &[])
@@ -2652,6 +2677,7 @@ mod tests {
                 check_birth: false,
                 birth_column: None,
             }),
+            params_override: None,
         }];
         let res = validate_multi_rules_to_two_sheets_inner(&db, sheet_id, session_id, &rules, &[])
             .unwrap();
@@ -2687,6 +2713,7 @@ mod tests {
                 check_birth: true,
                 birth_column: Some("birth".into()),
             }),
+            params_override: None,
         }];
         let res = validate_multi_rules_to_two_sheets_inner(&db, sheet_id, session_id, &rules, &[])
             .unwrap();
@@ -2737,6 +2764,7 @@ mod tests {
             column: "name".into(),
             rule_id: "name-validate".into(),
             cross_field: None,
+            params_override: None,
         }];
         let res = validate_multi_rules_to_two_sheets_inner(&db, sheet_id, session_id, &rules, &[])
             .unwrap();
@@ -2778,6 +2806,7 @@ mod tests {
             column: "username".into(),
             rule_id: "username-validate".into(),
             cross_field: None,
+            params_override: None,
         }];
         let res = validate_multi_rules_to_two_sheets_inner(&db, sheet_id, session_id, &rules, &[])
             .unwrap();
@@ -2898,5 +2927,108 @@ mod tests {
         let json = serde_json::to_string(&results).unwrap();
         assert_eq!(json, "[]");
         assert!(json.starts_with('['));
+    }
+
+    // ---- v1.1.4 续轮 T70：params_override + clean_birth 跨字段 ----
+
+    /// generic-validate 规则行带 `paramsOverride`（前端编辑字符类 + 长度范围后下发）。
+    /// override 优先于 DB rule.params，覆盖 DB 默认的 `{allow_digits:true,
+    /// allow_letters:true, allow_special:false, min_len:None, max_len:None}`。
+    ///
+    /// 构造 3 行 code 列：
+    /// - "abc123" → 数字+字母，长度 6≥3 → 通过
+    /// - "abc@123" → 含特殊字符 @（allow_special=false）→ 不通过
+    /// - "ab" → 长度 2<3 → 不通过
+    #[test]
+    fn validate_multi_rules_to_two_sheets_generic_with_params_override() {
+        let (_dir, db) = setup_db();
+        db.seed_builtin_rules().unwrap();
+        // 1 列 code + 3 行数据。
+        let session_id = db
+            .create_session("generic-override-test", None, "csv", 0)
+            .unwrap();
+        let sheet_id = db.create_sheet(session_id, "raw", 0).unwrap();
+        let headers = ["code"];
+        let rows = ["abc123", "abc@123", "ab"];
+        let mut cells: Vec<Cell> = Vec::with_capacity(rows.len() + 1);
+        for (c, h) in headers.iter().enumerate() {
+            cells.push(Cell {
+                sheet_id,
+                row_idx: 0,
+                col_idx: c as u32,
+                value: Some((*h).to_string()),
+            });
+        }
+        for (i, v) in rows.iter().enumerate() {
+            cells.push(Cell {
+                sheet_id,
+                row_idx: (i + 1) as u32,
+                col_idx: 0,
+                value: Some((*v).to_string()),
+            });
+        }
+        db.write_cells(sheet_id, &cells).unwrap();
+
+        let rules = vec![MultiRuleValidation {
+            column: "code".into(),
+            rule_id: "generic-validate".into(),
+            cross_field: None,
+            params_override: Some(ExtractParams::Generic {
+                allow_digits: true,
+                allow_letters: true,
+                allow_special: false,
+                min_len: Some(3),
+                max_len: None,
+            }),
+        }];
+        let res = validate_multi_rules_to_two_sheets_inner(&db, sheet_id, session_id, &rules, &[])
+            .unwrap();
+        // abc123 → valid
+        assert_eq!(res.valid_sheet.row_count, 1);
+        // abc@123 / ab → invalid
+        assert_eq!(res.invalid_sheet.row_count, 2);
+        assert_eq!(res.invalid_reasons.len(), 2);
+        // 每条失败原因都指向 code 列 + generic 失败消息。
+        assert!(res
+            .invalid_reasons
+            .iter()
+            .all(|r| r.field == "code" && r.reason.contains("通用校验未通过")));
+    }
+
+    /// 跨字段 birth 比对支持分隔符格式（T70 E89）。
+    /// birth="1949-12-31" 经 `clean_birth` 归一化为 "19491231"，
+    /// 与 idcard[6..14]="19491231" 一致 → 整行 valid。
+    #[test]
+    fn validate_multi_rules_to_two_sheets_birth_with_separators() {
+        let (_dir, db) = setup_db();
+        db.seed_builtin_rules().unwrap();
+        // birth 写带分隔符的 "1949-12-31"；idcard 110105194912310038 第 7-14 位 = 19491231。
+        let rows = [(
+            "admin",
+            "张三",
+            "男",
+            "1949-12-31",
+            "110105194912310038",
+            "13412345678",
+            "北京市朝阳区1号101室",
+        )];
+        let (session_id, sheet_id) = setup_multi_rules_sheet(&db, &rows);
+        let rules = vec![MultiRuleValidation {
+            column: "idcard".into(),
+            rule_id: "idcard-validate".into(),
+            cross_field: Some(CrossFieldConfig {
+                check_sex: false,
+                sex_column: None,
+                check_birth: true,
+                birth_column: Some("birth".into()),
+            }),
+            params_override: None,
+        }];
+        let res = validate_multi_rules_to_two_sheets_inner(&db, sheet_id, session_id, &rules, &[])
+            .unwrap();
+        // clean_birth("1949-12-31") = "19491231" == idcard[6..14] → 一致 → valid。
+        assert_eq!(res.valid_sheet.row_count, 1);
+        assert_eq!(res.invalid_sheet.row_count, 0);
+        assert!(res.invalid_reasons.is_empty());
     }
 }

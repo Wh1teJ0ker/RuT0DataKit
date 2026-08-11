@@ -271,24 +271,60 @@ pub fn is_valid_sex(s: &str) -> bool {
     matches!(s.trim(), "男" | "女")
 }
 
-/// 出生日期校验：8 位 ASCII 数字。
+/// 清理出生日期字符串：过滤掉所有非 ASCII 数字字符。
 ///
-/// 仅校验格式 `^\d{8}$`，不校验日期合法性（如 19990230 也会通过）。
-/// 与身份证号出生日期码的联合校验（比对 idcard 第 7-14 位）在
-/// `validate_rows_to_two_sheets_inner` 中进行，不在此函数。
+/// 用于支持多种分隔符格式："2003-12-23" → "20031223"，
+/// "2003/12/23" → "20031223"，"2003.12.23" → "20031223"。
+///
+/// v1.1.4 续轮 T70：跨字段 birth 比对也用本函数归一化（如 "1949-12-31"
+/// 与身份证号 [6..14]="19491231" 视为一致）。
+///
+/// # 示例
+/// ```
+/// use ruT0_data_kit_core::processor::func_validator::clean_birth;
+/// assert_eq!(clean_birth("20031223"), "20031223");
+/// assert_eq!(clean_birth("2003-12-23"), "20031223");
+/// assert_eq!(clean_birth("2003/12/23"), "20031223");
+/// assert_eq!(clean_birth("2003.12.23"), "20031223");
+/// assert_eq!(clean_birth(" 2003 12 23 "), "20031223");
+/// ```
+pub fn clean_birth(s: &str) -> String {
+    s.bytes()
+        .filter(|b| b.is_ascii_digit())
+        .map(|b| b as char)
+        .collect()
+}
+
+/// 出生日期校验：先清理分隔符（- / . 空格等），再校验 8 位数字 + 基本日期
+/// 有效性。
+///
+/// v1.1.4 续轮 T70：放宽原「8 位纯数字」格式要求，支持 "20031223" /
+/// "2003-12-23" / "2003/12.23" / "2003.12.23" 等格式（先用
+/// [`clean_birth`] 过滤非数字字符，再校验 8 位 + 日期范围）。
+/// 清理后必须为 8 位数字，且年 1900-2100 / 月 1-12 / 日 1-31。
 ///
 /// # 示例
 /// ```
 /// use ruT0_data_kit_core::processor::func_validator::is_valid_birth;
-/// assert!(is_valid_birth("19491231"));
-/// assert!(is_valid_birth("20000101"));
-/// assert!(!is_valid_birth("1949-12-31")); // 含分隔符
-/// assert!(!is_valid_birth("1949123"));    // 长度不足
-/// assert!(!is_valid_birth("194912311"));  // 长度超
-/// assert!(!is_valid_birth(""));           // 空串
+/// assert!(is_valid_birth("20031223"));
+/// assert!(is_valid_birth("2003-12-23"));
+/// assert!(is_valid_birth("2003/12/23"));
+/// assert!(is_valid_birth("2003.12.23"));
+/// assert!(!is_valid_birth("20031323")); // 月13
+/// assert!(!is_valid_birth("20031200")); // 日0
+/// assert!(!is_valid_birth("2003-12"));  // 清理后6位
+/// assert!(!is_valid_birth(""));         // 空串
 /// ```
 pub fn is_valid_birth(s: &str) -> bool {
-    s.len() == 8 && s.bytes().all(|b| b.is_ascii_digit())
+    let cleaned = clean_birth(s);
+    if cleaned.len() != 8 || !cleaned.bytes().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    // 基本日期有效性
+    let year: u32 = cleaned[0..4].parse().unwrap_or(0);
+    let month: u32 = cleaned[4..6].parse().unwrap_or(0);
+    let day: u32 = cleaned[6..8].parse().unwrap_or(0);
+    (1900..=2100).contains(&year) && (1..=12).contains(&month) && (1..=31).contains(&day)
 }
 
 /// 手机号校验：11 位、1 开头、纯 ASCII 数字；可选前缀白名单。
@@ -313,83 +349,167 @@ pub fn is_valid_phone(s: &str, allowed: &[String]) -> bool {
         && check_phone_prefix(s, allowed)
 }
 
-/// 地址校验：全中文前缀 + 号(1-1500) + 室(101-999)。
+/// 地址校验：结构化校验（中文 ≥ 2 + 包含地址关键词）。
 ///
-/// 正则：`^[\u4e00-\u9fa5]+(?:[1-9]\d{0,2}|1[0-4]\d{2}|1500)号(?:10[1-9]|1[1-9]\d|[2-9]\d{2})室$`
-/// - 中文前缀：1 个及以上中文字符
-/// - 号：1-1500（1-999 / 1000-1499 / 1500）
-/// - 室：101-999（101-109 / 110-199 / 200-999）
-///
-/// 正例：`内蒙古自治区呼和浩特市玉泉区大南街街道1340号540室`
+/// v1.1.4 续轮 T70：放宽原严格正则（号1-1500+室101-999），改为结构化校验：
+/// - 中文字符数 ≥ 2
+/// - 包含至少一个地址关键词（见 [`ADDR_KEYWORDS`]）：省/市/区/县/镇/乡/村/
+///   路/街/道/号/室/楼/单元/栋/幢/弄/巷/里/组/旗/盟/社区/大厦/小区/花园
+/// - 数字不做范围限制
+/// - 总长度 4-200
 ///
 /// # 示例
 /// ```
 /// use ruT0_data_kit_core::processor::func_validator::is_valid_address;
+/// assert!(is_valid_address("北京市朝阳区建国路88号"));
 /// assert!(is_valid_address("内蒙古自治区呼和浩特市玉泉区大南街街道1340号540室"));
-/// assert!(is_valid_address("北京市朝阳区1号101室"));
-/// assert!(!is_valid_address("北京市朝阳区1501号101室")); // 号超 1500
-/// assert!(!is_valid_address("北京市朝阳区1号100室"));    // 室不足 101
-/// assert!(!is_valid_address("北京市朝阳区1号1000室"));   // 室超 999
-/// assert!(!is_valid_address("1234号101室"));            // 前缀非中文
-/// assert!(!is_valid_address("北京市朝阳区1号101"));      // 缺「室」
+/// assert!(!is_valid_address("hello world"));
+/// assert!(!is_valid_address("张三"));
+/// assert!(!is_valid_address(""));
 /// ```
 pub fn is_valid_address(s: &str) -> bool {
-    use std::sync::OnceLock;
-    static RE: OnceLock<regex::Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| {
-        // 号范围 1-1500：[1-9]\d{0,2} | 1[0-4]\d{2} | 1500
-        // 室范围 101-999：10[1-9] | 1[1-9]\d | [2-9]\d{2}
-        regex::Regex::new(
-            r"^[\u4e00-\u9fa5]+(?:[1-9]\d{0,2}|1[0-4]\d{2}|1500)号(?:10[1-9]|1[1-9]\d|[2-9]\d{2})室$",
-        )
-        .expect("address regex 编译失败（静态字面量，不应发生）")
-    });
-    re.is_match(s)
+    let trimmed = s.trim();
+    if trimmed.is_empty() || trimmed.chars().count() < 4 || trimmed.chars().count() > 200 {
+        return false;
+    }
+    // 中文字符数（基本区 U+4E00..U+9FA5）
+    let cjk_count = trimmed
+        .chars()
+        .filter(|&c| ('\u{4e00}'..='\u{9fa5}').contains(&c))
+        .count();
+    if cjk_count < 2 {
+        return false;
+    }
+    // 包含至少一个地址关键词
+    ADDR_KEYWORDS.iter().any(|kw| trimmed.contains(kw))
 }
 
-/// 按 `rule.params` 分发到对应函数式校验器。
+/// 地址关键词表（v1.1.4 续轮 T70：结构化地址校验）。
+///
+/// 命中任意一个即视为含地址语义（与中文 ≥ 2 同时满足）。
+pub const ADDR_KEYWORDS: &[&str] = &[
+    "省", "市", "区", "县", "镇", "乡", "村", "路", "街", "道", "号", "室", "楼", "单元", "栋",
+    "幢", "弄", "巷", "里", "组", "旗", "盟", "社区", "大厦", "小区", "花园",
+];
+
+/// 通用校验：按字符类白名单 + 长度范围校验（v1.1.4 续轮 T70 新增）。
+///
+/// - `allow_digits`：允许 0-9
+/// - `allow_letters`：允许 a-zA-Z
+/// - `allow_special`：允许非字母数字（标点 / 空格 / 中文等）
+/// - `min_len` / `max_len`：长度范围（None = 不限）
+///
+/// 规则：
+/// - 三个 `allow` 全 false → 直接返回 false（无任何允许的字符类）
+/// - 长度按 `s.chars().count()`（支持中文等多字节字符）
+/// - min_len 非空且 count < min → false
+/// - max_len 非空且 count > max → false
+/// - 逐字符检查：每个 char 必须属于至少一个"允许"的字符类
+///   - `c.is_ascii_digit()` → digits 类
+///   - `c.is_ascii_alphabetic()` → letters 类
+///   - 非 digit 非 letter → special 类
+///   - 若字符不属于任何允许的类 → false
+/// - 空串 → false（即使三个 allow 全 true，空串无字符也判为无效）
+///
+/// # 示例
+/// ```
+/// use ruT0_data_kit_core::processor::func_validator::is_valid_generic;
+/// assert!(is_valid_generic("abc123", true, true, false, None, None));
+/// assert!(!is_valid_generic("abc123", true, false, false, None, None)); // 有字母
+/// assert!(!is_valid_generic("ab", true, true, false, Some(3), None));   // 长度<3
+/// assert!(is_valid_generic("a@b", false, true, true, None, None));      // 字母+特殊
+/// assert!(!is_valid_generic("", true, true, false, None, None));        // 空串
+/// assert!(!is_valid_generic("abc", false, false, false, None, None));   // 全 false
+/// ```
+pub fn is_valid_generic(
+    s: &str,
+    allow_digits: bool,
+    allow_letters: bool,
+    allow_special: bool,
+    min_len: Option<usize>,
+    max_len: Option<usize>,
+) -> bool {
+    // 三个 allow 全 false → 无任何允许的字符类
+    if !allow_digits && !allow_letters && !allow_special {
+        return false;
+    }
+    // 空串 → false（空串无字符，视为无效）
+    if s.is_empty() {
+        return false;
+    }
+    let count = s.chars().count();
+    if let Some(min) = min_len {
+        if count < min {
+            return false;
+        }
+    }
+    if let Some(max) = max_len {
+        if count > max {
+            return false;
+        }
+    }
+    // 逐字符检查：每个 char 必须属于至少一个允许的类
+    for c in s.chars() {
+        let is_digit = c.is_ascii_digit();
+        let is_letter = c.is_ascii_alphabetic();
+        // 非 digit 非 letter → special
+        let is_special = !is_digit && !is_letter;
+        let allowed = (is_digit && allow_digits)
+            || (is_letter && allow_letters)
+            || (is_special && allow_special);
+        if !allowed {
+            return false;
+        }
+    }
+    true
+}
+
+/// 按 `ExtractParams` 分发到对应函数式校验器（不依赖 `Rule`，直接接 `params`）。
+///
+/// v1.1.4 续轮 T70：从 [`validate_extracted`] 抽取核心逻辑，便于
+/// `validate_multi_rules_to_two_sheets_inner` 接收 `params_override` 后直接
+/// 校验，无需构造 `Rule`。
 ///
 /// 返回 `(是否有效, 说明)`：
-/// - `params=None` → `(true, "")`（仅正则提取，不额外校验，向后兼容 name-extract）。
 /// - `PhonePrefix{[]}` → 默认通过；非空 → 前缀白名单。
 /// - `Luhn` → Luhn 算法；未通过说明 "未通过 Luhn 校验"。
 /// - `Ipv4` → 段范围 0-255 + 禁前导零；未通过说明 "非合法 IPv4 地址"。
 /// - `Ipv6` → `std::net::Ipv6Addr::from_str`（RFC 4291）；未通过说明 "非合法 IPv6 地址"。
 /// - `IdCard` → GB 11643-1999 校验码；有效说明列写性别（"男"/"女"），
-///   无效说明 "非合法身份证号"。性别联合校验（比对指定性别列）在
-///   `extract_validate_to_new_sheet_inner` 中进行，不在此函数。
-pub fn validate_extracted(rule: &Rule, value: &str) -> (bool, String) {
-    match &rule.params {
-        None => (true, String::new()),
-        Some(ExtractParams::PhonePrefix { allowed_prefixes }) => {
+///   无效说明 "非合法身份证号"。
+/// - `Username` / `Sex` / `Birth` / `Address` → 对应行级校验函数。
+/// - `Generic` → [`is_valid_generic`]（字符类白名单 + 长度范围）。
+pub fn validate_extracted_with_params(params: &ExtractParams, value: &str) -> (bool, String) {
+    match params {
+        ExtractParams::PhonePrefix { allowed_prefixes } => {
             if check_phone_prefix(value, allowed_prefixes) {
                 (true, String::new())
             } else {
                 (false, "前缀不在允许列表内".to_string())
             }
         }
-        Some(ExtractParams::Luhn) => {
+        ExtractParams::Luhn => {
             if luhn_check(value) {
                 (true, String::new())
             } else {
                 (false, "未通过 Luhn 校验".to_string())
             }
         }
-        Some(ExtractParams::Ipv4) => {
+        ExtractParams::Ipv4 => {
             if is_valid_ipv4(value) {
                 (true, String::new())
             } else {
                 (false, "非合法 IPv4 地址".to_string())
             }
         }
-        Some(ExtractParams::Ipv6) => {
+        ExtractParams::Ipv6 => {
             if is_valid_ipv6(value) {
                 (true, String::new())
             } else {
                 (false, "非合法 IPv6 地址".to_string())
             }
         }
-        Some(ExtractParams::IdCard) => {
+        ExtractParams::IdCard => {
             if is_valid_idcard(value) {
                 // 有效 → 说明列写推断的性别（性别联合校验在外层处理）
                 let gender = idcard_gender(value)
@@ -400,38 +520,74 @@ pub fn validate_extracted(rule: &Rule, value: &str) -> (bool, String) {
                 (false, "非合法身份证号".to_string())
             }
         }
-        // v1.1.4 T67：4 条新变体分发（用于 username/sex/birth/address validate 规则）
-        Some(ExtractParams::Username) => {
+        // v1.1.4 T67：4 条行级校验变体分发
+        ExtractParams::Username => {
             if is_valid_username(value) {
                 (true, String::new())
             } else {
                 (false, "用户名须为纯字母数字".to_string())
             }
         }
-        Some(ExtractParams::Sex) => {
+        ExtractParams::Sex => {
             if is_valid_sex(value) {
                 (true, String::new())
             } else {
                 (false, "性别须为「男」或「女」".to_string())
             }
         }
-        Some(ExtractParams::Birth) => {
+        ExtractParams::Birth => {
             if is_valid_birth(value) {
-                (true, String::new())
-            } else {
-                (false, "出生日期须为 8 位数字".to_string())
-            }
-        }
-        Some(ExtractParams::Address) => {
-            if is_valid_address(value) {
                 (true, String::new())
             } else {
                 (
                     false,
-                    "地址格式不符（全中文+号1-1500+室101-999）".to_string(),
+                    "出生日期格式不符（清理后须为 8 位有效日期）".to_string(),
                 )
             }
         }
+        ExtractParams::Address => {
+            if is_valid_address(value) {
+                (true, String::new())
+            } else {
+                (false, "地址格式不符（须含中文+地址关键词）".to_string())
+            }
+        }
+        // v1.1.4 续轮 T70：通用校验变体
+        ExtractParams::Generic {
+            allow_digits,
+            allow_letters,
+            allow_special,
+            min_len,
+            max_len,
+        } => {
+            if is_valid_generic(
+                value,
+                *allow_digits,
+                *allow_letters,
+                *allow_special,
+                *min_len,
+                *max_len,
+            ) {
+                (true, String::new())
+            } else {
+                (false, "通用校验未通过（字符类或长度不符）".to_string())
+            }
+        }
+    }
+}
+
+/// 按 `rule.params` 分发到对应函数式校验器。
+///
+/// v1.1.4 续轮 T70：核心逻辑已抽取到 [`validate_extracted_with_params`]，
+/// 本函数为保留向后兼容的 wrapper：`params=None` → `(true, "")`
+/// （仅正则提取，不额外校验，向后兼容 name-extract）；`params=Some(p)` →
+/// 委托 [`validate_extracted_with_params`]。
+///
+/// 不改 `extract_validate_to_new_sheet_inner`（保持列级提取不变）。
+pub fn validate_extracted(rule: &Rule, value: &str) -> (bool, String) {
+    match &rule.params {
+        None => (true, String::new()),
+        Some(params) => validate_extracted_with_params(params, value),
     }
 }
 
@@ -709,20 +865,25 @@ mod tests {
 
     #[test]
     fn validate_extracted_birth() {
-        // T67：Birth 变体 → is_valid_birth
+        // T67 + T70：Birth 变体 → is_valid_birth（清理分隔符后校验）
         let mut rule = RuleRegistry_like_name_extract();
         rule.params = Some(ExtractParams::Birth);
-        // 有效（8 位数字）
+        // 有效（8 位纯数字）
         let (ok, note) = validate_extracted(&rule, "19491231");
         assert!(ok);
         assert_eq!(note, "");
         assert!(validate_extracted(&rule, "20000101").0);
-        // 无效（含分隔符）
-        let (ok, note) = validate_extracted(&rule, "1949-12-31");
+        // T70：有效（含分隔符，清理后 8 位）
+        assert!(validate_extracted(&rule, "1949-12-31").0);
+        assert!(validate_extracted(&rule, "2003/12/23").0);
+        // 无效（月 13）
+        let (ok, _) = validate_extracted(&rule, "20031323");
         assert!(!ok);
-        assert_eq!(note, "出生日期须为 8 位数字");
-        // 无效（长度不足）
-        let (ok, _) = validate_extracted(&rule, "1949123");
+        // 无效（日 0）
+        let (ok, _) = validate_extracted(&rule, "20031200");
+        assert!(!ok);
+        // 无效（清理后 6 位）
+        let (ok, _) = validate_extracted(&rule, "2003-12");
         assert!(!ok);
         // 无效（长度超）
         let (ok, _) = validate_extracted(&rule, "194912311");
@@ -734,7 +895,7 @@ mod tests {
 
     #[test]
     fn validate_extracted_address() {
-        // T67：Address 变体 → is_valid_address
+        // T67 + T70：Address 变体 → is_valid_address（结构化校验）
         let mut rule = RuleRegistry_like_name_extract();
         rule.params = Some(ExtractParams::Address);
         // 有效
@@ -743,21 +904,22 @@ mod tests {
         assert!(ok);
         assert_eq!(note, "");
         assert!(validate_extracted(&rule, "北京市朝阳区1号101室").0);
-        // 无效（号超 1500）
-        let (ok, note) = validate_extracted(&rule, "北京市朝阳区1501号101室");
-        assert!(!ok);
-        assert_eq!(note, "地址格式不符（全中文+号1-1500+室101-999）");
-        // 无效（室不足 101）
-        let (ok, _) = validate_extracted(&rule, "北京市朝阳区1号100室");
-        assert!(!ok);
-        // 无效（前缀非中文）
-        let (ok, _) = validate_extracted(&rule, "1234号101室");
-        assert!(!ok);
-        // 无效（缺「室」）
-        let (ok, _) = validate_extracted(&rule, "北京市朝阳区1号101");
+        // T70：原号超 1500 → 现在有效（结构化校验不限制号范围）
+        assert!(validate_extracted(&rule, "北京市朝阳区1501号101室").0);
+        // T70：原室不足 101 → 现在有效
+        assert!(validate_extracted(&rule, "北京市朝阳区1号100室").0);
+        // T70：原室超 999 → 现在有效
+        assert!(validate_extracted(&rule, "北京市朝阳区1号1000室").0);
+        // T70：「1234号101室」含号/室 CJK + 关键词 → 现在有效
+        assert!(validate_extracted(&rule, "1234号101室").0);
+        // 无效（无中文，无地址关键词）
+        let (ok, _) = validate_extracted(&rule, "hello world");
         assert!(!ok);
         // 无效（空串）
         let (ok, _) = validate_extracted(&rule, "");
+        assert!(!ok);
+        // 无效（2 CJK 但无地址关键词）
+        let (ok, _) = validate_extracted(&rule, "张三");
         assert!(!ok);
     }
 
@@ -810,18 +972,25 @@ mod tests {
 
     #[test]
     fn birth_valid_samples() {
+        // T70：支持分隔符格式（清理后 8 位有效日期）
         assert!(is_valid_birth("19491231"));
         assert!(is_valid_birth("20000101"));
-        assert!(is_valid_birth("99991231"));
-        assert!(is_valid_birth("00000101"));
+        assert!(is_valid_birth("20991231"));
+        assert!(is_valid_birth("19000101"));
+        // 含分隔符（清理后 8 位）
+        assert!(is_valid_birth("2003-12-23"));
+        assert!(is_valid_birth("2003/12/23"));
+        assert!(is_valid_birth("2003.12.23"));
+        assert!(is_valid_birth(" 2003 12 23 "));
     }
 
     #[test]
     fn birth_invalid_samples() {
-        assert!(!is_valid_birth("1949-12-31")); // 含分隔符
-        assert!(!is_valid_birth("1949123")); // 长度不足
+        assert!(!is_valid_birth("20031323")); // 月 13
+        assert!(!is_valid_birth("20031200")); // 日 0
+        assert!(!is_valid_birth("1949123")); // 清理后 6 位（长度不足）
         assert!(!is_valid_birth("194912311")); // 长度超
-        assert!(!is_valid_birth("1949ab31")); // 含非数字
+        assert!(!is_valid_birth("1949ab31")); // 含非数字，清理后 6 位
         assert!(!is_valid_birth("")); // 空串
     }
 
@@ -854,39 +1023,145 @@ mod tests {
 
     #[test]
     fn address_valid_samples() {
+        // T70：结构化校验（中文 ≥ 2 + 地址关键词）
         // 用户给的正例
         assert!(is_valid_address(
             "内蒙古自治区呼和浩特市玉泉区大南街街道1340号540室"
         ));
-        // 边界：号=1 / 号=1500 / 室=101 / 室=999
+        assert!(is_valid_address("北京市朝阳区建国路88号"));
         assert!(is_valid_address("北京市朝阳区1号101室"));
-        assert!(is_valid_address("北京市朝阳区1500号999室"));
-        assert!(is_valid_address("北京市朝阳区999号101室"));
-        // 号=1000（1[0-4]\d{2} 分支）
-        assert!(is_valid_address("北京市朝阳区1000号500室"));
+        // T70：原号超 1500 / 室超 999 → 现在有效（不限制数字范围）
+        assert!(is_valid_address("北京市朝阳区1501号101室"));
+        assert!(is_valid_address("北京市朝阳区1号1000室"));
+        // T70：含号/室关键词 → 有效
+        assert!(is_valid_address("1234号101室"));
+        // 边界：长度=4（3 CJK + 1 digit，含「路」关键词）
+        assert!(is_valid_address("北京路1"));
     }
 
     #[test]
     fn address_invalid_samples() {
-        // 号超 1500
-        assert!(!is_valid_address("北京市朝阳区1501号101室"));
-        assert!(!is_valid_address("北京市朝阳区9999号101室"));
-        // 室不足 101
-        assert!(!is_valid_address("北京市朝阳区1号100室"));
-        assert!(!is_valid_address("北京市朝阳区1号99室"));
-        // 室超 999
-        assert!(!is_valid_address("北京市朝阳区1号1000室"));
-        // 前缀非中文
-        assert!(!is_valid_address("1234号101室"));
-        assert!(!is_valid_address("abc1号101室"));
-        // 缺「室」
-        assert!(!is_valid_address("北京市朝阳区1号101"));
-        // 缺「号」
-        assert!(!is_valid_address("北京市朝阳区1室"));
+        // T70：结构化校验失败场景
+        // 无中文
+        assert!(!is_valid_address("hello world"));
+        // 中文 < 2（单字且无关键词）
+        assert!(!is_valid_address("张"));
+        // 无地址关键词（2 CJK 但非关键词）
+        assert!(!is_valid_address("张三"));
+        assert!(!is_valid_address("李四王五"));
         // 空串
         assert!(!is_valid_address(""));
-        // 含字母
-        assert!(!is_valid_address("北京市朝阳区A1号101室"));
+        // 仅空格
+        assert!(!is_valid_address("   "));
+    }
+
+    // ---- v1.1.4 续轮 T70：is_valid_generic + validate_extracted_with_params ----
+
+    #[test]
+    fn is_valid_generic_valid_samples() {
+        // 数字 + 字母（两者都允许）
+        assert!(is_valid_generic("abc123", true, true, false, None, None));
+        // 纯数字
+        assert!(is_valid_generic("12345", true, false, false, None, None));
+        // 纯字母
+        assert!(is_valid_generic("abcde", false, true, false, None, None));
+        // 字母 + 特殊
+        assert!(is_valid_generic("a@b", false, true, true, None, None));
+        // 数字 + 字母 + 特殊（三者都允许）
+        assert!(is_valid_generic("a1@", true, true, true, None, None));
+        // 带长度范围
+        assert!(is_valid_generic(
+            "abc123",
+            true,
+            true,
+            false,
+            Some(1),
+            Some(10)
+        ));
+    }
+
+    #[test]
+    fn is_valid_generic_invalid_samples() {
+        // 有字母但只允许数字
+        assert!(!is_valid_generic("abc123", true, false, false, None, None));
+        // 长度不足（min=3，但只有 2 字符）
+        assert!(!is_valid_generic("ab", true, true, false, Some(3), None));
+        // 长度超（max=3，但有 6 字符）
+        assert!(!is_valid_generic(
+            "abc123",
+            true,
+            true,
+            false,
+            None,
+            Some(3)
+        ));
+        // 含特殊字符但只允许数字+字母
+        assert!(!is_valid_generic("a@b", true, true, false, None, None));
+        // 空串
+        assert!(!is_valid_generic("", true, true, false, None, None));
+        // 三个 allow 全 false
+        assert!(!is_valid_generic("abc", false, false, false, None, None));
+    }
+
+    #[test]
+    fn validate_extracted_with_params_generic() {
+        // T70：Generic 分支分发
+        let params = ExtractParams::Generic {
+            allow_digits: true,
+            allow_letters: true,
+            allow_special: false,
+            min_len: Some(3),
+            max_len: None,
+        };
+        // 有效（数字+字母，长度 6 ≥ 3）
+        let (ok, note) = validate_extracted_with_params(&params, "abc123");
+        assert!(ok);
+        assert_eq!(note, "");
+        // 无效（含特殊字符 @，allow_special=false）
+        let (ok, note) = validate_extracted_with_params(&params, "abc@123");
+        assert!(!ok);
+        assert_eq!(note, "通用校验未通过（字符类或长度不符）");
+        // 无效（长度 2 < 3）
+        let (ok, _) = validate_extracted_with_params(&params, "ab");
+        assert!(!ok);
+        // 无效（空串）
+        let (ok, _) = validate_extracted_with_params(&params, "");
+        assert!(!ok);
+    }
+
+    #[test]
+    fn validate_extracted_with_params_birth_with_separators() {
+        // T70：Birth 分支 + clean_birth 支持
+        let params = ExtractParams::Birth;
+        // 有效（含分隔符）
+        let (ok, _) = validate_extracted_with_params(&params, "1949-12-31");
+        assert!(ok);
+        // 有效（纯数字）
+        let (ok, _) = validate_extracted_with_params(&params, "19491231");
+        assert!(ok);
+        // 无效（月 13）
+        let (ok, note) = validate_extracted_with_params(&params, "20031323");
+        assert!(!ok);
+        assert_eq!(note, "出生日期格式不符（清理后须为 8 位有效日期）");
+    }
+
+    #[test]
+    fn validate_extracted_with_params_address_structured() {
+        // T70：Address 分支 + 结构化校验
+        let params = ExtractParams::Address;
+        // 有效
+        let (ok, _) = validate_extracted_with_params(&params, "北京市朝阳区建国路88号");
+        assert!(ok);
+        // 有效（原号超 1500 → 现在有效）
+        let (ok, _) = validate_extracted_with_params(&params, "北京市朝阳区1501号101室");
+        assert!(ok);
+        // 无效（无中文）
+        let (ok, note) = validate_extracted_with_params(&params, "hello world");
+        assert!(!ok);
+        assert_eq!(note, "地址格式不符（须含中文+地址关键词）");
+        // 无效（空串）
+        let (ok, _) = validate_extracted_with_params(&params, "");
+        assert!(!ok);
     }
 
     /// 测试辅助：构造一个最小 Rule（params 可后续覆盖）。
