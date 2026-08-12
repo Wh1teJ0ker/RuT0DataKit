@@ -516,13 +516,13 @@ impl DbManager {
         Ok(())
     }
 
-    /// 列出全部规则（按 id 升序）。
+    /// 列出全部规则（按 name 升序，Unicode 码点排序）。
     pub fn list_rules(&self) -> Result<Vec<Rule>, DbError> {
         let conn = self.conn.lock().expect("db mutex poisoned");
         let mut stmt = conn.prepare(
             "SELECT id, name, kind, field, pattern, replacement, template, enabled, description, params
              FROM rules
-             ORDER BY id ASC",
+             ORDER BY name ASC",
         )?;
         let rows = stmt.query_map([], row_to_rule)?;
         let mut out = Vec::new();
@@ -2007,6 +2007,59 @@ mod tests {
             let s = r.kind.to_string();
             assert_eq!(RuleKind::from_str_lowercase(&s), Some(r.kind));
         }
+    }
+
+    #[test]
+    fn list_rules_sorted_by_name() {
+        // T79：list_rules 按 name 升序（Unicode 码点）返回。
+        // 插入顺序故意打乱：手机号提取（U+624B）→ IPv4地址提取（U+0049）→ 姓名校验（U+59D3）。
+        // 期望返回顺序：IPv4 < 姓名 < 手机号。
+        let (_dir, mgr) = open();
+        let r1 = Rule {
+            id: "phone-extract-test".into(),
+            name: "手机号提取".into(),
+            kind: RuleKind::Extract,
+            field: None,
+            pattern: Some(r"\d+".into()),
+            replacement: None,
+            template: None,
+            enabled: true,
+            description: String::new(),
+            params: None,
+        };
+        let r2 = Rule {
+            id: "ip4-extract-test".into(),
+            name: "IPv4地址提取".into(),
+            kind: RuleKind::Extract,
+            field: None,
+            pattern: Some(r"\d+".into()),
+            replacement: None,
+            template: None,
+            enabled: true,
+            description: String::new(),
+            params: None,
+        };
+        let r3 = Rule {
+            id: "name-validate-test".into(),
+            name: "姓名校验".into(),
+            kind: RuleKind::Validate,
+            field: None,
+            pattern: None,
+            replacement: None,
+            template: None,
+            enabled: true,
+            description: String::new(),
+            params: None,
+        };
+        mgr.upsert_rule(&r1).unwrap();
+        mgr.upsert_rule(&r2).unwrap();
+        mgr.upsert_rule(&r3).unwrap();
+        let list = mgr.list_rules().unwrap();
+        assert_eq!(list.len(), 3);
+        // Unicode 码点：I(U+0049) < 姓(U+59D3) < 手(U+624B)
+        assert_eq!(list[0].name, "IPv4地址提取");
+        assert_eq!(list[1].name, "姓名校验");
+        assert_eq!(list[2].name, "手机号提取");
     }
 
     // ---- 搜索 / 替换 / 操作日志查询（v1.1.1）----
