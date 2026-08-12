@@ -2933,11 +2933,11 @@ mod tests {
 
     /// generic-validate 规则行带 `paramsOverride`（前端编辑字符类 + 长度范围后下发）。
     /// override 优先于 DB rule.params，覆盖 DB 默认的 `{allow_digits:true,
-    /// allow_letters:true, allow_special:false, min_len:None, max_len:None}`。
+    /// allow_letters:true, allow_special_chars:"", min_len:None, max_len:None}`。
     ///
     /// 构造 3 行 code 列：
     /// - "abc123" → 数字+字母，长度 6≥3 → 通过
-    /// - "abc@123" → 含特殊字符 @（allow_special=false）→ 不通过
+    /// - "abc@123" → 含特殊字符 @（白名单为空）→ 不通过
     /// - "ab" → 长度 2<3 → 不通过
     #[test]
     fn validate_multi_rules_to_two_sheets_generic_with_params_override() {
@@ -2976,7 +2976,7 @@ mod tests {
             params_override: Some(ExtractParams::Generic {
                 allow_digits: true,
                 allow_letters: true,
-                allow_special: false,
+                allow_special_chars: String::new(),
                 min_len: Some(3),
                 max_len: None,
             }),

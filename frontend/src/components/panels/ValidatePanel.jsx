@@ -3,6 +3,7 @@ import {
   Button,
   Checkbox,
   Form,
+  Input,
   InputNumber,
   Select,
   Space,
@@ -19,8 +20,9 @@ import {
 import { PAGE_SIZE } from "../../constants";
 // v1.1.4 续轮 T71：generic-validate 行级参数共享模块。
 // 行内字段直接由 Form.List 收集，组装 multiRules 时把 charClasses 数组映射为
-// allowDigits/allowLetters/allowSpecial 布尔，minLen/maxLen 直接回传。
+// allowDigits/allowLetters 布尔 + specialChars 白名单字符串，minLen/maxLen 直接回传。
 // buildGenericParamsForRun 用于构造与后端 ExtractParams::Generic 对齐的对象。
+// T77：allowSpecial bool → allowSpecialChars string（自定义特殊字符白名单）。
 import { buildGenericParamsForRun } from "./validateParams";
 
 const { Text } = Typography;
@@ -109,12 +111,13 @@ export default function ValidatePanel() {
           paramsOverride: null,
         };
         // v1.1.4 续轮 T71：generic-validate 行附带 paramsOverride。
+        // T77：特殊符号从布尔全开/全关改为自定义白名单字符串。
         if (r.ruleId === "generic-validate") {
           const classes = r.charClasses || [];
           item.paramsOverride = buildGenericParamsForRun({
             allowDigits: classes.includes("digits"),
             allowLetters: classes.includes("letters"),
-            allowSpecial: classes.includes("special"),
+            allowSpecialChars: r.specialChars || "",
             minLen: r.minLen ?? null,
             maxLen: r.maxLen ?? null,
           });
@@ -282,7 +285,7 @@ export default function ValidatePanel() {
                   </Form.Item>
                   {/* v1.1.4 续轮 T71：generic-validate 行级参数配置。
                       用 shouldUpdate 监听该行 ruleId 变化，仅 generic-validate 时展开。
-                      字段名 [name, "charClasses"] / [name, "minLen"] / [name, "maxLen"]
+                      字段名 [name, "charClasses"] / [name, "specialChars"] / [name, "minLen"] / [name, "maxLen"]
                       与下方 multiRules 组装逻辑对齐。 */}
                   <Form.Item
                     shouldUpdate={(prev, cur) =>
@@ -306,8 +309,17 @@ export default function ValidatePanel() {
                               options={[
                                 { label: "纯数字", value: "digits" },
                                 { label: "纯字母", value: "letters" },
-                                { label: "特殊符号", value: "special" },
                               ]}
+                            />
+                          </Form.Item>
+                          <Form.Item
+                            name={[name, "specialChars"]}
+                            label="允许的特殊符号"
+                            style={{ marginBottom: 0 }}
+                          >
+                            <Input
+                              placeholder="留空=不允许；如 _-.@ 表示只允许这些符号"
+                              allowClear
                             />
                           </Form.Item>
                           <Space>

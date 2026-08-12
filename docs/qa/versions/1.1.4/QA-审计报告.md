@@ -215,8 +215,8 @@ R2 为 v1.1.4 续轮（T70/T71/T72）的增量审计，沿用 R1 的 8 维度结
 
 | 验收项 | 状态 | 证据 |
 |---|---|---|
-| E85（T70）ExtractParams::Generic serde camelCase roundtrip | `pass` | `rules.rs` `#[serde(rename = "generic", rename_all = "camelCase")]` + `extract_params_serde_roundtrip` 测试覆盖 Generic 变体（allowDigits/allowLetters/allowSpecial/minLen/maxLen） |
-| E86（T70）is_valid_generic 字符类白名单 + 长度范围 | `pass` | `func_validator.rs` `is_valid_generic` 函数 + 单测覆盖（全 false 判否 / 字符类越界 / 长度越界）+ doc-test `is_valid_generic` passed |
+| E85（T70/T77）ExtractParams::Generic serde camelCase roundtrip | `pass` | `rules.rs` `#[serde(rename = "generic", rename_all = "camelCase")]` + `#[serde(default)] allow_special_chars: String` + `extract_params_serde_roundtrip` 测试覆盖 Generic 变体（allowDigits/allowLetters/allowSpecialChars/minLen/maxLen） |
+| E86（T70/T77）is_valid_generic 字符类白名单 + 自定义特殊字符白名单 + 长度范围 | `pass` | `func_validator.rs` `is_valid_generic` 函数（`allow_special_chars: &str` 白名单语义）+ 单测覆盖（全空判否 / 字符类越界 / 特殊字符不在白名单 / 长度越界）+ doc-test `is_valid_generic` passed |
 | E87（T70）is_valid_birth 支持 clean_birth 分隔符格式 | `pass` | `func_validator.rs` `clean_birth` + `is_valid_birth` 改造 + 单测覆盖 `20031223` / `2003-12-23` / `2003/12/23` / `2003.12.23` / ` 2003 12 23 ` + 反例（月13/日0/6位/超长/含字母/空串）+ doc-test `clean_birth` + `is_valid_birth` passed |
 | E88（T70）is_valid_address 结构化校验 | `pass` | `func_validator.rs` `is_valid_address` 改造（trim + 长度 4-200 + 中文字符 ≥ 2 + 地址关键词）+ 单测覆盖（北京市朝阳区建国路88号 / 内蒙古长地址 / 1234号101室 / 北京路1 + 反例 hello world / 张 / 张三 / 李四王五 / 空串 / 空白）+ doc-test `is_valid_address` passed |
 | E89（T70）validate_extracted_with_params 抽取 + wrapper 向后兼容 | `pass` | `func_validator.rs` `validate_extracted_with_params(params, value) -> (bool, String)` 抽取 + `validate_extracted(rule, value)` 改 wrapper 委托；`extract_validate_to_new_sheet_inner` 调用点不变 |

@@ -776,12 +776,13 @@ export default function RulesPanel() {
                     ) : (selected.kind === "extract" || selected.kind === "validate") && selected.params ? (
                       // T55/T55b/T55c/T71：extract/validate 规则带 params 时按
                       //   params.validator 分支渲染：
-                      //   - generic：字符类 Checkbox + 长度 InputNumber
+                      //   - generic：字符类 Checkbox + 特殊符号白名单 Input + 长度 InputNumber
                       //   - phonePrefix：校验类型 Tag + 允许前缀 Select + 正则输入框
                       //   - 其他 validator（luhn/ipv4/ipv6/idcard/username/sex/birth/address）：
                       //     只读 Tag + hint 文案（不显示空正则输入框）
                       selected.params.validator === "generic" ? (
                         // v1.1.4 续轮 T71：generic-validate 字符类 + 长度限制。
+                        // T77：特殊符号从 Checkbox 全开/全关改为自定义白名单 Input。
                         <>
                           <Form.Item label="校验类型">
                             <Tag color="blue" style={{ margin: 0 }}>
@@ -793,24 +794,31 @@ export default function RulesPanel() {
                               value={[
                                 draftGenericParams.allowDigits && "digits",
                                 draftGenericParams.allowLetters && "letters",
-                                draftGenericParams.allowSpecial && "special",
                               ].filter(Boolean)}
                               onChange={(vals) =>
                                 setDraftGenericParams((prev) => ({
                                   ...prev,
                                   allowDigits: vals.includes("digits"),
                                   allowLetters: vals.includes("letters"),
-                                  allowSpecial: vals.includes("special"),
                                 }))
                               }
                               options={[
                                 { label: "纯数字 (0-9)", value: "digits" },
                                 { label: "纯字母 (a-zA-Z)", value: "letters" },
-                                {
-                                  label: "特殊符号（含标点/空格/中文等）",
-                                  value: "special",
-                                },
                               ]}
+                            />
+                          </Form.Item>
+                          <Form.Item label="允许的特殊符号">
+                            <Input
+                              value={draftGenericParams.allowSpecialChars}
+                              onChange={(e) =>
+                                setDraftGenericParams((prev) => ({
+                                  ...prev,
+                                  allowSpecialChars: e.target.value,
+                                }))
+                              }
+                              placeholder="留空=不允许特殊符号；如 _-.@ 表示只允许这些符号"
+                              allowClear
                             />
                           </Form.Item>
                           <Form.Item label="最小长度（空=不限）">

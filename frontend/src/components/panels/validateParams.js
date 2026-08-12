@@ -1,11 +1,12 @@
 // v1.1.4 续轮 T71：校验规则参数共享模块。
 // 提供 Generic 参数默认值/构造/校验提示文案，供 RulesPanel + ValidatePanel 共用。
+// T77：allowSpecial: bool → allowSpecialChars: string（自定义特殊字符白名单）。
 
 // Generic 校验参数空对象（与后端 ExtractParams::Generic 对齐，camelCase）。
 export const EMPTY_GENERIC_PARAMS = {
   allowDigits: true,
   allowLetters: true,
-  allowSpecial: false,
+  allowSpecialChars: "",
   minLen: null,
   maxLen: null,
 };
@@ -16,7 +17,8 @@ export function normalizeGenericParams(p) {
   return {
     allowDigits: p.allowDigits ?? true,
     allowLetters: p.allowLetters ?? true,
-    allowSpecial: p.allowSpecial ?? false,
+    allowSpecialChars:
+      typeof p.allowSpecialChars === "string" ? p.allowSpecialChars : "",
     minLen: p.minLen ?? null,
     maxLen: p.maxLen ?? null,
   };
@@ -28,7 +30,8 @@ export function buildGenericParamsForRun(p) {
     validator: "generic",
     allowDigits: !!p.allowDigits,
     allowLetters: !!p.allowLetters,
-    allowSpecial: !!p.allowSpecial,
+    allowSpecialChars:
+      typeof p.allowSpecialChars === "string" ? p.allowSpecialChars : "",
     minLen: p.minLen ?? null,
     maxLen: p.maxLen ?? null,
   };
@@ -36,7 +39,8 @@ export function buildGenericParamsForRun(p) {
 
 // 各 validate 规则的提示文案（RulesPanel 选中时显示）。
 export const VALIDATE_HINTS = {
-  "generic-validate": "通用校验：勾选允许的字符类 + 设置长度限制",
+  "generic-validate":
+    "通用校验：勾选允许的字符类 + 填写允许的特殊符号白名单 + 设置长度限制",
   "username-validate": "用户名须为纯字母数字（a-zA-Z0-9）",
   "sex-validate": "性别须为「男」或「女」",
   "birth-validate": "出生日期：接受 20031223 / 2003-12-23 等格式，自动清理分隔符",

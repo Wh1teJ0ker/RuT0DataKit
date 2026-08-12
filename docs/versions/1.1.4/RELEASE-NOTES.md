@@ -16,7 +16,7 @@ v1.1.4 重做校验模块为**统一校验页面**：用户可动态添加任意
 
 **后端（T70）**：
 
-- `ExtractParams` 新增 `Generic` 变体（`allow_digits` / `allow_letters` / `allow_special` + `min_len` / `max_len`），新增 `generic-validate` 内置规则（`with_defaults()` 16 → 17 条）
+- `ExtractParams` 新增 `Generic` 变体（`allow_digits` / `allow_letters` / `allow_special_chars: String`（T77：自定义特殊字符白名单）+ `min_len` / `max_len`），新增 `generic-validate` 内置规则（`with_defaults()` 16 → 17 条）
 - 新增 `is_valid_generic` 函数式校验器（字符类白名单 + 长度范围）；`is_valid_birth` 改为先 `clean_birth` 清理分隔符（`-` / `/` / `.` / 空格）再校验 8 位有效日期；`is_valid_address` 放宽为结构化校验（中文 ≥ 2 + 地址关键词）
 - `validate_extracted` 抽取为 `validate_extracted_with_params(params, value)`（不依赖 Rule，便于覆盖参数）；`MultiRuleValidation` 新增 `params_override` 字段（前端可下发参数覆盖 DB 默认值，`#[serde(default)]` 向后兼容）
 - 跨字段 birth 比对（`validate_rows_to_two_sheets_inner` + `validate_multi_rules_to_two_sheets_inner`）改用 `clean_birth` 归一化，支持 `1949-12-31` 等分隔符格式

@@ -226,17 +226,21 @@ pub enum ExtractParams {
     /// v1.1.4 T67 新增；T70 续轮放宽为结构化校验（原严格正则号1-1500+
     /// 室101-999 已废弃）。用于 `address-validate` 函数式校验规则。
     Address,
-    /// 通用校验：字符类白名单 + 长度范围（v1.1.4 续轮 T70 新增）。
+    /// 通用校验：字符类白名单 + 长度范围（v1.1.4 续轮 T70 新增；T77 改为
+    /// 自定义特殊字符白名单）。
     ///
-    /// `allow_digits` / `allow_letters` / `allow_special` 至少一个为 true
-    /// （全 false 直接判否）。`min_len` / `max_len` 为 `None` 时不限。
+    /// `allow_digits` / `allow_letters` 为布尔开关；`allow_special_chars`
+    /// 是用户自由填写的特殊字符白名单（空串 = 不允许任何特殊字符；
+    /// 非空如 `"_-.@"` = 仅允许这些字符）。三个字符类至少有一个非空/为 true
+    /// （全 false / 全空直接判否）。`min_len` / `max_len` 为 `None` 时不限。
     /// 用于 `generic-validate` 函数式校验规则，前端可发送 `params_override`
     /// 覆盖 DB 默认值。
     #[serde(rename = "generic", rename_all = "camelCase")]
     Generic {
         allow_digits: bool,
         allow_letters: bool,
-        allow_special: bool,
+        #[serde(default)]
+        allow_special_chars: String,
         min_len: Option<usize>,
         max_len: Option<usize>,
     },
@@ -855,7 +859,7 @@ impl RuleRegistry {
     /// 走 `validate_extracted` 的 Generic 分支 → `is_valid_generic`
     /// （字符类白名单 + 长度范围）。默认允许数字+字母，不限长度。
     /// 前端可发送 `params_override` 覆盖 DB 默认值（如临时加 `min_len` /
-    /// `max_len` 或 `allow_special=true`）。
+    /// `max_len` 或非空 `allow_special_chars`）。
     pub fn generic_validate_rule() -> Rule {
         Rule {
             id: "generic-validate".into(),
@@ -865,12 +869,13 @@ impl RuleRegistry {
             pattern: None,
             replacement: None,
             enabled: true,
-            description: "通用校验：可选字符类（数字/字母/特殊符号）+ 长度限制".into(),
+            description: "通用校验：可选字符类（数字/字母）+ 自定义特殊符号白名单 + 长度限制"
+                .into(),
             template: None,
             params: Some(ExtractParams::Generic {
                 allow_digits: true,
                 allow_letters: true,
-                allow_special: false,
+                allow_special_chars: String::new(),
                 min_len: None,
                 max_len: None,
             }),
@@ -1092,7 +1097,7 @@ mod tests {
             ExtractParams::Generic {
                 allow_digits: true,
                 allow_letters: true,
-                allow_special: false,
+                allow_special_chars: "_-.@".into(),
                 min_len: Some(3),
                 max_len: None,
             },
@@ -1134,10 +1139,11 @@ mod tests {
             .unwrap()
             .contains("\"validator\":\"address\""));
         // v1.1.4 续轮 T70：Generic 变体 camelCase 标签 + 字段
+        // T77：allow_special: bool → allow_special_chars: String（自定义白名单）
         let generic_json = serde_json::to_string(&ExtractParams::Generic {
             allow_digits: true,
             allow_letters: true,
-            allow_special: false,
+            allow_special_chars: "_-.@".into(),
             min_len: Some(3),
             max_len: None,
         })
@@ -1145,7 +1151,7 @@ mod tests {
         assert!(generic_json.contains("\"validator\":\"generic\""));
         assert!(generic_json.contains("\"allowDigits\":true"));
         assert!(generic_json.contains("\"allowLetters\":true"));
-        assert!(generic_json.contains("\"allowSpecial\":false"));
+        assert!(generic_json.contains("\"allowSpecialChars\":\"_-.@\""));
         assert!(generic_json.contains("\"minLen\":3"));
         assert!(generic_json.contains("\"maxLen\":null"));
     }
@@ -1166,13 +1172,16 @@ mod tests {
             ExtractParams::Generic {
                 allow_digits,
                 allow_letters,
-                allow_special,
+                allow_special_chars,
                 min_len,
                 max_len,
             } => {
                 assert!(*allow_digits, "default allow_digits = true");
                 assert!(*allow_letters, "default allow_letters = true");
-                assert!(!*allow_special, "default allow_special = false");
+                assert!(
+                    allow_special_chars.is_empty(),
+                    "default allow_special_chars = empty"
+                );
                 assert_eq!(*min_len, None, "default min_len = None");
                 assert_eq!(*max_len, None, "default max_len = None");
             }
