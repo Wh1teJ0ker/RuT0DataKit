@@ -1,7 +1,9 @@
 # RuT0DataKit v1.1.4
 
 > Git tag：`v1.1.4`（已推送）
-> 状态：qa_passed + branch_cleanup + released（首轮 + R2 + R3 + R4 续轮 Release QA 增量审计通过；分支整合完成，仅保留 `main` + `release/v0.8.0`；GitHub Release 已发布）
+> 状态：release_complete（首轮 + R2 + R3 + R4 续轮 Release QA 增量审计通过；分支整合完成，仅保留 `main` + `release/v0.8.0`；GitHub Release 已发布，14 个产物附签名）
+> GitHub Release：<https://github.com/Wh1teJ0ker/RuT0DataKit/releases/tag/v1.1.4>
+> 发布日期：2026-08-12
 > 前置：v1.1.3 已发布 tag `v1.1.3`
 
 ## 概要
