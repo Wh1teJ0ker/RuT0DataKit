@@ -417,6 +417,7 @@ fn normalize_gender(s: &str) -> Option<char> {
 /// 2. 从 DB 取所有规则（`get_rule`），预编译各规则 `pattern` 正则（宽松召回）
 /// 3. 逐行 → 逐规则 `find_iter` 提取候选 → 对每个候选调 `validate_extracted`
 ///    → 收集 `(源行号, 类型标签, 提取值, 有效, 说明)`
+///    （T78：phone-extract 规则 + `phone_prefixes` 非空 → 用运行时白名单覆盖）
 /// 4. （T55c）若任一规则 `params == IdCard` 且指定 `gender_col_idx`：
 ///    读性别列 → 构建行号→性别值映射 → 对有效 idcard 候选比对推断性别
 ///    与性别列值；矛盾则 `valid=false` + `note` 标注不一致
@@ -433,6 +434,7 @@ pub fn extract_validate_to_new_sheet_inner(
     rule_ids: &[String],
     session_id: i64,
     gender_col_idx: Option<u32>,
+    phone_prefixes: &[String],
 ) -> Result<(ParseResult, Vec<ExtractValidateRow>), String> {
     if rule_ids.is_empty() {
         return Err("请至少选择一条提取规则".into());
@@ -500,9 +502,19 @@ pub fn extract_validate_to_new_sheet_inner(
         let mut row_hit = false;
         for (rule, re, label) in &compiled {
             let is_idcard = matches!(rule.params.as_ref(), Some(ExtractParams::IdCard));
+            // T78：phone-extract 规则 + 运行时 phone_prefixes 非空 → 用运行时
+            // 白名单覆盖 DB rule.params 的 allowed_prefixes。
+            let is_phone_extract = rule.id == "phone-extract";
             for m in re.find_iter(input) {
                 let candidate = m.as_str();
-                let (mut valid, mut note) = validate_extracted(rule, candidate);
+                let (mut valid, mut note) = if is_phone_extract && !phone_prefixes.is_empty() {
+                    let params_override = ExtractParams::PhonePrefix {
+                        allowed_prefixes: phone_prefixes.to_vec(),
+                    };
+                    validate_extracted_with_params(&params_override, candidate)
+                } else {
+                    validate_extracted(rule, candidate)
+                };
                 // T55c：身份证性别联合校验（仅当指定性别列 + 候选本身有效 + 可推断性别）
                 if is_idcard && valid {
                     if let Some(inferred) = idcard_gender(candidate) {
@@ -615,6 +627,10 @@ pub fn extract_validate_to_new_sheet_inner(
 /// `gender_col`（T55c）：可选性别列名，仅当选中的规则含 `idcard-extract` 时使用。
 /// 前端在提取时从当前 sheet headers 中选择；若指定，对有效 idcard 候选比对第 17 位
 /// 推断性别与该列值，矛盾 → `valid=false`（不写入新 Tab）。非 idcard 规则不受影响。
+///
+/// `phone_prefixes`（T78）：手机号前缀白名单，仅当选中的规则含 `phone-extract`
+/// 时使用。非空 → 覆盖 DB 规则 params 的 allowed_prefixes（运行时临时覆盖，不
+/// 持久化）；空 → 回落 DB 规则 params。
 #[tauri::command]
 pub fn extract_validate_to_new_sheet(
     sheet_id: i64,
@@ -622,6 +638,7 @@ pub fn extract_validate_to_new_sheet(
     rule_ids: Vec<String>,
     session_id: i64,
     gender_col: Option<String>,
+    phone_prefixes: Vec<String>,
     db: tauri::State<'_, DbManager>,
 ) -> Result<ParseResult, String> {
     if rule_ids.is_empty() {
@@ -643,6 +660,7 @@ pub fn extract_validate_to_new_sheet(
         &rule_ids,
         session_id,
         gender_col_idx,
+        &phone_prefixes,
     )?;
     Ok(parse_result)
 }
@@ -1892,6 +1910,7 @@ mod tests {
             &["phone-extract".to_string()],
             session_id,
             None,
+            &[],
         )
         .unwrap();
 
@@ -1923,6 +1942,36 @@ mod tests {
     }
 
     #[test]
+    fn extract_validate_phone_with_prefix_filter() {
+        // T78：phone-extract 运行时前缀白名单覆盖。DB 规则 params.allowed_prefixes
+        // 为空（默认通过），运行时传 ["134"] → 仅 134 开头候选有效，其余判无效。
+        let (_dir, db) = setup_db();
+        db.seed_builtin_rules().unwrap();
+        let values = ["13412345678", "15987654321"];
+        let (session_id, sheet_id) = setup_extract_sheet(&db, &values);
+
+        let (parse_result, rows) = extract_validate_to_new_sheet_inner(
+            &db,
+            sheet_id,
+            "raw",
+            &["phone-extract".to_string()],
+            session_id,
+            None,
+            &["134".to_string()],
+        )
+        .unwrap();
+
+        // 2 个候选都被正则召回，但只有 134 开头通过前缀白名单。
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].valid);
+        assert_eq!(rows[0].value, "13412345678");
+        assert!(!rows[1].valid);
+        assert_eq!(rows[1].value, "15987654321");
+        // 新 Tab 只写有效候选，row_count = 1。
+        assert_eq!(parse_result.row_count, 1);
+    }
+
+    #[test]
     fn extract_validate_bankcard_luhn_to_new_sheet() {
         // 银行卡：6222021234567890128 过 Luhn；6222021234567890124 不过。
         // 两者均为 19 位首位非 0，正则 `\b[1-9]\d{12,18}\b` 召回。
@@ -1938,6 +1987,7 @@ mod tests {
             &["bankcard-extract".to_string()],
             session_id,
             None,
+            &[],
         )
         .unwrap();
 
@@ -1970,6 +2020,7 @@ mod tests {
             &["ip4-extract".to_string()],
             session_id,
             None,
+            &[],
         )
         .unwrap();
 
@@ -1999,6 +2050,7 @@ mod tests {
             &["ip6-extract".to_string()],
             session_id,
             None,
+            &[],
         )
         .unwrap();
 
@@ -2023,6 +2075,7 @@ mod tests {
             &["nonexistent-rule".to_string()],
             session_id,
             None,
+            &[],
         )
         .unwrap_err();
         assert!(err.contains("不存在"));
@@ -2040,6 +2093,7 @@ mod tests {
             &["ip4-extract".to_string()],
             session_id,
             None,
+            &[],
         )
         .unwrap_err();
         assert!(err.contains("不存在"));
@@ -2051,8 +2105,9 @@ mod tests {
         let (_dir, db) = setup_db();
         db.seed_builtin_rules().unwrap();
         let (session_id, sheet_id) = setup_extract_sheet(&db, &["192.168.1.1"]);
-        let err = extract_validate_to_new_sheet_inner(&db, sheet_id, "raw", &[], session_id, None)
-            .unwrap_err();
+        let err =
+            extract_validate_to_new_sheet_inner(&db, sheet_id, "raw", &[], session_id, None, &[])
+                .unwrap_err();
         assert!(err.contains("至少选择一条"));
     }
 
@@ -2080,6 +2135,7 @@ mod tests {
             &["idcard-extract".to_string()],
             session_id,
             None, // 无性别列
+            &[],
         )
         .unwrap();
 
@@ -2123,6 +2179,7 @@ mod tests {
             &["idcard-extract".to_string()],
             session_id,
             Some(1), // gender 列 col_idx=1
+            &[],
         )
         .unwrap();
 
@@ -2172,6 +2229,7 @@ mod tests {
             ],
             session_id,
             None,
+            &[],
         )
         .unwrap();
 

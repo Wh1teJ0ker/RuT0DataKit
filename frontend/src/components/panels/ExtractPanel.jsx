@@ -54,10 +54,12 @@ export default function ExtractPanel() {
 
   // T55c：当前选中的规则里是否含 idcard-extract（用于显示性别列下拉）。
   // T56：改为 .some() 批量判定（去掉 length === 1 限制）。
+  // T78：判定是否含 phone-extract（用于显示前缀白名单输入）。
   const selectedRuleIds = Form.useWatch("ruleIds", form) || [];
   const isIdcardExtract = selectedRuleIds.some(
     (id) => ruleById[id]?.params?.validator === "idcard"
   );
+  const isPhoneExtract = selectedRuleIds.some((id) => id === "phone-extract");
 
   const handleRun = async () => {
     if (!sheet) {
@@ -150,6 +152,12 @@ export default function ExtractPanel() {
     const genderCol = isIdcardExtract
       ? form.getFieldValue("genderCol") || null
       : null;
+    // T78：手机号前缀白名单仅在含 phone-extract 时使用。只保留三位纯数字。
+    const phonePrefixes = isPhoneExtract
+      ? (form.getFieldValue("phonePrefixes") || []).filter((p) =>
+          /^\d{3}$/.test(String(p).trim())
+        )
+      : [];
     setExtracting(true);
     try {
       const res = await extractValidateToNewSheet(
@@ -157,7 +165,8 @@ export default function ExtractPanel() {
         column,
         ruleIds,
         sheet.sessionId,
-        genderCol
+        genderCol,
+        phonePrefixes
       );
       addSheetFromParse({
         newSheetId: res.newSheetId,
@@ -217,6 +226,20 @@ export default function ExtractPanel() {
               allowClear
               showSearch
               optionFilterProp="label"
+            />
+          </Form.Item>
+        )}
+        {isPhoneExtract && (
+          <Form.Item
+            label="手机号前缀白名单"
+            name="phonePrefixes"
+            extra="可选：填三位数字前缀（如 134 / 159），留空则不限制前缀，仅对 phone-extract 规则生效"
+          >
+            <Select
+              mode="tags"
+              placeholder="如 134、159（回车添加）"
+              tokenSeparators={[",", "，"]}
+              maxTagCount={5}
             />
           </Form.Item>
         )}

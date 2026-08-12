@@ -124,11 +124,15 @@ export default function ValidatePanel() {
         }
         return item;
       });
-    // 手机号前缀白名单：只保留三位纯数字（"abc"/"1a3" 会被剔掉），应用于
-    // phone-validate 规则（全局，不是每行单独配）。
-    const phonePrefixes = (values.phonePrefixes || []).filter((p) =>
-      /^\d{3}$/.test(String(p).trim()),
-    );
+    // T78：手机号前缀白名单改为每行内嵌（选中 phone-validate 时展开）。
+    // 多行都选 phone-validate 时合并所有行前缀（去重），只保留三位纯数字。
+    const phonePrefixes = Array.from(
+      new Set(
+        ruleRows
+          .filter((r) => r?.ruleId === "phone-validate")
+          .flatMap((r) => r?.phonePrefixes || [])
+      )
+    ).filter((p) => /^\d{3}$/.test(String(p).trim()));
     setLoading(true);
     try {
       const res = await validateMultiRulesToTwoSheets(
@@ -350,6 +354,34 @@ export default function ValidatePanel() {
                       ) : null
                     }
                   </Form.Item>
+                  {/* T78：phone-validate 行级前缀白名单配置。
+                      用 shouldUpdate 监听该行 ruleId 变化，仅 phone-validate 时展开。
+                      字段名 [name, "phonePrefixes"] 与上方 handleValidate 收集逻辑对齐。 */}
+                  <Form.Item
+                    shouldUpdate={(prev, cur) =>
+                      prev.rules?.[name]?.ruleId !== cur.rules?.[name]?.ruleId
+                    }
+                    noStyle
+                  >
+                    {({ getFieldValue }) =>
+                      getFieldValue(["rules", name, "ruleId"]) ===
+                      "phone-validate" ? (
+                        <Form.Item
+                          name={[name, "phonePrefixes"]}
+                          label="手机号前缀白名单"
+                          style={{ marginTop: 4, marginBottom: 0 }}
+                          extra="可选：填三位数字前缀（如 134 / 159），留空则不限制前缀"
+                        >
+                          <Select
+                            mode="tags"
+                            placeholder="如 134、159（回车添加）"
+                            tokenSeparators={[",", "，"]}
+                            maxTagCount={5}
+                          />
+                        </Form.Item>
+                      ) : null
+                    }
+                  </Form.Item>
                 </div>
               ))}
               <Button
@@ -363,18 +395,6 @@ export default function ValidatePanel() {
             </>
           )}
         </Form.List>
-        <Form.Item
-          label="手机号前缀白名单"
-          name="phonePrefixes"
-          extra="可选：填三位数字前缀（如 134 / 159），应用于手机号校验规则"
-        >
-          <Select
-            mode="tags"
-            placeholder="如 134、159（回车添加）"
-            tokenSeparators={[",", "，"]}
-            maxTagCount={3}
-          />
-        </Form.Item>
         <Form.Item>
           <Space direction="vertical" style={{ width: "100%" }}>
             <Button block type="primary" loading={loading} onClick={handleValidate}>
@@ -389,7 +409,7 @@ export default function ValidatePanel() {
       <Text type="secondary" style={{ fontSize: 12 }}>
         添加多条「列 + 校验规则」组合，一个按钮校验。通过/失败的行分别写入两个新
         Tab（保留原列，不新增列）。身份证规则可勾选跨字段比对性别/出生日期。
-        通用校验规则可在行内设置字符类与长度限制。
+        通用校验规则可在行内设置字符类与长度限制。手机号规则可在行内设置前缀白名单。
       </Text>
     </div>
   );
