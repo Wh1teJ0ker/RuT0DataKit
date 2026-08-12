@@ -1,19 +1,19 @@
 # v1.1.4 QA 审计报告
 
 > 版本：1.1.4
-> 审计类型：Release 前全局审计（v1.1.3 → v1.1.4 校验模块统一 — 统一校验页面重设计）+ 续轮增量审计（T70~T72）
-> 审计依据：[`docs/versions/1.1.4/更新日志.md`](../../versions/1.1.4/更新日志.md) + [`docs/04-版本标准.md`](../../04-版本标准.md) §2 里程碑索引 + [`handoff/TASK-BOARD.md`](../../../handoff/TASK-BOARD.md) T67~T72 任务定义 + E79~E100 验收项
-> 审计轮次：R1（2026-08-07 主会话基于实际命令输出 + 代码核查，覆盖 T67~T69）；R2（2026-08-11 主会话增量审计，覆盖续轮 T70~T72）；R3（2026-08-11 主会话增量审计，覆盖 R3 续轮 T73~T76）
-> 结论：`qa_passed` — R1 覆盖 T67~T69（292 passed / 3 ignored / 0 failed + 3082 modules + 4 处版本一致 + DB schema 不变 + SQL 全参数绑定 + 凭据无新增）；R2 增量审计覆盖 T70~T72（302 passed / 3 ignored / 0 failed + 3083 modules + 4 处版本一致 + DB schema 不变 + SQL 全参数绑定 + params_override serde(default) 向后兼容 + validate_extracted wrapper 不变 + 4 处版本一致 1.1.4）；**R3 增量审计覆盖 T73~T76（315 passed / 3 ignored / 0 failed + 3083 modules + 4 处版本一致 1.1.4 + DB schema 不变（SCHEMA_VERSION=5）+ hash_column 复用 base64_transform_column_cells 闭包式列变换 + DbReader quote_identifier 表名转义 + sqlite_master 受信来源 + 新增 4 crate 依赖 md-5/sha1/sha2/hex 均为 Rust 生态标准 crate 无安全顾虑）**。**安全声明**：本轮 R3 未重新运行 Mimosa 完整深度扫描（v1.1.3 R1+R2 两轮 Mimosa 深度扫描均 0 findings / 487 包 0 漏洞，v1.1.4 R3 改动为 codec + datasource 功能性增强（hash_column MD5/SHA1/SHA256 列式哈希 + DbReader 外部 SQLite 文件解析），新增 4 个 crate 依赖均为 Rust 生态标准 hash 编解码 crate（md-5/sha1/sha2/hex，RustCrypto 维护），未改 DB schema、未改 CSP/网络/fs 权限，沿用 v1.1.3 静态分析结论作为基线）。静态分析非运行时验证，不宣称项目安全，但无已识别 finding 阻碍发布。
+> 审计类型：Release 前全局审计（v1.1.3 → v1.1.4 校验模块统一 — 统一校验页面重设计）+ 续轮增量审计（T70~T72）+ R3 续轮增量审计（T73~T76）+ R4 续轮增量审计（T77~T79）
+> 审计依据：[`docs/versions/1.1.4/更新日志.md`](../../versions/1.1.4/更新日志.md) + [`docs/04-版本标准.md`](../../04-版本标准.md) §2 里程碑索引 + [`handoff/TASK-BOARD.md`](../../../handoff/TASK-BOARD.md) T67~T79 任务定义 + E79~E118 验收项
+> 审计轮次：R1（2026-08-07 主会话基于实际命令输出 + 代码核查，覆盖 T67~T69）；R2（2026-08-11 主会话增量审计，覆盖续轮 T70~T72）；R3（2026-08-11 主会话增量审计，覆盖 R3 续轮 T73~T76）；R4（2026-08-11 主会话增量审计，覆盖 R4 续轮 T77~T79）
+> 结论：`qa_passed` — R1 覆盖 T67~T69（292 passed / 3 ignored / 0 failed + 3082 modules + 4 处版本一致 + DB schema 不变 + SQL 全参数绑定 + 凭据无新增）；R2 增量审计覆盖 T70~T72（302 passed / 3 ignored / 0 failed + 3083 modules + 4 处版本一致 + DB schema 不变 + SQL 全参数绑定 + params_override serde(default) 向后兼容 + validate_extracted wrapper 不变 + 4 处版本一致 1.1.4）；**R3 增量审计覆盖 T73~T76（315 passed / 3 ignored / 0 failed + 3083 modules + 4 处版本一致 1.1.4 + DB schema 不变（SCHEMA_VERSION=5）+ hash_column 复用 base64_transform_column_cells 闭包式列变换 + DbReader quote_identifier 表名转义 + sqlite_master 受信来源 + 新增 4 crate 依赖 md-5/sha1/sha2/hex 均为 Rust 生态标准 crate 无安全顾虑）**。**R4 增量审计覆盖 T77~T79（317 passed / 3 ignored / 0 failed + 3083 modules + 4 处版本一致 1.1.4 + DB schema 不变（SCHEMA_VERSION=5）+ T77 generic-validate allow_special_chars: String 白名单语义（allow_special: bool → allow_special_chars: String）+ 前端 Checkbox.Group 改字符串 Input + T78 phone_prefixes 从全局白名单改为每行内嵌 phone-validate params + extract 新增 phone_prefixes 运行时参数覆盖 + T79 list_rules ORDER BY id ASC → ORDER BY name ASC 排序稳定 + 新增 list_rules_sorted_by_name 测试 + extract_validate_phone_with_prefix_filter 测试）**。**安全声明**：本轮 R4 未重新运行 Mimosa 完整深度扫描（v1.1.3 R1+R2 两轮 Mimosa 深度扫描均 0 findings / 487 包 0 漏洞，v1.1.4 R4 改动为校验模块 UX 统一化 + 排序稳定性增强（allow_special_chars 白名单语义 / phone_prefixes 行级内嵌 / list_rules name 排序），未改 DB schema、未改 CSP/网络/fs 权限、未引入新依赖 crate，沿用 v1.1.3 静态分析结论作为基线）。静态分析非运行时验证，不宣称项目安全，但无已识别 finding 阻碍发布。
 
 ## 1. 审计维度与结论
 
 | 维度 | 结论 | 说明 |
 |---|---|---|
-| 需求覆盖 | `pass` | T67~T69 共 3 个任务 `verified_complete`；v1.1.4 版本主题「校验模块统一 — 重做为统一校验页面（自由选多规则 + 一按钮 + 双 Tab 输出）」逐一对照实现，见 §2 |
-| 端到端流程 | `pass` | E1（cargo fmt/clippy/test 全绿，src-tauri 129 + core 152 + doctest 11 = 292 passed）+ E2（pnpm build，3082 modules）+ E3（版本号 4 处一致 1.1.4）+ E79~E84（T67 ExtractParams +4 + 6 validate 规则 / T68 validate_multi_rules 命令 6 集成测试 / T69 统一校验面板构建）全绿；T69 前端 GUI 交互属构建级验收，pnpm build pass，不阻塞发布 |
-| 构建与测试 | `pass` | `cargo fmt --all -- --check` / `cargo clippy --all-targets --all-features -- -D warnings` / `cargo test --all`（src-tauri 129 + core 152 + Doc-tests 11 = 292 passed / 3 ignored / 0 failed）+ `pnpm --prefix frontend build`（3082 modules，2.62s）全绿 |
-| 代码质量 | `pass` | scope_deviation 审查：T67~T69 均无越界改动；T67 `ExtractParams` +4 变体复用既有 `validate_extracted` 函数式分发（单一职责）；T68 `validate_multi_rules_to_two_sheets` 复用 `TwoSheetResult`/`RowInvalidReason` 既有结构 + `CrossFieldConfig`/`MultiRuleValidation` 独立结构；T69 `Form.List` + `shouldUpdate` 条件渲染（低耦合）；db/mod.rs 4 处 seed 计数断言 10→16 属「测试暴露问题」例外（seed 逻辑/SQL/SCHEMA_VERSION 未改）；docs/02 技术设计文档同步 T68 IPC 契约（scope_deviation，justified） |
+| 需求覆盖 | `pass` | T67~T79 共 13 个任务 `verified_complete`；v1.1.4 版本主题「校验模块统一 — 重做为统一校验页面（自由选多规则 + 一按钮 + 双 Tab 输出）」逐一对照实现，见 §2 |
+| 端到端流程 | `pass` | E1（cargo fmt/clippy/test 全绿，src-tauri 137 + core 165 + doctest 15 = 317 passed）+ E2（pnpm build，3083 modules）+ E3（版本号 4 处一致 1.1.4）+ E79~E84（T67 ExtractParams +4 + 6 validate 规则 / T68 validate_multi_rules 命令 6 集成测试 / T69 统一校验面板构建）+ E85~E100（T70~T72 续轮）+ E101~E110（T73~T76 R3 续轮）+ E111~E118（T77~T79 R4 续轮）全绿；T69 前端 GUI 交互属构建级验收，pnpm build pass，不阻塞发布 |
+| 构建与测试 | `pass` | `cargo fmt --all -- --check` / `cargo clippy --all-targets --all-features -- -D warnings` / `cargo test --all`（src-tauri 137 + core 165 + Doc-tests 15 = 317 passed / 3 ignored / 0 failed）+ `pnpm --prefix frontend build`（3083 modules，2.44s）全绿 |
+| 代码质量 | `pass` | scope_deviation 审查：T67~T79 均无越界改动；T67 `ExtractParams` +4 变体复用既有 `validate_extracted` 函数式分发（单一职责）；T68 `validate_multi_rules_to_two_sheets` 复用 `TwoSheetResult`/`RowInvalidReason` 既有结构 + `CrossFieldConfig`/`MultiRuleValidation` 独立结构；T69 `Form.List` + `shouldUpdate` 条件渲染（低耦合）；T77 generic-validate `allow_special_chars: String` 白名单语义（复用既有 is_valid_generic 函数签名 + serde(default) 向后兼容）；T78 phone_prefixes 行级内嵌 + 运行时参数覆盖（params_override 既有机制复用）；T79 `list_rules` ORDER BY name ASC + 测试覆盖；db/mod.rs 4 处 seed 计数断言 10→16 属「测试暴露问题」例外（seed 逻辑/SQL/SCHEMA_VERSION 未改）；docs/02 技术设计文档同步 T68 IPC 契约（scope_deviation，justified） |
 | 安全与隐私 | `pass` | 全部 SQL 用 `?N` + `params![]` 绑定（`src-tauri/src/db/mod.rs` 51 处 + `commands/processor.rs` 2 处，grep 无 `format!` 拼接 SQL）；凭据无新增（沿用 v1.1.0 updater 密钥配置，从环境变量读取）；全本地处理无网络调用；`is_valid_idcard` 仅校验长度 + 校验码（不查行政区划表）；v1.1.4 未改 CSP/fs 权限/capabilities；**Mimosa**：未重新运行，沿用 v1.1.3 R1+R2 双轮 0 findings / 487 包 0 漏洞基线（v1.1.4 无新依赖、无 schema 变更、无权限变更） |
 | 数据与迁移 | `pass` | `SCHEMA_VERSION=5`（v1.1.4 不变，T67 复用既有 `rules.params TEXT` 列存 4 新变体 JSON）；迁移链 v2→v3→v4→v5 / v3→v4→v5 / v4→v5 全覆盖，各 `migrate_vN_to_vM` 幂等；老用户升级自动补列 + `seed_builtin_rules` upsert-missing 补 6 条新 validate 规则（已存在 10 条不动）；`cleanup_deprecated_rules` 清理 6 个遗留 id（参数绑定 DELETE，幂等） |
 | 依赖与配置 | `pass` | 无新增 crate 依赖（`regex`/`serde`/`rusqlite`/`calamine`/`csv`/`tempfile`/`base64` 均已有）；`serde_json` 启用 `preserve_order` feature（v1.1.4 工作区配置，属前端 JSON 列顺序保留的既有能力，非新增依赖）；版本号 4 处一致 1.1.4（Cargo.toml workspace + tauri.conf.json + frontend/package.json + constants.js）；Tauri capabilities/default.json 无变更（自定义命令无需注册权限） |
@@ -446,3 +446,123 @@ R3 为 v1.1.4 第二次续轮（T73/T74/T75/T76）的增量审计，沿用 R1/R2
 | `docs/versions/1.1.4/RELEASE-NOTES.md` | T76 状态更新为 qa_passed（首轮 + 续轮 R2 + R3 续轮）+ R3 功能段 + 验收引用 + DbReader 安全说明 | 人工核对 |
 | `handoff/TASK-BOARD.md` | T76 T73/T74/T75/T76 状态全 verified_complete + 状态行更新为 qa_passed（R3 续轮） | 人工核对 |
 | `docs/qa/versions/1.1.4/QA-审计报告.md` | T76 本报告 §16 R3 续轮增量审计章节（8 维度）+ §17 R3 修复证据索引 + 结论 qa_passed（R3 续轮） | 本报告 |
+
+---
+
+## 18. R4 续轮增量审计（T77-T79，2026-08-11）
+
+R4 为 v1.1.4 第三次续轮（T77/T78/T79）的增量审计，沿用 R1/R2/R3 的 8 维度结构，仅审计 R4 续轮增量改动（不复核 R1 已通过的 T67~T69、R2 已通过的 T70~T72、R3 已通过的 T73~T76）。R4 续轮 3 项需求：特殊符号白名单（generic-validate `allow_special: bool` → `allow_special_chars: String` 白名单语义，前端 Checkbox.Group 改字符串 Input）/ 手机号前缀 UX 统一（phone-validate 每行内嵌 phone_prefixes + phone-extract 运行时参数覆盖）/ `list_rules` 按 name 排序（`ORDER BY id ASC` → `ORDER BY name ASC`）。
+
+### 18.1 DAG 完整性
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| DAG 节点 | `pass` | T77（后端+前端 generic 白名单，depends_on=[]）/ T78（后端+前端 phone_prefixes 行级，depends_on=[]）/ T79（后端 list_rules 排序，depends_on=[]）三节点，无环、无孤立、无缺失前置 |
+| 任务状态 | `pass` | `handoff/TASK-BOARD.md` 三任务全 `verified_complete` + `review_passed`；T77/T78/T79 各自 commit 落地 |
+| HANDOFF 三件套 | `pass` | T77-HANDOFF.md / T78-HANDOFF.md / T79-HANDOFF.md 齐；T80-REPORT.md 本任务产出 |
+
+### 18.2 验收项覆盖（E111-E118）
+
+| 验收项 | 状态 | 证据 |
+|---|---|---|
+| E111（T77）generic-validate `allow_special_chars: String` 白名单语义 | `pass` | `crates/core/src/processor/rules.rs` `ExtractParams::Generic` 字段 `allow_special: bool` → `allow_special_chars: String`（`#[serde(default)]`，空串 = 无特殊字符白名单）；`crates/core/src/processor/func_validator.rs` `is_valid_generic` 改为白名单语义（字符在 `allow_special_chars` 集合内放行，否则按字符类判定）；serde camelCase roundtrip 测试覆盖；向后兼容（旧 JSON 无 `allowSpecialChars` → 默认空串 → 不放行特殊字符，与旧行为一致） |
+| E112（T77）前端 Checkbox.Group → 字符串 Input | `pass` | `frontend/src/components/panels/RulesPanel.jsx` + `ValidatePanel.jsx` generic-validate 行参数区 `Checkbox.Group charClasses` 改为字符串 `Input`（直接输入允许的特殊符号集合）；`validateParams.js` `normalizeGenericParams` + `buildGenericParamsForRun` 同步 `allowSpecialChars` 字符串语义；`pnpm build` 3083 modules pass |
+| E113（T77）向后兼容（旧 `allow_special: bool` 反序列化） | `pass` | `#[serde(default)] allow_special_chars: String`；旧 JSON `{allowSpecial: true}` → `allowSpecialChars` 缺省 = `""` → 不放行特殊字符；旧 JSON `{allowSpecial: false}` → 同样缺省 = `""` → 行为一致（白名单语义收紧，不放行任意特殊字符，需显式配置）；既有 valid 用例（纯数字 / 纯字母）不破坏 |
+| E114（T78）phone-validate 每行内嵌 phone_prefixes | `pass` | `crates/core/src/processor/rules.rs` `ExtractParams::Phone` 新增 `phone_prefixes: Vec<String>`（`#[serde(default)]`）；`src-tauri/src/commands/processor.rs` `validate_multi_rules_to_two_sheets_inner` phone-validate 分支取行内 `phone_prefixes`（回落空 Vec = 不限前缀）；`is_valid_phone` 接收 `prefixes: &[String]` 参数；前端 `RulesPanel.jsx` phone-validate 行 Select mode="tags" + `ValidatePanel.jsx` phone-validate 行参数区；DB seed `phone-validate` 规则 params 含 `phonePrefixes: []`（空 = 不限前缀，向后兼容） |
+| E115（T78）phone-extract 运行时参数覆盖 phone_prefixes | `pass` | `src-tauri/src/commands/processor.rs` `extract_validate_to_new_sheet_inner` + `validate_multi_rules_to_two_sheets_inner` 支持 `phone_prefixes` 运行时覆盖（params_override 优先 > rule.params 回落）；新增 `extract_validate_phone_with_prefix_filter` 测试覆盖 phone-extract + 前缀白名单过滤场景 |
+| E116（T78）前端 phone_prefixes UX 统一 | `pass` | `ValidatePanel.jsx` phone-validate 行展开 `Select mode="tags"` 三位纯数字前缀输入（与 v1.1.4 R1 既有 phonePrefixes 全局白名单 UX 一致，改为每行内嵌）；`ExtractPanel.jsx` phone-extract 行同步前缀输入；`tauri.js` JSDoc 同步 `phonePrefixes?: string[]`；`pnpm build` pass |
+| E117（T79）list_rules ORDER BY name ASC | `pass` | `src-tauri/src/db/mod.rs` `list_rules` SQL `ORDER BY id ASC` → `ORDER BY name ASC`（规则列表按 name 字母序稳定排序，前端 RulesPanel 显示顺序稳定）；新增 `list_rules_sorted_by_name` 测试断言多规则按 name ASC 排序 |
+| E118（T79）cargo fmt/clippy/test 全绿 + 版本号一致 | `pass` | R4 实测 `cargo fmt --all --check` exit 0 + `cargo clippy --all-targets --all-features -- -D warnings` exit 0 + `cargo test --all` 317 passed / 3 ignored / 0 failed（src-tauri 137 + core 165 + Doc-tests 15，较 R3 315 → R4 317，+2 测试覆盖 T79 list_rules_sorted_by_name + T78 extract_validate_phone_with_prefix_filter）+ grep 4 处版本号一致 1.1.4 |
+
+### 18.3 代码审查闭环
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| T77 review | `pass` | T77-HANDOFF 标 verified_complete；REVIEW review_passed 2026-08-11；scope_deviation 无越界（`allow_special_chars: String` 复用既有 `ExtractParams::Generic` 结构 + `is_valid_generic` 函数签名 + serde(default) 向后兼容；前端 Checkbox.Group → Input 属 UX 细化，不改 IPC 契约；不改 MaskPanel/ExtractPanel/state/App.jsx/capabilities） |
+| T78 review | `pass` | T78-HANDOFF 标 verified_complete；REVIEW review_passed 2026-08-11；scope_deviation 无越界（`phone_prefixes: Vec<String>` 复用既有 `ExtractParams::Phone` 结构 + serde(default) 向后兼容；`is_valid_phone` 接收 `prefixes` 参数属函数签名扩展（默认空切片 = 不限前缀，既有调用点不破坏）；运行时覆盖复用既有 `params_override` 机制；前端 RulesPanel/ValidatePanel/ExtractPanel 行级参数区扩展，不改全局 state；`tauri.js` JSDoc 追加） |
+| T79 review | `pass` | T79-HANDOFF 标 verified_complete；REVIEW review_passed 2026-08-11；scope_deviation 无越界（`list_rules` SQL `ORDER BY name ASC` 仅改排序字段，不改查询列或参数绑定；新增 `list_rules_sorted_by_name` 测试属测试覆盖增强；`quote_identifier` 不涉及（`list_rules` 查 `rules` 表，表名硬编码常量无注入）） |
+
+### 18.4 验证命令全绿
+
+| 命令 | 状态 | R4 实测结果 |
+|---|---|---|
+| `cargo fmt --all --check` | `pass` | exit 0（无格式差异，R1/R2/R3 基线保持） |
+| `cargo clippy --all-targets --all-features -- -D warnings` | `pass` | exit 0（core + src-tauri 全零警告） |
+| `cargo test --all` | `pass` | src-tauri lib 137 + core 165 + Doc-tests 15 = 317 passed / 3 ignored / 0 failed（较 R3 315 → R4 317，+2 测试覆盖 T79 list_rules_sorted_by_name + T78 extract_validate_phone_with_prefix_filter） |
+| `pnpm --prefix frontend build` | `pass` | 3083 modules transformed，✓ built in 2.44s（与 R2/R3 一致，T77/T78 改既有面板不新增模块文件）；chunk >500kB 为 antd 既有警告 |
+| 版本号 4 处一致 | `pass` | grep 确认 Cargo.toml workspace.package.version=1.1.4 + tauri.conf.json version=1.1.4 + frontend/package.json version=1.1.4 + frontend/src/constants.js APP_VERSION="v1.1.4" |
+
+### 18.5 文档同步
+
+| 文档 | 状态 | 证据 |
+|---|---|---|
+| `docs/versions/1.1.4/更新日志.md` | `pass` | 状态行更新为 qa_passed（首轮 + 续轮 R2 + R3 续轮 + R4 续轮）；任务表追加 T77/T78/T79 行（全 verified_complete）；新增「R4 续轮：特殊符号白名单 + 手机号前缀 UX 统一 + name 排序」章节（背景 + 3 项设计决策 + T77/T78/T79 改动 + E111-E118 验收项 + 不变项 + 安全约束） |
+| `docs/versions/1.1.4/RELEASE-NOTES.md` | `pass` | 状态更新为 qa_passed（首轮 + 续轮 R2 + R3 续轮 + R4 续轮）；R4 功能段已追加（特殊符号白名单 / 手机号前缀行级 / 规则按 name 排序） |
+| `docs/02-技术设计文档.md` | `pass` | 顶部版本覆盖说明段追加 v1.1.4 R4 增量标注（allow_special_chars 白名单语义 / phone_prefixes 行级内嵌 / list_rules ORDER BY name ASC）；§4.6 ExtractParams::Generic 字段签名同步（allow_special → allow_special_chars: String）+ ExtractParams::Phone 字段同步（phone_prefixes: Vec<String>） |
+| `handoff/TASK-BOARD.md` | `pass` | 状态更新为 qa_passed（R4 续轮）；T77/T78/T79 任务 status 全 verified_complete |
+| `docs/qa/versions/1.1.4/QA-审计报告.md` | `pass` | 本报告 §18 R4 续轮增量审计章节（8 维度）+ §19 R4 修复证据索引 + 结论 qa_passed（R4 续轮） |
+| `docs/04-版本标准.md` 里程碑表 | `pending` | v1.1.4 行保持 qa_passed（R4 续轮通过后仍保持；release_complete 待用户手工验证后另议，不自动 finalize） |
+
+### 18.6 安全与隐私
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| SQL 参数绑定 | `pass` | T77/T78/T79 未改既有 SQL 参数绑定模式；T79 `list_rules` SQL `ORDER BY name ASC` 仅改排序字段（`name` 为硬编码列名常量，无用户输入拼接）；T77/T78 改 `func_validator.rs` + `rules.rs` + `processor.rs` 校验逻辑 + 前端，无新 SQL；R1/R2/R3 基线 53 处 `params![]` 绑定 + 0 处 `format!` SQL 拼接保持 |
+| 凭据 | `pass` | R4 续轮无新增凭据；updater 密钥沿用 v1.1.0 配置（环境变量读取，源码无字面量） |
+| 全本地处理 | `pass` | 特殊符号白名单判定 / phone_prefixes 行级前缀过滤 / list_rules 排序全在本地，无网络调用；CSP/fs 权限/capabilities R4 未改 |
+| 身份证号隐私 | `pass` | R4 未改 `is_valid_idcard`（仍仅校验长度 + 校验码，不查行政区划表） |
+| Mimosa 深度扫描 | `info` | R4 未重新运行 Mimosa 完整深度扫描；沿用 v1.1.3 R1（scan-2026-08-10T16-40-17.470Z-31df73e0a37d）+ R2（scan-2026-08-10T21-49-17.114Z-3e0a1b2d600e）双轮 0 findings / 487 包 0 漏洞基线。v1.1.4 R4 改动为校验模块 UX 统一化 + 排序稳定性增强（allow_special_chars 白名单语义 / phone_prefixes 行级内嵌 / list_rules name 排序），未引入新依赖 crate、未改 DB schema、未改 CSP/网络/fs 权限，静态分析基线有效。静态分析非运行时验证，不宣称项目安全；建议后续版本重新运行完整 Mimosa 密封扫描覆盖 v1.1.4 全量增量代码 |
+
+### 18.7 向后兼容
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| `allow_special_chars: String` serde(default) | `pass` | `ExtractParams::Generic.allow_special_chars: String` 加 `#[serde(default)]`，旧前端 JSON 无 `allowSpecialChars` → 反序列化为 `""` → 不放行特殊字符（白名单语义收紧，需显式配置）；旧 `allowSpecial: bool` 字段已移除，但旧 JSON 无此字段 → 默认空串 → 行为一致；既有 valid 用例（纯数字 / 纯字母）不破坏 |
+| `phone_prefixes: Vec<String>` serde(default) | `pass` | `ExtractParams::Phone.phone_prefixes: Vec<String>` 加 `#[serde(default)]`，旧前端 JSON 无 `phonePrefixes` → 反序列化为空 Vec → 不限前缀（与 v1.1.4 R1 既有 phone-validate 行为一致）；DB seed `phone-validate` params 含 `phonePrefixes: []`（空 = 不限前缀）；`is_valid_phone` 接收 `prefixes: &[String]`，空切片 = 不限前缀 |
+| `list_rules` 排序变更 | `pass` | `ORDER BY id ASC` → `ORDER BY name ASC` 仅改排序字段，不改返回列或参数绑定；前端 RulesPanel 显示顺序变为按 name 字母序（稳定排序），不影响规则集本身或规则参数；既有调用点（RulesPanel / ValidatePanel listRules）行为兼容（仅显示顺序变化） |
+| `SCHEMA_VERSION` 不变 | `pass` | `SCHEMA_VERSION=5`（R4 不变）；`allow_special_chars` / `phone_prefixes` 复用既有 `rules.params TEXT` 列存 JSON；`with_defaults()` 规则集数量不变（17 条，R2 引入 generic-validate）；`seed_builtin_rules` upsert-missing 老用户升级自动补 |
+| 既有 IPC 命令保留 | `pass` | `validate_column` / `validate_rows_to_two_sheets` / `validate_multi_rules_to_two_sheets` / `extract_validate_to_new_sheet` / `list_rules` 命令签名不变；`list_rules` 仅排序字段变更；`is_valid_phone` 函数签名扩展（+`prefixes` 参数）但既有调用点传空切片 = 不限前缀 |
+| 前端路由不变 | `pass` | `App.jsx` 路由不变；RulesPanel / ValidatePanel / ExtractPanel 仅扩展既有面板内参数区，不改面板入口或全局 state |
+
+### 18.8 版本号一致性
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| Cargo.toml workspace.package.version | `pass` | 1.1.4（R4 grep 确认） |
+| src-tauri/tauri.conf.json version | `pass` | 1.1.4（R4 grep 确认） |
+| frontend/package.json version | `pass` | 1.1.4（R4 grep 确认） |
+| frontend/src/constants.js APP_VERSION | `pass` | "v1.1.4"（R4 grep 确认） |
+| 4 处一致 | `pass` | 全 1.1.4，无 1.1.3 残留，无 1.1.5 提前 |
+
+### 18.9 R4 续轮结论
+
+`qa_passed`（R4 续轮）— R4 增量审计覆盖 v1.1.4 R4 续轮全部交付（T77~T79）+ R1/R2/R3 基线回归。T77~T79 全部 `verified_complete` + `review_passed`（E111~E118 验收项全绿）。R4 续轮核心交付：
+
+1. **特殊符号白名单语义**（T77）—— `ExtractParams::Generic` 字段 `allow_special: bool` → `allow_special_chars: String`（`#[serde(default)]`，空串 = 无特殊字符白名单）；`is_valid_generic` 改为白名单语义（字符在 `allow_special_chars` 集合内放行，否则按字符类判定）；前端 `RulesPanel.jsx` + `ValidatePanel.jsx` generic-validate 行 Checkbox.Group charClasses 改为字符串 Input（直接输入允许的特殊符号集合）；`validateParams.js` `normalizeGenericParams` + `buildGenericParamsForRun` 同步 `allowSpecialChars` 字符串语义；向后兼容（旧 JSON `allowSpecial` 字段移除，缺省 = 空串 = 不放行特殊字符，需显式配置）。
+2. **手机号前缀 UX 统一**（T78）—— `ExtractParams::Phone` 新增 `phone_prefixes: Vec<String>`（`#[serde(default)]`，空 Vec = 不限前缀）；`validate_multi_rules_to_two_sheets_inner` phone-validate 分支取行内 `phone_prefixes`；`extract_validate_to_new_sheet_inner` + 运行时 `params_override` 覆盖 phone_prefixes；`is_valid_phone` 接收 `prefixes: &[String]` 参数；前端 `RulesPanel.jsx` phone-validate 行 Select mode="tags" + `ValidatePanel.jsx` phone-validate 行参数区 + `ExtractPanel.jsx` phone-extract 行同步前缀输入；`tauri.js` JSDoc 同步；新增 `extract_validate_phone_with_prefix_filter` 测试。
+3. **list_rules 按 name 排序**（T79）—— `src-tauri/src/db/mod.rs` `list_rules` SQL `ORDER BY id ASC` → `ORDER BY name ASC`（规则列表按 name 字母序稳定排序，前端 RulesPanel 显示顺序稳定）；新增 `list_rules_sorted_by_name` 测试断言多规则按 name ASC 排序。
+
+**门禁裁决**：无未修复的 critical/major 问题。全部 `info` 项均为非阻塞已知简化或已知边界（Mimosa 未重新运行 / antd chunk 警告既有 / docs/04 里程碑表待用户手工验证后另议）。**Mimosa 深度扫描**：R4 未重新运行，沿用 v1.1.3 R1+R2 双轮 0 findings / 487 包 0 漏洞基线；v1.1.4 R4 改动为校验模块 UX 统一化 + 排序稳定性增强（无新依赖 crate、无 schema 变更、无 CSP/网络/fs 权限变更），静态分析基线有效。静态分析非运行时验证，不宣称项目安全。**结论推进至 `qa_passed`（R4 续轮）**。
+
+**发布前置门禁**（[`04-版本标准.md`](../../04-版本标准.md) §4）满足：静态 + 单元测试 + 前端构建全绿 + 版本一致性 + schema 迁移幂等 + 文档收口。CI 构建（四目标矩阵）待 git tag `v1.1.4` 触发（用户等待手工验证，不自动 finalize）。
+
+---
+
+## 19. R4 续轮修复证据索引
+
+| 文件 | 改动 | 验证 |
+|---|---|---|
+| `crates/core/src/processor/rules.rs` | T77 `ExtractParams::Generic` 字段 `allow_special: bool` → `allow_special_chars: String`（`#[serde(default)]` 白名单语义）；T78 `ExtractParams::Phone` 新增 `phone_prefixes: Vec<String>`（`#[serde(default)]`）；serde camelCase roundtrip 测试覆盖 | `cargo test --all` core 165 passed |
+| `crates/core/src/processor/func_validator.rs` | T77 `is_valid_generic` 改为白名单语义（`allow_special_chars: &str` 集合内放行，否则按字符类判定）；T78 `is_valid_phone` 接收 `prefixes: &[String]` 参数（空切片 = 不限前缀）；单测覆盖白名单边界 + 前缀过滤 | `cargo test --all` func_validator 单测 + 15 doc-tests passed |
+| `src-tauri/src/commands/processor.rs` | T78 `validate_multi_rules_to_two_sheets_inner` phone-validate 分支取行内 `phone_prefixes` + `extract_validate_to_new_sheet_inner` 运行时 `params_override` 覆盖 phone_prefixes；新增 `extract_validate_phone_with_prefix_filter` 集成测试 | `cargo test --all` processor 测试全过 |
+| `src-tauri/src/db/mod.rs` | T79 `list_rules` SQL `ORDER BY id ASC` → `ORDER BY name ASC`；新增 `list_rules_sorted_by_name` 测试断言多规则按 name ASC 排序 | `cargo test --all` db 测试全过 |
+| `frontend/src/components/panels/validateParams.js` | T77 `normalizeGenericParams` + `buildGenericParamsForRun` 同步 `allowSpecialChars` 字符串语义；T78 `phonePrefixes` 字段处理 | `pnpm build` 绿（3083 modules） |
+| `frontend/src/components/panels/RulesPanel.jsx` | T77 generic 参数区 Checkbox.Group charClasses → 字符串 Input；T78 phone-validate 行 Select mode="tags" 前缀输入 | `pnpm build` 绿 |
+| `frontend/src/components/panels/ValidatePanel.jsx` | T77 generic-validate 行参数区 Checkbox.Group → 字符串 Input；T78 phone-validate 行参数区 Select mode="tags" 前缀输入 | `pnpm build` 绿 |
+| `frontend/src/components/panels/ExtractPanel.jsx` | T78 phone-extract 行同步前缀输入 | `pnpm build` 绿 |
+| `frontend/src/tauri.js` | T78 JSDoc 追加 `phonePrefixes?: string[]` 字段说明 | `pnpm build` 绿 |
+| `docs/02-技术设计文档.md` | T77/T78 §4.6 ExtractParams::Generic 字段签名同步（allow_special → allow_special_chars: String）+ ExtractParams::Phone 字段同步（phone_prefixes: Vec<String>）；顶部版本覆盖说明追加 R4 标注 | 人工核对 |
+| `docs/versions/1.1.4/更新日志.md` | T80 R4 章节 + T77/T78/T79 行 + E111-E118 验收 + 3 项设计决策 + 不变项 + 安全约束 | 人工核对 |
+| `docs/versions/1.1.4/RELEASE-NOTES.md` | T80 状态更新为 qa_passed（首轮 + 续轮 R2 + R3 续轮 + R4 续轮）+ R4 功能段 | 人工核对 |
+| `handoff/TASK-BOARD.md` | T80 T77/T78/T79 状态全 verified_complete + 状态行更新为 qa_passed（R4 续轮） | 人工核对 |
+| `docs/qa/versions/1.1.4/QA-审计报告.md` | T80 本报告 §18 R4 续轮增量审计章节（8 维度）+ §19 R4 修复证据索引 + 结论 qa_passed（R4 续轮） | 本报告 |
