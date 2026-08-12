@@ -28,8 +28,9 @@ src-tauri/icons/generate-icons.sh
 .mimosa/
 **/.mimosa/
 
-# ZCode plan scratch files
+# ZCode scratch files (local-only, not part of release)
 .zcode/plans/
+.zcode/tasks/
 
 # CTF / test sample data (local-only, not part of release)
 tests/tips/

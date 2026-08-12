@@ -1,83 +1,46 @@
-# v1.1.4 TASK-BOARD（R3 续轮：哈希函数 + DB 文件解析）
+# TASK-BOARD
 
 > 版本：v1.1.4
-> 状态：qa_passed（R3 续轮：T73/T74/T75/T76 全部 verified_complete + review_passed + E2E 全绿 + Release QA R3 增量审计通过）
-> 前置：v1.1.4 R2 续轮已 qa_passed（commit ba0b84f 合并 main）
-> 主题：v1.1.4 R3 续轮 — 2 项增强（哈希函数加密 MD5/SHA1/SHA256 + 外部 DB 文件解析）
+> 状态：branch_cleanup（分支整合完成；所有历史交接文件已归档至 `handoff/archive/`；仅保留 2 个长期分支：`main` + `release/v0.8.0`）
+> 状态：待用户手工验证（不 push、不 tag）
+> 历史 TASK-BOARD 快照：`handoff/archive/TASK-BOARD-v1.1.0.md` / `TASK-BOARD-v1.1.1.md` / `TASK-BOARD-v1.1.3-20260807.md`
 
-## 背景
+## 仓库分支结构（整合后）
 
-用户在 v1.1.4 R2 qa_passed 后追加 2 个需求（仍属 v1.1.4，不升版本号）：
+- `main`：长期主干，包含所有功能分支合入历史（T5-T76），等待用户手工验证后推送 origin
+- `release/v0.8.0`：T3 v0.8.0 发布轮基线
+- 仅保留上述两个长期分支；`origin` 远端同步 origin/main, origin/release/v0.8.0
 
-1. **哈希函数加密**：当前 CryptoPanel 只有 Base64 编解码。扩展加入 MD5 / SHA1 / SHA256 等哈希函数，对指定列做哈希变换（不可逆，输出 hex 小写）。
-2. **DB 文件解析**：当前 `detect_format` 支持 csv/xlsx/json/jsonl/txt/log/sql/pcap/pcapng，但不支持直接打开 `.db`/`.sqlite`/`.sqlite3` 二进制 SQLite 数据库文件。新增 `DbReader` 数据源，打开外部 .db 文件并读取全部用户表数据。
+## 分支整合历史（按时间倒序）
 
-用户明确指示："全部完成等待我对于v1.1.4版本的手工验证" — 即 R3 流水线走完（含 QA）后**不自动 finalize**（不 merge、不 tag），等待用户手工验证。
+| 任务批次 | 描述 | 交接文件位置 | 状态 |
+|---------|------|-------------|------|
+| v1.1.4 | 校验统一 + 加密 + DB 文件解析 + 手机前缀 + 名称排序 | archive/ | 完成 |
+| T73 | 哈希函数加密（MD5/SHA1/SHA256）| archive/TASK-T73-*.md | verified_complete |
+| T74 | CryptoPanel 哈希 UI + IPC wrapper | archive/TASK-T74-*.md | verified_complete |
+| T75 | DbReader 数据源（.db/.sqlite/.sqlite3）| archive/TASK-T75-*.md | verified_complete |
+| T76 | 文档 + E2E + QA R3 | archive/TASK-T76-*.md | verified_complete |
+| T77 | generic-validate 特殊符号白名单 | (handoff 整理) | verified_complete |
+| T78 | 手机号前缀配置 UX 统一 | (handoff 整理) | verified_complete |
+| T79 | 规则列表按 name Unicode 码点排序 | (handoff 整理) | verified_complete |
 
-## 任务 DAG
+## v1.1.4 全部任务清单
 
-```yaml
-goal: |
-  v1.1.4 R3 续轮：CryptoPanel 扩展哈希函数（MD5/SHA1/SHA256 列式变换，可撤销）+
-  新增 DbReader 数据源（.db/.sqlite/.sqlite3 外部 SQLite 文件解析，多表联合 + __table 列）。
-
-tasks:
-  - id: T73
-    title: 后端 — hash_column 命令（MD5/SHA1/SHA256）+ 依赖 + transform_column_cells 泛化 + 测试
-    depends_on: []
-    status: verified_complete  # commits 89d1aff+9e7bcd5; REVIEW review_passed 2026-08-11
-    handoff: handoff/TASK-T73-HANDOFF.md
-  - id: T74
-    title: 前端 — CryptoPanel 哈希 UI + hashColumn IPC wrapper
-    depends_on: [T73]
-    status: verified_complete  # commit 12669e5; REVIEW review_passed 2026-08-11
-    handoff: handoff/TASK-T74-HANDOFF.md
-  - id: T75
-    title: 后端 — DbReader 数据源（.db/.sqlite/.sqlite3 外部 SQLite 文件解析）+ detect_format 分发 + 测试
-    depends_on: []
-    status: verified_complete  # commits 797088a+1b613a5; REVIEW review_passed 2026-08-11
-    handoff: handoff/TASK-T75-HANDOFF.md
-  - id: T76
-    title: 文档 + E2E 验收 + Release QA R3 增量审计
-    depends_on: [T73, T74, T75]
-    status: verified_complete  # T73/T74/T75 verified_complete + 本任务 docs 同步 + E2E + QA R3 增量审计完成
-    handoff: handoff/TASK-T76-HANDOFF.md
-
-e2e_acceptance:
-  - hash_column 命令对指定列做 MD5 哈希（hex 小写输出），已知向量 md5("hello")=5d41402abc4b2a76b9719d911017c592
-  - hash_column 命令支持 SHA1 / SHA256（hex 小写输出），已知向量 sha1("hello")=aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d
-  - hash_column 操作可撤销（list_undoable_operations 包含 hash_column kind，undo 后恢复原文）
-  - CryptoPanel 可选算法（Base64 编/解码 + MD5/SHA1/SHA256）+ 执行后刷新数据 + undo 栈
-  - detect_format 对 .db/.sqlite/.sqlite3 扩展名返回 DbReader（不返回 NotImplemented）
-  - DbReader 打开外部 .db 文件，读取用户表数据（跳过 sqlite_% 内部表），返回 Dataset
-  - DbReader 多表 .db 文件联合输出，__table 列标识来源表
-  - cargo fmt/clippy/test 全绿 + pnpm build 全绿
-
-e2e_verification:
-  - cargo fmt --all
-  - cargo clippy --all-targets --all-features -- -D warnings
-  - cargo test --all
-  - pnpm --prefix frontend build
-
-release_qa:
-  required: true
-  report: docs/qa/versions/1.1.4/QA-审计报告.md
-  audit_scope:
-    - 需求覆盖
-    - 端到端流程
-    - 构建与测试
-    - 代码质量
-    - 安全与隐私
-    - 数据与迁移
-    - 依赖与配置
-    - 文档一致性
-```
+- **首轮（T67/T68/T69）**：校验统一 — 多规则校验双 Tab 落地
+- **续轮 R2（T70/T71/T72）**：通用校验规则 + 地址 / 生日 / 前端参数 UI 统一
+- **续轮 R3（T73-T76）**：哈希函数 + DB 文件解析
+- **续轮 R4（T77-T79）**：特殊符号白名单 + 手机号前缀 UX 统一 + 名称排序
 
 ## 安全约束（延续）
 
 - SQL 全部 `?N` + `params![]` 绑定，禁拼接、format、f-string
-  - DbReader 的表名不能参数绑定 → 用 `quote_identifier`（双引号转义内部双引号）+ 表名来源限定为 `sqlite_master`（受信系统表）
+  - DbReader 表名不能参数绑定 → `quote_identifier`（双引号转义）+ 来源限定为 `sqlite_master` 受信系统表
 - 无凭据字面量
 - Mimosa 完整审计未拿到结论前不宣称安全
 - 不创建 tag（用户等待手工验证，不自动 finalize）
-- 不自动 merge main（用户等待手工验证）
+- 不 push（用户等待手工验证，不自动 finalize）
+
+## 后续约定
+
+- 无命令不要随便新开分支（用户指令）
+- 仅在收到明确命令后才推送 origin、创建 tag、发布新版本

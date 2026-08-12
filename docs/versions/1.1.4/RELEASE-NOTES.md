@@ -1,14 +1,14 @@
 # RuT0DataKit v1.1.4
 
 > Git tag：`v1.1.4`（待推送）
-> 状态：qa_passed（首轮 + 续轮 R2 + R3 续轮 Release QA 增量审计通过）
+> 状态：qa_passed + branch_cleanup（首轮 + R2 + R3 + R4 续轮 Release QA 增量审计通过；分支整合完成，仅保留 `main` + `release/v0.8.0`）
 > 前置：v1.1.3 已发布 tag `v1.1.3`
 
 ## 概要
 
 v1.1.4 重做校验模块为**统一校验页面**：用户可动态添加任意多条「目标列 + 校验规则」组合，一个「校验」按钮即把通过 / 失败的行分流到两个新 Tab。身份证规则可勾选跨字段比对性别 / 出生日期。
 
-首轮（T67/T68/T69）完成统一校验页面与后端规则系统扩展；续轮（T70/T71/T72）在此基础上增强 4 项能力：通用校验规则（Generic 变体 + 字符类 / 长度范围参数覆盖）、地址校验放宽为结构化校验（中文 + 地址关键词）、出生日期校验支持分隔符格式（`clean_birth` 归一化）、前端参数 UI 统一化；R3 续轮（T73/T74/T75/T76）新增 2 项能力：CryptoPanel 哈希函数（MD5/SHA1/SHA256 列式变换，可撤销）+ 外部 SQLite 数据库文件解析（`.db`/`.sqlite`/`.sqlite3` 多表联合导入）。
+首轮（T67/T68/T69）完成统一校验页面与后端规则系统扩展；续轮（T70/T71/T72）在此基础上增强 4 项能力：通用校验规则（Generic 变体 + 字符类 / 长度范围参数覆盖）、地址校验放宽为结构化校验（中文 + 地址关键词）、出生日期校验支持分隔符格式（`clean_birth` 归一化）、前端参数 UI 统一化；R3 续轮（T73/T74/T75/T76）新增 2 项能力：CryptoPanel 哈希函数（MD5/SHA1/SHA256 列式变换，可撤销）+ 外部 SQLite 数据库文件解析（`.db`/`.sqlite`/`.sqlite3` 多表联合导入）；R4 续轮（T77/T78/T79）3 项增强：generic-validate 特殊符号自定义白名单、手机号前缀配置 UX 统一（校验每行内嵌 + 提取新增前缀输入）、规则列表按 name Unicode 码点升序自动排序。
 
 ## 改动
 
@@ -69,10 +69,24 @@ v1.1.4 重做校验模块为**统一校验页面**：用户可动态添加任意
 - 返回：`{ validSheet: ParseResult, invalidSheet: ParseResult, invalidReasons: Array<{sourceRow, field, reason}> }`
 - `frontend/src/tauri.js` 新增 `validateMultiRulesToTwoSheets` wrapper
 
+### R4 续轮：特殊符号白名单 + 手机号前缀 UX 统一 + 名称排序（T77/T78/T79）
+
+**后端（T78/T79）**：
+
+- `extract_validate_to_new_sheet` 命令新增 `phone_prefixes: Vec<String>` 参数，非空时覆盖 phone-extract 规则的 DB 默认前缀（运行时覆盖，不改 DB rule.params）
+- `list_rules` DB 查询排序由 `ORDER BY id ASC` 改为 `ORDER BY name ASC`（Unicode 码点升序）；前端各面板（RulesPanel / MaskPanel / ExtractPanel / ValidatePanel）自动继承新顺序，无需改动
+- `ExtractParams::PhonePrefix { allowed_prefixes }` 同时服务于 phone-extract 和 phone-validate
+
+**前端（T77/T78）**：
+
+- `ValidatePanel`：删除全局 phonePrefixes Form.Item，改为每行 `shouldUpdate` 条件渲染内嵌 `Select mode="tags"`（仅 phone-validate 规则行显示）；`handleValidate` 合并去重所有 phone-validate 行的前缀
+- `ExtractPanel`：新增 phonePrefixes `Select mode="tags"`（仅选中 phone-extract 规则时显示）；`handleExtractValidate` 传递前缀到 `extractValidateToNewSheet`
+- `generic-validate` 的 `allow_special_chars` 改为自定义白名单（字符串而非布尔）
+
 ## 不变项
 
 - 既有 `validate_column` / `validate_rows_to_two_sheets` IPC 与 wrapper 保留（向后兼容）；`validate_rows_to_two_sheets` 命令签名不变（内部 birth 比对改用 `clean_birth`）
-- `extract_validate_to_new_sheet_inner` 不改（`validate_extracted` wrapper 签名保持）
+- `extract_validate_to_new_sheet_inner` 签名新增 `phone_prefixes: &[String]` 末位参数（T78，运行时覆盖 phone-extract 前缀）；既有调用方传 `&[]` 保持兼容
 - `App.jsx` 路由不变（validate 走默认 SidePanel 分支；CryptoPanel 入口 v1.1.2 已有）
 - DB schema / capabilities/default.json 不变（SCHEMA_VERSION=5，`params` 列复用；`operations` 快照列复用存 `hash_column` before/after）
 - `TopToolbar.jsx` / `SidePanel.jsx` 沿用 v1.1.4 初稿已移除 rowValidate 入口的状态
@@ -83,24 +97,26 @@ v1.1.4 重做校验模块为**统一校验页面**：用户可动态添加任意
 
 ## 验收
 
-- `ValidatePanel.jsx` 是单一表单（无 Tabs/Segmented 切换），顶部可动态添加多条规则行
-- 每条规则行：目标列 Select + 校验规则 Select + 删除按钮
+- 顶部可动态添加多条规则行；每行目标列 Select + 校验规则 Select + 删除按钮
 - 校验规则 options 包含 8 条 validate 规则（含 `generic-validate`）
 - 当选中规则是 `idcard-validate` 时展开跨字段配置
-- 底部有手机号前缀白名单 `Select mode="tags"`
+- phone-validate 规则行内嵌手机号前缀白名单 `Select mode="tags"`（非全局）
+- phone-extract 规则选中时 ExtractPanel 显示前缀白名单输入
 - 一个「校验」按钮 → 双 Tab 落地 + 汇总消息
+- 规则列表按 name Unicode 码点升序自动排列
 - CryptoPanel 可选 Base64 编/解码 + MD5/SHA1/SHA256；哈希执行后可撤销
 - `detect_format` 对 `.db`/`.sqlite`/`.sqlite3` 返回 `DbReader`；多表联合输出 `__table` 列
-- `cargo fmt --all` / `cargo clippy --all-targets --all-features -- -D warnings` / `cargo test --all` 全绿（315 passed）
-- `pnpm --prefix frontend build` 通过（3083 modules）
+- `cargo fmt --all` / `cargo clippy --all-targets --all-features -- -D warnings` / `cargo test --all` 全绿
+- `pnpm --prefix frontend build` 通过
 - 版本号 4 处一致 1.1.4
-- Release QA R3 增量审计通过（见 [`docs/qa/versions/1.1.4/QA-审计报告.md`](../qa/versions/1.1.4/QA-审计报告.md) §16-§17）
+- Release QA R3 + R4 增量审计通过（见 [`docs/qa/versions/1.1.4/QA-审计报告.md`](../qa/versions/1.1.4/QA-审计报告.md) §16-§17）
+- 分支整合完成：仅保留 `main` + `release/v0.8.0`，所有 feature/fix 分支已删除
 
 ## 安全说明
 
 - SQL 全部参数化绑定，禁拼接（后端未改，保持）；DbReader 表名例外：`quote_identifier` 转义 + `sqlite_master` 受信来源，无注入面
 - 无凭据字面量
-- Mimosa 完整审计未拿到结论前不宣称安全；R3 续轮未重新运行完整审计，沿用 v1.1.3 R1+R2 双轮 0 findings / 487 包 0 漏洞基线（R3 改动为 codec + datasource 功能性增强，未改 DB schema / CSP / 权限 / 网络，基线有效）
+- Mimosa 完整审计未拿到结论前不宣称安全；R3+R4 续轮未重新运行完整审计，沿用 v1.1.3 R1+R2 双轮 0 findings / 487 包 0 漏洞基线（R3+R4 改动为 codec + datasource + 校验参数增强，未改 DB schema / CSP / 权限 / 网络，基线有效）
 
 ## 详细文档
 
