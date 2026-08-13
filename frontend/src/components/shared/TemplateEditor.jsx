@@ -137,7 +137,7 @@ export default function TemplateEditor({
                 }
               >
                 <Row gutter={8}>
-                  <Col span={6}>
+                  <Col xs={{ span: 12 }} md={{ span: 6 }}>
                     <Form.Item label="段索引" style={{ marginBottom: 8 }}>
                       <InputNumber
                         value={seg.index}
@@ -148,7 +148,7 @@ export default function TemplateEditor({
                       />
                     </Form.Item>
                   </Col>
-                  <Col span={6}>
+                  <Col xs={{ span: 12 }} md={{ span: 6 }}>
                     <Form.Item label="保留前" style={{ marginBottom: 8 }}>
                       <InputNumber
                         value={seg.keepPrefix}
@@ -161,7 +161,7 @@ export default function TemplateEditor({
                       />
                     </Form.Item>
                   </Col>
-                  <Col span={6}>
+                  <Col xs={{ span: 12 }} md={{ span: 6 }}>
                     <Form.Item label="保留后" style={{ marginBottom: 8 }}>
                       <InputNumber
                         value={seg.keepSuffix}
@@ -174,7 +174,7 @@ export default function TemplateEditor({
                       />
                     </Form.Item>
                   </Col>
-                  <Col span={6}>
+                  <Col xs={{ span: 12 }} md={{ span: 6 }}>
                     <Form.Item label="最少掩码" style={{ marginBottom: 8 }}>
                       <InputNumber
                         value={seg.maskMinLen}

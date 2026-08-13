@@ -113,7 +113,7 @@ function AppShell() {
   );
 
   return (
-    <Layout style={{ height: "100vh", overflow: "hidden" }}>
+    <Layout style={{ height: "100dvh", minHeight: "100vh", overflow: "hidden" }}>
       <Header
         style={{
           height: 48,
@@ -134,7 +134,7 @@ function AppShell() {
           <RulesPanel />
         </Content>
       ) : (
-        <Layout style={{ overflow: "hidden" }}>
+        <Layout style={{ overflow: "hidden", minWidth: 0 }}>
           <SidePanel activeCapability={state.activeCapability} />
           <Workbench setPage={handleSetPage} />
           <AiPanel />

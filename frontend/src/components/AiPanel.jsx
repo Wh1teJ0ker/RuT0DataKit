@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { Button, Layout, Typography } from "antd";
 import {
   MenuFoldOutlined,
@@ -7,14 +8,24 @@ import {
 
 import { DEV_STATUS } from "../constants";
 import { useAppContext } from "../state";
+import { useBreakpoint } from "../hooks/useBreakpoint";
 
 const { Sider } = Layout;
 
 // 右侧 AI 面板：默认折叠为图标条，展开后仅显示一行状态文案。
 // 设置入口已迁移到 TopToolbar 右端（T40）。
+// v1.2.0：窄窗口（isCompact）时自动折叠，镜像 SidePanel 模式。
 export default function AiPanel() {
   const { state, setAiPanelVisible } = useAppContext();
   const { visible } = state.aiPanel;
+  const { isCompact } = useBreakpoint();
+
+  // 窄窗口自动折叠 AI 面板，避免挤占 Workbench。
+  useEffect(() => {
+    if (isCompact && visible) {
+      setAiPanelVisible(false);
+    }
+  }, [isCompact, visible, setAiPanelVisible]);
   return (
     <Sider
       width={300}

@@ -193,7 +193,7 @@ export default function ExportModal({ open, sheet, onClose }) {
           <>
             <Divider style={{ margin: 0 }} />
             <Row gutter={[8, 8]}>
-              <Col span={12}>
+              <Col xs={{ span: 24 }} sm={{ span: 12 }}>
                 <Typography.Text>列分隔符：</Typography.Text>
                 <Select
                   value={csvSeparator}
@@ -202,7 +202,7 @@ export default function ExportModal({ open, sheet, onClose }) {
                   options={SEPARATOR_OPTIONS}
                 />
               </Col>
-              <Col span={12}>
+              <Col xs={{ span: 24 }} sm={{ span: 12 }}>
                 <Typography.Text>含表头行：</Typography.Text>
                 <div style={{ marginTop: 4 }}>
                   <Switch checked={csvWithHeader} onChange={setCsvWithHeader} />
@@ -225,7 +225,7 @@ export default function ExportModal({ open, sheet, onClose }) {
           <>
             <Divider style={{ margin: 0 }} />
             <Row gutter={[8, 8]}>
-              <Col span={12}>
+              <Col xs={{ span: 24 }} sm={{ span: 12 }}>
                 <Typography.Text>缩进：</Typography.Text>
                 <Select
                   value={jsonIndent}
@@ -234,7 +234,7 @@ export default function ExportModal({ open, sheet, onClose }) {
                   options={INDENT_OPTIONS}
                 />
               </Col>
-              <Col span={12}>
+              <Col xs={{ span: 24 }} sm={{ span: 12 }}>
                 <Typography.Text>结构：</Typography.Text>
                 <Select
                   value={jsonFormat}
@@ -269,7 +269,7 @@ export default function ExportModal({ open, sheet, onClose }) {
               </Typography.Text>
             </div>
             <Row gutter={[8, 8]}>
-              <Col span={12}>
+              <Col xs={{ span: 24 }} sm={{ span: 12 }}>
                 <Typography.Text>行尾：</Typography.Text>
                 <Select
                   value={txtLineEnding}
