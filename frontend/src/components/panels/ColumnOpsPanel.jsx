@@ -84,7 +84,7 @@ export default function ColumnOpsPanel() {
   }
 
   return (
-    <div style={{ padding: 4 }}>
+    <div style={{ height: "100%", overflow: "auto", padding: 4 }}>
       <Title level={5} style={{ marginTop: 0 }}>
         JSON 解析
       </Title>

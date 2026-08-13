@@ -175,7 +175,7 @@ export default function ValidatePanel() {
   };
 
   return (
-    <div style={{ padding: 4 }}>
+    <div style={{ height: "100%", overflow: "auto", padding: 4 }}>
       <Form form={form} layout="vertical" size="small">
         <Form.List name="rules" initialValue={[{}]}>
           {(fields, { add, remove }) => (

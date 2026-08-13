@@ -168,7 +168,7 @@ export default function ExtractPanel() {
   };
 
   return (
-    <div style={{ padding: 4 }}>
+    <div style={{ height: "100%", overflow: "auto", padding: 4 }}>
       <Form form={form} layout="vertical" size="small">
         <Form.Item label="目标列" name="column">
           <ColumnSelect headers={headers} placeholder="选择列" />

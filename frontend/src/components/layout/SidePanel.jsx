@@ -94,7 +94,7 @@ export default function SidePanel({ activeCapability }) {
           <div style={{ flex: 1 }} />
         </div>
       ) : (
-        <div style={{ flex: 1, padding: 8, overflow: "auto" }}>
+        <div style={{ flex: 1, minHeight: 0, padding: 8, overflow: "auto" }}>
           <div
             style={{
               display: "flex",

@@ -96,7 +96,7 @@ export default function AiPanel() {
               />
             </div>
           </div>
-          <div style={{ flex: 1, padding: 12, overflow: "auto" }}>
+          <div style={{ flex: 1, minHeight: 0, padding: 12, overflow: "auto" }}>
             <Typography.Paragraph type="secondary">
               AI 能力 {DEV_STATUS}
             </Typography.Paragraph>

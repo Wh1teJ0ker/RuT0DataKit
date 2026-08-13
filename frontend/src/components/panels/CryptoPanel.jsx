@@ -76,7 +76,7 @@ export default function CryptoPanel() {
     currentOp === "md5" || currentOp === "sha1" || currentOp === "sha256";
 
   return (
-    <div style={{ padding: 4 }}>
+    <div style={{ height: "100%", overflow: "auto", padding: 4 }}>
       <Title level={5} style={{ marginTop: 0 }}>
         加解密
       </Title>
