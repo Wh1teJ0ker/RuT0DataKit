@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Button, Card, Col, Form, Input, InputNumber, Row, Select, Space, Switch, message } from "antd";
+import { Button, Card, Checkbox, Col, Empty, Form, Input, InputNumber, Row, Select, Space, Switch, message } from "antd";
 import { useAppContext } from "../../state";
 import {
   maskColumn,
@@ -51,6 +51,14 @@ export default function MaskPanel() {
   const [template, setTemplate] = useState({ ...EMPTY_TEMPLATE });
   // name-mask 的掩码字符（replacement）
   const [nameMaskChar, setNameMaskChar] = useState(DEFAULT_MASK_CHAR);
+  // v1.1.5 T85：先校验再脱敏。勾选后先按 validate 规则过滤该列，通过的行脱敏，
+  // 未通过行写为 invalidText 占位（默认 "INVALID"）。
+  const [validateRules, setValidateRules] = useState([]);
+  const [validateEnabled, setValidateEnabled] = useState(false);
+  const [validateRuleId, setValidateRuleId] = useState(null);
+  const [invalidText, setInvalidText] = useState("INVALID");
+  // phone-validate 行级前缀白名单（与 ValidatePanel 模式一致，tags 模式输入）。
+  const [phonePrefixesInput, setPhonePrefixesInput] = useState([]);
 
   const sheet = state.sheets.find((s) => s.id === state.activeSheetId);
   const headers = sheet?.headers || [];
@@ -59,14 +67,20 @@ export default function MaskPanel() {
   const isTemplateMask = isSimpleMask || isSegmentMask;
 
   // 加载全部 mask 规则供下拉选择；默认选中首条 mask 规则。
+  // T85：同时加载 validate-kind 规则，供「先校验再脱敏」勾选时下拉。
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         const all = await listRules();
-        const masks = all.filter((r) => r.kind === "mask");
         if (cancelled) return;
+        const masks = all.filter((r) => r.kind === "mask");
         setMaskRules(masks);
+        const validates = all.filter((r) => r.kind === "validate");
+        setValidateRules(validates);
+        if (validates.length > 0) {
+          setValidateRuleId(validates[0].id);
+        }
         if (masks.length === 0) return;
         const first = masks[0];
         setMaskRuleId(first.id);
@@ -182,15 +196,48 @@ export default function MaskPanel() {
     setLoading(true);
     try {
       let res;
+      // v1.1.5 T85：先校验再脱敏参数。validateEnabled=false 时四个参数全部传 null，
+      // 后端按旧逻辑直接脱敏。phone-validate 时透传前缀白名单（过滤三位数字）。
+      const vRuleId = validateEnabled ? validateRuleId : null;
+      const vInvalidText = validateEnabled ? invalidText : null;
+      const vPhonePrefixes =
+        validateEnabled && vRuleId === "phone-validate"
+          ? (phonePrefixesInput || [])
+              .map((p) => String(p).trim())
+              .filter((p) => /^\d{3}$/.test(p))
+          : null;
+      // paramsOverride 目前仅 generic-validate 等可后续扩展；本面板不暴露行级参数，
+      // 透传 null（后端沿用 DB 规则默认 params）。
+      const vParamsOverride = null;
       if (isTemplateMask) {
         const tpl = buildForRun();
         // simple-mask/segment-mask：template 透传（临时覆盖），replacement 用 maskChar 或默认 *。
         const ch = template.maskChar || DEFAULT_MASK_CHAR;
-        res = await maskColumn(sheet.id, column, maskRuleId, ch, tpl);
+        res = await maskColumn(
+          sheet.id,
+          column,
+          maskRuleId,
+          ch,
+          tpl,
+          vRuleId,
+          vInvalidText,
+          vParamsOverride,
+          vPhonePrefixes,
+        );
       } else {
         // name-mask：旧逻辑，无 template。
         const ch = nameMaskChar || DEFAULT_MASK_CHAR;
-        res = await maskColumn(sheet.id, column, maskRuleId, ch, null);
+        res = await maskColumn(
+          sheet.id,
+          column,
+          maskRuleId,
+          ch,
+          null,
+          vRuleId,
+          vInvalidText,
+          vParamsOverride,
+          vPhonePrefixes,
+        );
       }
       const page = sheet.page || 1;
       const data = await getSheetData(sheet.id, page, sheet.pageSize || PAGE_SIZE);
@@ -250,6 +297,13 @@ export default function MaskPanel() {
     } else {
       setNameMaskChar(DEFAULT_MASK_CHAR);
       form.setFieldValue("nameMaskChar", DEFAULT_MASK_CHAR);
+    }
+    // v1.1.5 T85：同时重置先校验再脱敏开关与参数。
+    setValidateEnabled(false);
+    setInvalidText("INVALID");
+    setPhonePrefixesInput([]);
+    if (validateRules.length > 0) {
+      setValidateRuleId(validateRules[0].id);
     }
   };
 
@@ -472,6 +526,68 @@ export default function MaskPanel() {
             />
           </Form.Item>
         )}
+        {/* v1.1.5 T85：先校验再脱敏。勾选后先按 validate 规则校验该列，
+            通过的行按 mask 规则脱敏；未通过行写为 invalidText 占位（默认 "INVALID"）。
+            phone-validate 时额外展开前缀白名单输入（与 ValidatePanel 一致 tags 模式）。 */}
+        <Form.Item
+          extra={
+            validateEnabled
+              ? "校验通过的行按上方规则脱敏；未通过行写为占位文本"
+              : "勾选后先按校验规则过滤该列，未通过行不脱敏"
+          }
+          style={{ marginTop: 8 }}
+        >
+          <Checkbox
+            checked={validateEnabled}
+            onChange={(e) => setValidateEnabled(e.target.checked)}
+          >
+            先校验再脱敏
+          </Checkbox>
+        </Form.Item>
+        {validateEnabled ? (
+          <>
+            <Form.Item label="校验规则">
+              {validateRules.length === 0 ? (
+                <Empty
+                  description="未找到 validate 规则"
+                  image={Empty.PRESENTED_IMAGE_SIMPLE}
+                />
+              ) : (
+                <Select
+                  placeholder="选择校验规则"
+                  value={validateRuleId}
+                  onChange={setValidateRuleId}
+                  options={validateRules.map((r) => ({ label: r.name, value: r.id }))}
+                  showSearch
+                  optionFilterProp="label"
+                />
+              )}
+            </Form.Item>
+            <Form.Item label="无效输出文本" extra="校验未通过行的占位文本（默认 INVALID）">
+              <Input
+                value={invalidText}
+                onChange={(e) => setInvalidText(e.target.value)}
+                placeholder="INVALID"
+                allowClear
+              />
+            </Form.Item>
+            {validateRuleId === "phone-validate" ? (
+              <Form.Item
+                label="手机号前缀白名单"
+                extra="可选：填三位数字前缀（如 134 / 159），留空则不限制前缀"
+              >
+                <Select
+                  mode="tags"
+                  placeholder="如 134、159（回车添加）"
+                  value={phonePrefixesInput}
+                  onChange={setPhonePrefixesInput}
+                  tokenSeparators={[",", "，"]}
+                  maxTagCount={5}
+                />
+              </Form.Item>
+            ) : null}
+          </>
+        ) : null}
         <Form.Item>
           <Space>
             <Button type="primary" loading={loading} onClick={handleRun}>

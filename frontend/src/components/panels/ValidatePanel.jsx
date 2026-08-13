@@ -27,6 +27,15 @@ import { buildGenericParamsForRun } from "./validateParams";
 
 const { Text } = Typography;
 
+// v1.1.5 T88：birth-validate 行级生日格式勾选。
+// 全不选 = 接受所有格式（默认，向后兼容）；勾选后仅校验勾选的格式。
+const BIRTH_FORMATS = [
+  { label: "纯数字 yyyymmdd", value: "yyyymmdd" },
+  { label: "连字符 yyyy-mm-dd", value: "yyyy-mm-dd" },
+  { label: "斜杠 yyyy/mm/dd", value: "yyyy/mm/dd" },
+  { label: "点号 yyyy.mm.dd", value: "yyyy.mm.dd" },
+];
+
 // v1.1.0 单列校验面板：选择列 + 规则 → 校验 → 不通过行原位高亮 invalid。
 // v1.1.3 T57：新增行级多字段校验（7 字段 + 跨字段联合 → 双 Tab）。
 // v1.1.4 T67：行级校验从独立能力合并入「校验」模块（Tabs 双页）。
@@ -121,6 +130,11 @@ export default function ValidatePanel() {
             minLen: r.minLen ?? null,
             maxLen: r.maxLen ?? null,
           });
+        }
+        // v1.1.5 T88：birth-validate 行附带 paramsOverride，仅勾选了格式时携带。
+        // 全不选 = 接受所有格式（默认，向后兼容），不传 paramsOverride，沿用 DB 默认。
+        if (r.ruleId === "birth-validate" && r.birthFormats?.length) {
+          item.paramsOverride = { validator: "birth", formats: r.birthFormats };
         }
         return item;
       });
@@ -382,6 +396,29 @@ export default function ValidatePanel() {
                       ) : null
                     }
                   </Form.Item>
+                  {/* v1.1.5 T88：birth-validate 行级生日格式勾选。
+                      全不选 = 接受所有格式（默认，向后兼容）；勾选后仅校验勾选的格式。
+                      字段名 [name, "birthFormats"] 与上方 handleValidate 组装逻辑对齐。 */}
+                  <Form.Item
+                    shouldUpdate={(prev, cur) =>
+                      prev.rules?.[name]?.ruleId !== cur.rules?.[name]?.ruleId
+                    }
+                    noStyle
+                  >
+                    {({ getFieldValue }) =>
+                      getFieldValue(["rules", name, "ruleId"]) ===
+                      "birth-validate" ? (
+                        <Form.Item
+                          name={[name, "birthFormats"]}
+                          label="生日格式"
+                          style={{ marginTop: 4, marginBottom: 0 }}
+                          extra="全不选 = 接受所有格式（默认）；勾选后仅校验勾选的格式"
+                        >
+                          <Checkbox.Group options={BIRTH_FORMATS} />
+                        </Form.Item>
+                      ) : null
+                    }
+                  </Form.Item>
                 </div>
               ))}
               <Button
@@ -410,6 +447,7 @@ export default function ValidatePanel() {
         添加多条「列 + 校验规则」组合，一个按钮校验。通过/失败的行分别写入两个新
         Tab（保留原列，不新增列）。身份证规则可勾选跨字段比对性别/出生日期。
         通用校验规则可在行内设置字符类与长度限制。手机号规则可在行内设置前缀白名单。
+        生日规则可在行内勾选要校验的格式（全不选=接受所有格式）。
       </Text>
     </div>
   );

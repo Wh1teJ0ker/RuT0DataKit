@@ -216,16 +216,36 @@ pub enum ExtractParams {
     ///
     /// v1.1.4 T67：用于 `sex-validate` 函数式校验规则。
     Sex,
-    /// 出生日期：8 位数字（清理分隔符后）。
+    /// 出生日期：支持多格式可选校验（v1.1.5 T87 改为 struct variant）。
     ///
-    /// v1.1.4 T67 新增；T70 续轮改进为先 `clean_birth` 清理分隔符再校验。
+    /// v1.1.4 T67 新增（unit variant）；T70 续轮改进为先 `clean_birth` 清理分隔符再校验；
+    /// v1.1.5 T87 改为 struct variant，`formats` 为空 = 全部接受（向后兼容）。
     /// 用于 `birth-validate` 函数式校验规则。
-    Birth,
+    ///
+    /// 支持的格式标识：
+    /// - `"yyyymmdd"` — 8 位纯数字
+    /// - `"yyyy-mm-dd"` — 连字符分隔
+    /// - `"yyyy/mm/dd"` — 斜杠分隔
+    /// - `"yyyy.mm.dd"` — 点号分隔
+    Birth {
+        /// 接受的格式列表。空 = 全部接受（向后兼容）。
+        #[serde(default)]
+        formats: Vec<String>,
+    },
     /// 地址：结构化校验（中文 ≥ 2 + 地址关键词）。
     ///
     /// v1.1.4 T67 新增；T70 续轮放宽为结构化校验（原严格正则号1-1500+
     /// 室101-999 已废弃）。用于 `address-validate` 函数式校验规则。
     Address,
+    /// 邮箱地址：结构化校验（local@domain，RFC 5321 简化）。
+    ///
+    /// v1.1.5 T81 新增。用于 `email-validate` 函数式校验规则（kind=Validate，
+    /// 带 params 走 `validate_extracted` 分发）。校验规则：
+    /// - 含恰好 1 个 `@`
+    /// - local 部分非空、≤64 字符、仅允许 `[a-zA-Z0-9._%+-]`
+    /// - domain 部分非空、含至少 1 个 `.`、每段非空、仅允许 `[a-zA-Z0-9.-]`
+    /// - 总长度 ≤ 254
+    Email,
     /// 通用校验：字符类白名单 + 长度范围（v1.1.4 续轮 T70 新增；T77 改为
     /// 自定义特殊字符白名单）。
     ///
@@ -493,6 +513,8 @@ impl RuleRegistry {
     /// `with_defaults()` 共 16 条。
     /// v1.1.4 续轮 T70：新增 `generic-validate`（字符类白名单 + 长度范围），
     /// `with_defaults()` 共 17 条。
+    /// v1.1.5 T81：新增 `email-validate`（邮箱地址结构化校验），
+    /// `with_defaults()` 共 18 条。
     pub fn with_defaults() -> Self {
         let mut reg = Self::new();
         reg.register(Self::name_validate_rule());
@@ -520,6 +542,9 @@ impl RuleRegistry {
         // v1.1.4 续轮 T70：通用校验规则（字符类白名单 + 长度范围）。
         // `with_defaults()` 共 17 条。
         reg.register(Self::generic_validate_rule());
+        // v1.1.5 T81：邮箱校验规则（kind=Validate，带 params 走
+        // validate_extracted 分发）。`with_defaults()` 共 18 条。
+        reg.register(Self::email_validate_rule());
         reg
     }
 
@@ -791,7 +816,7 @@ impl RuleRegistry {
             enabled: true,
             description: "校验出生日期（清理分隔符后 8 位有效日期）".into(),
             template: None,
-            params: Some(ExtractParams::Birth),
+            params: Some(ExtractParams::Birth { formats: vec![] }),
         }
     }
 
@@ -882,6 +907,24 @@ impl RuleRegistry {
         }
     }
 
+    /// 邮箱校验内置规则（v1.1.5 T81 新增）：`params = Email`，
+    /// 走 `validate_extracted` 的 Email 分支 → `is_valid_email`
+    /// （结构化校验：local@domain，local ≤64，domain 含 `.`，总长 ≤254）。
+    pub fn email_validate_rule() -> Rule {
+        Rule {
+            id: "email-validate".into(),
+            name: "邮箱校验".into(),
+            kind: RuleKind::Validate,
+            field: None,
+            pattern: None,
+            replacement: None,
+            enabled: true,
+            description: "校验邮箱地址格式（local@domain）".into(),
+            template: None,
+            params: Some(ExtractParams::Email),
+        }
+    }
+
     /// 注册一条规则（若 id 已存在则覆盖）。
     pub fn register(&mut self, rule: Rule) {
         if let Some(existing) = self.rules.iter_mut().find(|r| r.id == rule.id) {
@@ -937,8 +980,9 @@ mod tests {
         let rules = reg.list();
         // v1.1.4 续轮 T70：3 条姓名 + simple-mask + segment-mask + 5 条 extract
         // （name-extract + phone/bankcard/ip4/ip6/idcard）+ 7 条 validate
-        // （name + username/sex/birth/idcard/phone/address + generic）= 17 条
-        assert_eq!(rules.len(), 17);
+        // （name + username/sex/birth/idcard/phone/address + generic）
+        // v1.1.5 T81：+ email-validate = 18 条
+        assert_eq!(rules.len(), 18);
         // 脱敏 / 校验 / 提取 三种 kind 都存在
         let kinds: Vec<RuleKind> = rules.iter().map(|r| r.kind).collect();
         assert!(kinds.contains(&RuleKind::Mask));
@@ -950,9 +994,9 @@ mod tests {
         // 6 条 extract 规则（name-extract + phone/bankcard/ip4/ip6/idcard）
         let extract_count = kinds.iter().filter(|k| **k == RuleKind::Extract).count();
         assert_eq!(extract_count, 6);
-        // v1.1.4 续轮 T70：8 条 validate 规则（name-validate + 6 条 T67 + generic）
+        // v1.1.5 T81：9 条 validate 规则（name-validate + 6 条 T67 + generic + email）
         let validate_count = kinds.iter().filter(|k| **k == RuleKind::Validate).count();
-        assert_eq!(validate_count, 8);
+        assert_eq!(validate_count, 9);
     }
 
     #[test]
@@ -1081,7 +1125,7 @@ mod tests {
 
     #[test]
     fn extract_params_serde_roundtrip() {
-        // v1.1.4 续轮 T70：ExtractParams 十变体 serde 闭环
+        // v1.1.5 T81：ExtractParams 十一变体 serde 闭环
         let cases = vec![
             ExtractParams::PhonePrefix {
                 allowed_prefixes: vec!["134".into(), "159".into()],
@@ -1092,8 +1136,9 @@ mod tests {
             ExtractParams::IdCard,
             ExtractParams::Username,
             ExtractParams::Sex,
-            ExtractParams::Birth,
+            ExtractParams::Birth { formats: vec![] },
             ExtractParams::Address,
+            ExtractParams::Email,
             ExtractParams::Generic {
                 allow_digits: true,
                 allow_letters: true,
@@ -1132,12 +1177,27 @@ mod tests {
         assert!(serde_json::to_string(&ExtractParams::Sex)
             .unwrap()
             .contains("\"validator\":\"sex\""));
-        assert!(serde_json::to_string(&ExtractParams::Birth)
-            .unwrap()
-            .contains("\"validator\":\"birth\""));
+        assert!(
+            serde_json::to_string(&ExtractParams::Birth { formats: vec![] })
+                .unwrap()
+                .contains("\"validator\":\"birth\"")
+        );
+        // v1.1.5 T87：Birth 向后兼容 —— {"validator":"birth"} 可反序列化为 Birth { formats: vec![] }
+        let birth_json: ExtractParams = serde_json::from_str(r#"{"validator":"birth"}"#).unwrap();
+        assert!(matches!(birth_json, ExtractParams::Birth { .. }));
+        // T87：formats 字段被序列化
+        assert!(serde_json::to_string(&ExtractParams::Birth {
+            formats: vec!["yyyymmdd".into()]
+        })
+        .unwrap()
+        .contains("\"formats\""));
         assert!(serde_json::to_string(&ExtractParams::Address)
             .unwrap()
             .contains("\"validator\":\"address\""));
+        // v1.1.5 T81：Email 变体 camelCase 标签
+        assert!(serde_json::to_string(&ExtractParams::Email)
+            .unwrap()
+            .contains("\"validator\":\"email\""));
         // v1.1.4 续轮 T70：Generic 变体 camelCase 标签 + 字段
         // T77：allow_special: bool → allow_special_chars: String（自定义白名单）
         let generic_json = serde_json::to_string(&ExtractParams::Generic {
@@ -1384,6 +1444,8 @@ mod tests {
         assert!(reg.get("address-validate").is_some());
         // v1.1.4 续轮 T70：generic-validate
         assert!(reg.get("generic-validate").is_some());
+        // v1.1.5 T81：email-validate
+        assert!(reg.get("email-validate").is_some());
         // T55b：旧 ip-extract id 已不存在（拆分后由 cleanup_deprecated_rules 删除）
         assert!(reg.get("ip-extract").is_none());
         // T54：旧 general-mask id 已不存在（由 cleanup_deprecated_rules 删除）
@@ -1416,7 +1478,7 @@ mod tests {
         let mut r = RuleRegistry::name_validate_rule();
         r.description = "updated".into();
         reg.register(r);
-        assert_eq!(reg.list().len(), 17);
+        assert_eq!(reg.list().len(), 18);
         assert_eq!(reg.get("name-validate").unwrap().description, "updated");
     }
 

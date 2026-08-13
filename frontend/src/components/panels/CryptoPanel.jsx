@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Alert, Button, Form, Select, Typography, message } from "antd";
+import { Alert, Button, Form, Radio, Select, Typography, message } from "antd";
 import { useAppContext } from "../../state";
 import {
   base64Column,
@@ -27,6 +27,8 @@ export default function CryptoPanel() {
   const { state, dispatch } = useAppContext();
   const [form] = Form.useForm();
   const [running, setRunning] = useState(false);
+  // v1.1.5 T83: 哈希输出大小写（Lower=小写 / Upper=大写）
+  const [hashCase, setHashCase] = useState("lower");
 
   const sheet = state.sheets.find((s) => s.id === state.activeSheetId);
   const headers = sheet?.headers || [];
@@ -55,10 +57,10 @@ export default function CryptoPanel() {
         res = await base64Column(sheet.id, column, mode);
         label = `Base64 ${mode === "encode" ? "编码" : "解码"}`;
       } else {
-        // md5 / sha1 / sha256
-        res = await hashColumn(sheet.id, column, op);
-        const algoLabel = { md5: "MD5", sha1: "SHA1", sha256: "SHA256" }[op];
-        label = `${algoLabel} 哈希`;
+        // md5 / sha1 / sha256 — 传 case 给后端
+        res = await hashColumn(sheet.id, column, op, hashCase);
+        const algoLabel = { md5: "Md5", sha1: "Sha1", sha256: "Sha256" }[op];
+        label = `${algoLabel} 哈希（${hashCase === "upper" ? "大写" : "小写"}）`;
       }
       // 刷新当前页数据
       const page = sheet.page || 1;
@@ -121,6 +123,17 @@ export default function CryptoPanel() {
               message="哈希不可逆"
               description="哈希操作无法解码还原，但可通过撤销恢复原文。"
             />
+          </Form.Item>
+        )}
+        {isHashOp && (
+          <Form.Item label="输出大小写">
+            <Radio.Group
+              value={hashCase}
+              onChange={(e) => setHashCase(e.target.value)}
+            >
+              <Radio value="lower">小写</Radio>
+              <Radio value="upper">大写</Radio>
+            </Radio.Group>
           </Form.Item>
         )}
         <Form.Item>

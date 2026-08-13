@@ -327,6 +327,64 @@ pub fn is_valid_birth(s: &str) -> bool {
     (1900..=2100).contains(&year) && (1..=12).contains(&month) && (1..=31).contains(&day)
 }
 
+/// 按指定格式校验出生日期（v1.1.5 T87 新增）。
+///
+/// 支持的格式标识：
+/// - `"yyyymmdd"` — 8 位纯数字 + 有效日期
+/// - `"yyyy-mm-dd"` — `^\d{4}-\d{2}-\d{2}$` + 有效日期
+/// - `"yyyy/mm/dd"` — `^\d{4}/\d{2}/\d{2}$` + 有效日期
+/// - `"yyyy.mm.dd"` — `^\d{4}\.\d{2}\.\d{2}$` + 有效日期
+///
+/// 未知格式 → false。有效日期 = 年 1900-2100、月 1-12、日 1-31（已有
+/// [`is_valid_birth`] 的日期范围校验复用）。
+///
+/// # 示例
+/// ```
+/// use ruT0_data_kit_core::processor::func_validator::is_valid_birth_format;
+/// assert!(is_valid_birth_format("20031223", "yyyymmdd"));
+/// assert!(!is_valid_birth_format("2003-12-23", "yyyymmdd"));
+/// assert!(is_valid_birth_format("2003-12-23", "yyyy-mm-dd"));
+/// assert!(is_valid_birth_format("2003/12/23", "yyyy/mm/dd"));
+/// assert!(is_valid_birth_format("2003.12.23", "yyyy.mm.dd"));
+/// assert!(!is_valid_birth_format("20031223", "unknown")); // 未知格式
+/// assert!(!is_valid_birth_format("20031323", "yyyymmdd")); // 月 13
+/// ```
+pub fn is_valid_birth_format(s: &str, format: &str) -> bool {
+    // 先按格式正则匹配提取 8 位 yyyymmdd，再复用 is_valid_birth 的日期校验
+    let digits: String = match format {
+        "yyyymmdd" => {
+            if !regex::Regex::new(r"^\d{8}$").unwrap().is_match(s) {
+                return false;
+            }
+            s.to_string()
+        }
+        "yyyy-mm-dd" => {
+            let re = regex::Regex::new(r"^(\d{4})-(\d{2})-(\d{2})$").unwrap();
+            match re.captures(s) {
+                Some(c) => format!("{}{}{}", &c[1], &c[2], &c[3]),
+                None => return false,
+            }
+        }
+        "yyyy/mm/dd" => {
+            let re = regex::Regex::new(r"^(\d{4})/(\d{2})/(\d{2})$").unwrap();
+            match re.captures(s) {
+                Some(c) => format!("{}{}{}", &c[1], &c[2], &c[3]),
+                None => return false,
+            }
+        }
+        "yyyy.mm.dd" => {
+            let re = regex::Regex::new(r"^(\d{4})\.(\d{2})\.(\d{2})$").unwrap();
+            match re.captures(s) {
+                Some(c) => format!("{}{}{}", &c[1], &c[2], &c[3]),
+                None => return false,
+            }
+        }
+        _ => return false,
+    };
+    // 复用 is_valid_birth 的日期范围校验（clean_birth 会清理分隔符，这里 digits 已是纯数字）
+    is_valid_birth(&digits)
+}
+
 /// 手机号校验：11 位、1 开头、纯 ASCII 数字；可选前缀白名单。
 ///
 /// - `allowed` 空 → 仅检查 1 开头 + 11 位（默认通过，同 `phone-extract` 语义）。
@@ -391,6 +449,61 @@ pub const ADDR_KEYWORDS: &[&str] = &[
     "省", "市", "区", "县", "镇", "乡", "村", "路", "街", "道", "号", "室", "楼", "单元", "栋",
     "幢", "弄", "巷", "里", "组", "旗", "盟", "社区", "大厦", "小区", "花园",
 ];
+
+/// 邮箱地址校验：结构化校验（local@domain，RFC 5321 简化）。
+///
+/// v1.1.5 T81 新增。规则：
+/// - trim 后非空，总长度 ≤ 254
+/// - 含恰好 1 个 `@`
+/// - local 部分非空、≤ 64 字符、仅允许 `[a-zA-Z0-9._%+-]`
+/// - domain 部分非空、含至少 1 个 `.`、每段非空、仅允许 `[a-zA-Z0-9.-]`
+///
+/// # 示例
+/// ```
+/// use ruT0_data_kit_core::processor::func_validator::is_valid_email;
+/// assert!(is_valid_email("user@example.com"));
+/// assert!(is_valid_email("user.name@domain.co"));
+/// assert!(is_valid_email("a@b.c"));
+/// assert!(!is_valid_email("@b.com"));
+/// assert!(!is_valid_email("a@"));
+/// assert!(!is_valid_email("a@b"));
+/// assert!(!is_valid_email("a b@c.com"));
+/// assert!(!is_valid_email(""));
+/// ```
+pub fn is_valid_email(s: &str) -> bool {
+    let trimmed = s.trim();
+    if trimmed.is_empty() || trimmed.len() > 254 {
+        return false;
+    }
+    let at_count = trimmed.matches('@').count();
+    if at_count != 1 {
+        return false;
+    }
+    let mut parts = trimmed.splitn(2, '@');
+    let local = parts.next().unwrap_or("");
+    let domain = parts.next().unwrap_or("");
+    if local.is_empty() || local.len() > 64 {
+        return false;
+    }
+    if domain.is_empty() || !domain.contains('.') {
+        return false;
+    }
+    // local 部分仅允许 [a-zA-Z0-9._%+-]
+    if !local
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'%' | b'+' | b'-'))
+    {
+        return false;
+    }
+    // domain 每段非空、仅允许 [a-zA-Z0-9.-]
+    if domain
+        .split('.')
+        .any(|seg| seg.is_empty() || !seg.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))
+    {
+        return false;
+    }
+    true
+}
 
 /// 通用校验：按字符类白名单 + 长度范围校验（v1.1.4 续轮 T70 新增；T77 改为
 /// 自定义特殊字符白名单）。
@@ -479,7 +592,11 @@ pub fn is_valid_generic(
 /// - `Ipv6` → `std::net::Ipv6Addr::from_str`（RFC 4291）；未通过说明 "非合法 IPv6 地址"。
 /// - `IdCard` → GB 11643-1999 校验码；有效说明列写性别（"男"/"女"），
 ///   无效说明 "非合法身份证号"。
-/// - `Username` / `Sex` / `Birth` / `Address` → 对应行级校验函数。
+/// - `Username` / `Sex` → 对应行级校验函数。
+/// - `Birth { formats }` → `formats` 空 = 全部接受（[`is_valid_birth`]，向后兼容）；
+///   非空 = 仅接受指定格式之一（[`is_valid_birth_format`]，v1.1.5 T87 新增）。
+/// - `Address` → 对应行级校验函数。
+/// - `Email` → [`is_valid_email`]（v1.1.5 T81 新增，结构化邮箱校验）。
 /// - `Generic` → [`is_valid_generic`]（字符类白名单 + 长度范围）。
 pub fn validate_extracted_with_params(params: &ExtractParams, value: &str) -> (bool, String) {
     match params {
@@ -537,14 +654,24 @@ pub fn validate_extracted_with_params(params: &ExtractParams, value: &str) -> (b
                 (false, "性别须为「男」或「女」".to_string())
             }
         }
-        ExtractParams::Birth => {
-            if is_valid_birth(value) {
-                (true, String::new())
+        ExtractParams::Birth { formats } => {
+            if formats.is_empty() {
+                // 向后兼容：clean_birth + 8 位校验（原逻辑）
+                if is_valid_birth(value) {
+                    (true, String::new())
+                } else {
+                    (
+                        false,
+                        "出生日期格式不符（清理后须为 8 位有效日期）".to_string(),
+                    )
+                }
             } else {
-                (
-                    false,
-                    "出生日期格式不符（清理后须为 8 位有效日期）".to_string(),
-                )
+                // 仅接受指定格式
+                if formats.iter().any(|f| is_valid_birth_format(value, f)) {
+                    (true, String::new())
+                } else {
+                    (false, "出生日期格式不符（须为勾选的格式之一）".to_string())
+                }
             }
         }
         ExtractParams::Address => {
@@ -552,6 +679,14 @@ pub fn validate_extracted_with_params(params: &ExtractParams, value: &str) -> (b
                 (true, String::new())
             } else {
                 (false, "地址格式不符（须含中文+地址关键词）".to_string())
+            }
+        }
+        // v1.1.5 T81：邮箱校验变体
+        ExtractParams::Email => {
+            if is_valid_email(value) {
+                (true, String::new())
+            } else {
+                (false, "邮箱格式不符".to_string())
             }
         }
         // v1.1.4 续轮 T70：通用校验变体（T77 改为自定义特殊字符白名单）
@@ -869,7 +1004,7 @@ mod tests {
     fn validate_extracted_birth() {
         // T67 + T70：Birth 变体 → is_valid_birth（清理分隔符后校验）
         let mut rule = RuleRegistry_like_name_extract();
-        rule.params = Some(ExtractParams::Birth);
+        rule.params = Some(ExtractParams::Birth { formats: vec![] });
         // 有效（8 位纯数字）
         let (ok, note) = validate_extracted(&rule, "19491231");
         assert!(ok);
@@ -994,6 +1129,25 @@ mod tests {
         assert!(!is_valid_birth("194912311")); // 长度超
         assert!(!is_valid_birth("1949ab31")); // 含非数字，清理后 6 位
         assert!(!is_valid_birth("")); // 空串
+    }
+
+    #[test]
+    fn is_valid_birth_format_tests() {
+        // v1.1.5 T87：按指定格式校验出生日期
+        // yyyymmdd
+        assert!(is_valid_birth_format("20031223", "yyyymmdd"));
+        assert!(!is_valid_birth_format("2003-12-23", "yyyymmdd"));
+        // yyyy-mm-dd
+        assert!(is_valid_birth_format("2003-12-23", "yyyy-mm-dd"));
+        assert!(!is_valid_birth_format("20031223", "yyyy-mm-dd"));
+        // yyyy/mm/dd
+        assert!(is_valid_birth_format("2003/12/23", "yyyy/mm/dd"));
+        // yyyy.mm.dd
+        assert!(is_valid_birth_format("2003.12.23", "yyyy.mm.dd"));
+        // 未知格式
+        assert!(!is_valid_birth_format("20031223", "unknown"));
+        // 无效日期（月 13）
+        assert!(!is_valid_birth_format("20031323", "yyyymmdd"));
     }
 
     #[test]
@@ -1143,8 +1297,8 @@ mod tests {
 
     #[test]
     fn validate_extracted_with_params_birth_with_separators() {
-        // T70：Birth 分支 + clean_birth 支持
-        let params = ExtractParams::Birth;
+        // T70：Birth 分支 + clean_birth 支持；T87：formats 空 = 全部接受（向后兼容）
+        let params = ExtractParams::Birth { formats: vec![] };
         // 有效（含分隔符）
         let (ok, _) = validate_extracted_with_params(&params, "1949-12-31");
         assert!(ok);
@@ -1155,6 +1309,35 @@ mod tests {
         let (ok, note) = validate_extracted_with_params(&params, "20031323");
         assert!(!ok);
         assert_eq!(note, "出生日期格式不符（清理后须为 8 位有效日期）");
+    }
+
+    #[test]
+    fn validate_extracted_with_params_birth_formats() {
+        // v1.1.5 T87：formats 非空 → 仅接受指定格式之一
+        // 仅接受 yyyy-mm-dd
+        let params = ExtractParams::Birth {
+            formats: vec!["yyyy-mm-dd".into()],
+        };
+        let (ok, _) = validate_extracted_with_params(&params, "1949-12-31");
+        assert!(ok);
+        // yyyymmdd 不在勾选格式内 → 不通过
+        let (ok, note) = validate_extracted_with_params(&params, "19491231");
+        assert!(!ok);
+        assert_eq!(note, "出生日期格式不符（须为勾选的格式之一）");
+        // 多格式：yyyymmdd + yyyy/mm/dd 均接受
+        let params2 = ExtractParams::Birth {
+            formats: vec!["yyyymmdd".into(), "yyyy/mm/dd".into()],
+        };
+        let (ok, _) = validate_extracted_with_params(&params2, "19491231");
+        assert!(ok);
+        let (ok, _) = validate_extracted_with_params(&params2, "1949/12/31");
+        assert!(ok);
+        // yyyy-mm-dd 不在勾选列表 → 不通过
+        let (ok, _) = validate_extracted_with_params(&params2, "1949-12-31");
+        assert!(!ok);
+        // 无效日期（即便格式匹配）→ 不通过
+        let (ok, _) = validate_extracted_with_params(&params2, "20031323");
+        assert!(!ok);
     }
 
     #[test]

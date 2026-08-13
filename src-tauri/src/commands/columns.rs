@@ -55,6 +55,28 @@ pub enum Base64Mode {
     Decode,
 }
 
+/// 哈希输出大小写（v1.1.5 T83 新增）。
+///
+/// - `Lower`：小写 hex 输出（默认，与历史行为一致）。
+/// - `Upper`：大写 hex 输出（对 hex 串 `to_uppercase()`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HashCase {
+    Lower,
+    Upper,
+}
+
+/// 列变换操作类型（v1.1.5 T86 新增，大小写归一化）。
+///
+/// - `Uppercase`：每行文本 `to_uppercase()` 后写回。
+/// - `Lowercase`：每行文本 `to_lowercase()` 后写回。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TransformOp {
+    Uppercase,
+    Lowercase,
+}
+
 /// Base64 操作结果（camelCase）。
 ///
 /// - `affected`：实际被改写的行数（转换成功且值发生了变化）。
@@ -368,6 +390,9 @@ pub struct HashResult {
 /// 故 `skipped` 正常为 0。空值行（`None`）不参与变换，不计入 `affected`
 /// 也不计入 `skipped`（与 `base64_column` 语义一致）。
 ///
+/// `case`（v1.1.5 T83 新增）控制 hex 输出大小写：`Lower` → 小写（默认），
+/// `Upper` → 大写（对 hex 串 `to_uppercase()`）。
+///
 /// 复用既有 `base64_transform_column_cells` 闭包式列变换 DB 方法
 /// （函数名虽带 base64，但闭包 `F: Fn(&str) -> Option<String>` 语义通用）。
 pub fn hash_column_inner(
@@ -375,6 +400,7 @@ pub fn hash_column_inner(
     sheet_id: i64,
     column: &str,
     algorithm: HashAlgorithm,
+    case: HashCase,
 ) -> Result<HashResult, String> {
     let col_idx = db
         .find_col_idx(sheet_id, column)
@@ -382,18 +408,34 @@ pub fn hash_column_inner(
         .ok_or_else(|| format!("列 `{column}` 不存在"))?;
 
     // 闭包按 algorithm 分发哈希；任意 &str 均可哈希，永远返回 Some(hex)。
+    // case=Upper 时对 hex 串整体 to_uppercase()。
     let transform = |val: &str| match algorithm {
         HashAlgorithm::MD5 => {
             let digest = md5::Md5::digest(val.as_bytes());
-            Some(format!("{:x}", digest))
+            let hex = format!("{:x}", digest);
+            Some(if matches!(case, HashCase::Upper) {
+                hex.to_uppercase()
+            } else {
+                hex
+            })
         }
         HashAlgorithm::SHA1 => {
             let digest = Sha1::digest(val.as_bytes());
-            Some(hex::encode(digest))
+            let hex = hex::encode(digest);
+            Some(if matches!(case, HashCase::Upper) {
+                hex.to_uppercase()
+            } else {
+                hex
+            })
         }
         HashAlgorithm::SHA256 => {
             let digest = Sha256::digest(val.as_bytes());
-            Some(hex::encode(digest))
+            let hex = hex::encode(digest);
+            Some(if matches!(case, HashCase::Upper) {
+                hex.to_uppercase()
+            } else {
+                hex
+            })
         }
     };
 
@@ -414,6 +456,7 @@ pub fn hash_column_inner(
                 HashAlgorithm::SHA1 => "sha1",
                 HashAlgorithm::SHA256 => "sha256",
             },
+            "case": case,
             "affected": affected,
             "skipped": skipped
         })
@@ -432,9 +475,78 @@ pub fn hash_column(
     sheet_id: i64,
     column: String,
     algorithm: HashAlgorithm,
+    case: HashCase,
     db: tauri::State<'_, DbManager>,
 ) -> Result<HashResult, String> {
-    hash_column_inner(&db, sheet_id, &column, algorithm)
+    hash_column_inner(&db, sheet_id, &column, algorithm, case)
+}
+
+// ---------------------------------------------------------------------------
+// transform_column（v1.1.5 T86：大小写归一化）
+// ---------------------------------------------------------------------------
+
+/// 对指定列做大小写归一化（就地变更，单事务 + before/after 快照，可撤销）。
+///
+/// - `op=Uppercase`：每行文本 `to_uppercase()` 后写回。
+/// - `op=Lowercase`：每行文本 `to_lowercase()` 后写回。
+/// - 空值行跳过；转换后与原值相同的行不计入 affected（与 base64 语义一致）。
+///
+/// 复用 `base64_transform_column_cells`（闭包式列变换，单事务，返回 before/after 快照）
+/// → `log_operation_with_snapshot` 供撤销。返回 `(affected, skipped)`。
+pub fn transform_column_inner(
+    db: &DbManager,
+    sheet_id: i64,
+    column: &str,
+    op: TransformOp,
+) -> Result<Base64Result, String> {
+    let col_idx = db
+        .find_col_idx(sheet_id, column)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("列 `{column}` 不存在"))?;
+
+    // 闭包按 op 分发大小写归一化；任意 &str 均可变换，永远返回 Some。
+    let transform = |val: &str| match op {
+        TransformOp::Uppercase => Some(val.to_uppercase()),
+        TransformOp::Lowercase => Some(val.to_lowercase()),
+    };
+
+    let (affected, skipped, before_cells, after_cells) = db
+        .base64_transform_column_cells(sheet_id, col_idx, transform)
+        .map_err(|e| e.to_string())?;
+
+    let before_json = serde_json::to_string(&before_cells).map_err(|e| e.to_string())?;
+    let after_json = serde_json::to_string(&after_cells).map_err(|e| e.to_string())?;
+
+    db.log_operation_with_snapshot(
+        Some(sheet_id),
+        "transform_column",
+        &serde_json::json!({
+            "column": column,
+            "op": match op {
+                TransformOp::Uppercase => "uppercase",
+                TransformOp::Lowercase => "lowercase",
+            },
+            "affected": affected,
+            "skipped": skipped,
+        })
+        .to_string(),
+        Some(&before_json),
+        &after_json,
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(Base64Result { affected, skipped })
+}
+
+/// `transform_column` 的 Tauri 命令包装（v1.1.5 T86）。
+#[tauri::command]
+pub fn transform_column(
+    sheet_id: i64,
+    column: String,
+    op: TransformOp,
+    db: tauri::State<'_, DbManager>,
+) -> Result<Base64Result, String> {
+    transform_column_inner(&db, sheet_id, &column, op)
 }
 
 // ---------------------------------------------------------------------------
@@ -847,7 +959,14 @@ mod tests {
             ],
         );
 
-        let result = hash_column_inner(&db, sheet_id, "payload", HashAlgorithm::MD5).unwrap();
+        let result = hash_column_inner(
+            &db,
+            sheet_id,
+            "payload",
+            HashAlgorithm::MD5,
+            HashCase::Lower,
+        )
+        .unwrap();
         // 3 行数据：hello / world / ""（空串仍是非 None，会哈希成空串的 md5）。
         assert_eq!(result.affected, 3);
         assert_eq!(result.skipped, 0);
@@ -876,7 +995,14 @@ mod tests {
             ],
         );
 
-        let result = hash_column_inner(&db, sheet_id, "payload", HashAlgorithm::SHA1).unwrap();
+        let result = hash_column_inner(
+            &db,
+            sheet_id,
+            "payload",
+            HashAlgorithm::SHA1,
+            HashCase::Lower,
+        )
+        .unwrap();
         assert_eq!(result.affected, 2);
         assert_eq!(result.skipped, 0);
 
@@ -902,7 +1028,14 @@ mod tests {
             ],
         );
 
-        let result = hash_column_inner(&db, sheet_id, "payload", HashAlgorithm::SHA256).unwrap();
+        let result = hash_column_inner(
+            &db,
+            sheet_id,
+            "payload",
+            HashAlgorithm::SHA256,
+            HashCase::Lower,
+        )
+        .unwrap();
         assert_eq!(result.affected, 2);
         assert_eq!(result.skipped, 0);
 
@@ -928,7 +1061,14 @@ mod tests {
             ],
         );
 
-        let result = hash_column_inner(&db, sheet_id, "payload", HashAlgorithm::MD5).unwrap();
+        let result = hash_column_inner(
+            &db,
+            sheet_id,
+            "payload",
+            HashAlgorithm::MD5,
+            HashCase::Lower,
+        )
+        .unwrap();
         assert_eq!(result.affected, 2);
 
         // 查最近一条 hash_column 操作，断言 before_snapshot_json 含原文。
@@ -972,7 +1112,14 @@ mod tests {
             "操作前不应有 hash_column 记录"
         );
 
-        hash_column_inner(&db, sheet_id, "payload", HashAlgorithm::SHA256).unwrap();
+        hash_column_inner(
+            &db,
+            sheet_id,
+            "payload",
+            HashAlgorithm::SHA256,
+            HashCase::Lower,
+        )
+        .unwrap();
 
         let after = db.list_undoable_operations(sheet_id, 50).unwrap();
         let hash_ops: Vec<_> = after.iter().filter(|r| r.kind == "hash_column").collect();
@@ -999,7 +1146,14 @@ mod tests {
             ],
         );
 
-        let result = hash_column_inner(&db, sheet_id, "payload", HashAlgorithm::MD5).unwrap();
+        let result = hash_column_inner(
+            &db,
+            sheet_id,
+            "payload",
+            HashAlgorithm::MD5,
+            HashCase::Lower,
+        )
+        .unwrap();
         // 仅 2 行非空数据参与变换（row_idx=2 因 None 被跳过且不计 affected/skipped）。
         assert_eq!(result.affected, 2);
         assert_eq!(result.skipped, 0);
@@ -1014,5 +1168,213 @@ mod tests {
         assert_eq!(vals[1], "", "None 行应保持为空（None 不被哈希）");
         let world_md5 = format!("{:x}", md5::Md5::digest(b"world"));
         assert_eq!(vals[2], world_md5);
+    }
+
+    // 19. hash_column case=Upper 时输出大写 hex（T83）
+    //     MD5("abc") = 900150983cd24fb0d6963f7d28e17f72 → 全大写
+    #[test]
+    fn hash_column_inner_uppercase() {
+        let (_dir, db) = setup_db();
+        let (_session_id, sheet_id) = setup_sheet(
+            &db,
+            &[
+                cell(0, 0, "payload"),
+                cell(1, 0, "abc"),
+                cell(2, 0, "hello"),
+            ],
+        );
+
+        // MD5 + Upper
+        let result = hash_column_inner(
+            &db,
+            sheet_id,
+            "payload",
+            HashAlgorithm::MD5,
+            HashCase::Upper,
+        )
+        .unwrap();
+        assert_eq!(result.affected, 2);
+        assert_eq!(result.skipped, 0);
+
+        let vals = column_values(&db, sheet_id, 0);
+        // MD5("abc") 大写 = 900150983CD24FB0D6963F7D28E17F72
+        assert_eq!(vals[0], "900150983CD24FB0D6963F7D28E17F72");
+        // MD5("hello") 大写 = 5D41402ABC4B2A76B9719D911017C592
+        assert_eq!(vals[1], "5D41402ABC4B2A76B9719D911017C592");
+
+        // 再用 SHA1 / SHA256 Upper 验证（基于 Lower 已知向量转大写）。
+        // 先撤销（回写原文）以便复用 sheet：写回 abc / hello。
+        db.write_cells(
+            sheet_id,
+            &[
+                Cell {
+                    sheet_id,
+                    row_idx: 1,
+                    col_idx: 0,
+                    value: Some("abc".into()),
+                },
+                Cell {
+                    sheet_id,
+                    row_idx: 2,
+                    col_idx: 0,
+                    value: Some("hello".into()),
+                },
+            ],
+        )
+        .unwrap();
+
+        let _ = hash_column_inner(
+            &db,
+            sheet_id,
+            "payload",
+            HashAlgorithm::SHA1,
+            HashCase::Upper,
+        )
+        .unwrap();
+        let sha1_vals = column_values(&db, sheet_id, 0);
+        // SHA1("abc") 大写 = A9993E364706816ABA3E25717850C26C9CD0D89D
+        assert_eq!(sha1_vals[0], "A9993E364706816ABA3E25717850C26C9CD0D89D");
+
+        // 撤销回原文再做 SHA256 Upper
+        db.write_cells(
+            sheet_id,
+            &[
+                Cell {
+                    sheet_id,
+                    row_idx: 1,
+                    col_idx: 0,
+                    value: Some("abc".into()),
+                },
+                Cell {
+                    sheet_id,
+                    row_idx: 2,
+                    col_idx: 0,
+                    value: Some("hello".into()),
+                },
+            ],
+        )
+        .unwrap();
+        let _ = hash_column_inner(
+            &db,
+            sheet_id,
+            "payload",
+            HashAlgorithm::SHA256,
+            HashCase::Upper,
+        )
+        .unwrap();
+        let sha256_vals = column_values(&db, sheet_id, 0);
+        // SHA256("abc") 大写 = BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD
+        assert_eq!(
+            sha256_vals[0],
+            "BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD"
+        );
+    }
+
+    // 20. transform_column 大写 / 小写归一化（T86）
+    //     abc→ABC / XYZ 不变 / aBc→ABC；随后 ABC→abc / XYZ→xyz / ABC→abc
+    #[test]
+    fn transform_column_inner_uppercase_lowercase() {
+        let (_dir, db) = setup_db();
+        let (_session_id, sheet_id) = setup_sheet(
+            &db,
+            &[
+                cell(0, 0, "c1"),
+                cell(1, 0, "abc"),
+                cell(2, 0, "XYZ"),
+                cell(3, 0, "aBc"),
+            ],
+        );
+
+        // Uppercase：abc→ABC, aBc→ABC, XYZ 不变（不计入 affected）
+        let r = transform_column_inner(&db, sheet_id, "c1", TransformOp::Uppercase).unwrap();
+        assert_eq!(r.affected, 2);
+        assert_eq!(r.skipped, 0);
+        let vals = column_values(&db, sheet_id, 0);
+        assert_eq!(vals[0], "ABC");
+        assert_eq!(vals[1], "XYZ");
+        assert_eq!(vals[2], "ABC");
+
+        // Lowercase：ABC→abc, XYZ→xyz, ABC→abc
+        let r = transform_column_inner(&db, sheet_id, "c1", TransformOp::Lowercase).unwrap();
+        assert_eq!(r.affected, 3);
+        let vals = column_values(&db, sheet_id, 0);
+        assert_eq!(vals[0], "abc");
+        assert_eq!(vals[1], "xyz");
+        assert_eq!(vals[2], "abc");
+    }
+
+    // 21. transform_column 写入 operations 表，before_snapshot 含原文，undo 可恢复（T86）
+    #[test]
+    fn transform_column_undo_restores_original() {
+        let (_dir, db) = setup_db();
+        let (_session_id, sheet_id) = setup_sheet(
+            &db,
+            &[
+                cell(0, 0, "payload"),
+                cell(1, 0, "hello"),
+                cell(2, 0, "World"),
+            ],
+        );
+
+        let result =
+            transform_column_inner(&db, sheet_id, "payload", TransformOp::Uppercase).unwrap();
+        assert_eq!(result.affected, 2);
+
+        // 查最近一条 transform_column 操作，断言 before_snapshot_json 含原文。
+        let undoable = db.list_undoable_operations(sheet_id, 50).unwrap();
+        let transform_op = undoable
+            .iter()
+            .find(|r| r.kind == "transform_column")
+            .expect("应有 transform_column 操作记录");
+        let op = db.query_operation_by_id(transform_op.id).unwrap().unwrap();
+        assert!(
+            op.before_snapshot_json.is_some(),
+            "before_snapshot_json 必须存在供撤销"
+        );
+        let before_json = op.before_snapshot_json.unwrap();
+        assert!(
+            before_json.contains("hello") && before_json.contains("World"),
+            "before 快照应含原始值"
+        );
+
+        // 撤销：把 before 快照回写 → 恢复原文。
+        let before_cells: Vec<Cell> = serde_json::from_str(&before_json).unwrap();
+        db.write_cells(sheet_id, &before_cells).unwrap();
+        let restored = column_values(&db, sheet_id, 0);
+        assert_eq!(restored, vec!["hello".to_string(), "World".to_string()]);
+    }
+
+    // 22. transform_column 操作在 list_undoable_operations 结果中（kind 白名单生效，T86）
+    #[test]
+    fn transform_column_in_undo_list() {
+        let (_dir, db) = setup_db();
+        let (_session_id, sheet_id) = setup_sheet(
+            &db,
+            &[
+                cell(0, 0, "payload"),
+                cell(1, 0, "hello"),
+                cell(2, 0, "world"),
+            ],
+        );
+
+        // 操作前无 transform_column 操作。
+        let before = db.list_undoable_operations(sheet_id, 50).unwrap();
+        assert!(
+            !before.iter().any(|r| r.kind == "transform_column"),
+            "操作前不应有 transform_column 记录"
+        );
+
+        transform_column_inner(&db, sheet_id, "payload", TransformOp::Lowercase).unwrap();
+
+        let after = db.list_undoable_operations(sheet_id, 50).unwrap();
+        let transform_ops: Vec<_> = after
+            .iter()
+            .filter(|r| r.kind == "transform_column")
+            .collect();
+        assert_eq!(
+            transform_ops.len(),
+            1,
+            "应有且仅有一条 transform_column 操作记录"
+        );
     }
 }

@@ -56,6 +56,11 @@ export default function TopToolbar({ onImport }) {
               "pcap",
               "pcapng",
               "log",
+              // v1.1.5 T82：补齐 SQLite 文件扩展名，对齐后端 DbReader + detect_format
+              // （v1.1.4 T75 已支持 .db/.sqlite/.sqlite3，此前前端过滤遗漏）
+              "db",
+              "sqlite",
+              "sqlite3",
             ],
           },
         ],

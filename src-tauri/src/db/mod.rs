@@ -1467,7 +1467,7 @@ impl DbManager {
         let conn = self.conn.lock().expect("db mutex poisoned");
         let mut stmt = conn.prepare(
             "SELECT id, kind, created_at FROM operations
-             WHERE sheet_id = ?1 AND kind IN ('mask', 'replace_in_column', 'replace_all', 'base64_column', 'hash_column')
+             WHERE sheet_id = ?1 AND kind IN ('mask', 'replace_in_column', 'replace_all', 'base64_column', 'hash_column', 'transform_column')
              ORDER BY created_at DESC
              LIMIT ?2",
         )?;
@@ -1818,15 +1818,16 @@ mod tests {
         mgr.seed_builtin_rules().unwrap();
         // v1.1.4 续轮 T70：3 name + simple-mask + segment-mask + 5 条 extract
         // + 6 条 T67 validate（username/sex/birth/idcard/phone/address）
-        // + 1 条 generic-validate = 17 条
-        assert_eq!(mgr.count_rules().unwrap(), 17);
+        // + 1 条 generic-validate
+        // v1.1.5 T81：+ 1 条 email-validate = 18 条
+        assert_eq!(mgr.count_rules().unwrap(), 18);
         let kinds: Vec<RuleKind> = mgr.list_rules().unwrap().iter().map(|r| r.kind).collect();
         assert!(kinds.contains(&RuleKind::Mask));
         assert!(kinds.contains(&RuleKind::Validate));
         assert!(kinds.contains(&RuleKind::Extract));
         // 再次 seed 不重复插入（已存在的 id 跳过）
         mgr.seed_builtin_rules().unwrap();
-        assert_eq!(mgr.count_rules().unwrap(), 17);
+        assert_eq!(mgr.count_rules().unwrap(), 18);
     }
 
     #[test]
@@ -1861,9 +1862,10 @@ mod tests {
         mgr.update_rule_params("name-validate", Some(r"^[\u4e00-\u9fa5]{2,8}$"), None)
             .unwrap();
         // 再次 seed → 补 simple-mask + segment-mask + 5 条 extract 规则 + 6 条
-        // T67 validate 规则 + 1 条 T70 generic-validate，已存在的不动
+        // T67 validate 规则 + 1 条 T70 generic-validate
+        // v1.1.5 T81：+ 1 条 email-validate = 18 条
         mgr.seed_builtin_rules().unwrap();
-        assert_eq!(mgr.count_rules().unwrap(), 17);
+        assert_eq!(mgr.count_rules().unwrap(), 18);
         // 用户修改的 pattern 仍在
         let got = mgr.get_rule("name-validate").unwrap().unwrap();
         assert_eq!(got.pattern.as_deref(), Some(r"^[\u4e00-\u9fa5]{2,8}$"));
@@ -1933,9 +1935,10 @@ mod tests {
             mgr.upsert_rule(&rule).unwrap();
         }
         assert_eq!(mgr.count_rules().unwrap(), 6);
-        // seed → 补 17 条内置规则 + 清理 6 条废弃 id = 17 条
+        // seed → 补 18 条内置规则 + 清理 6 条废弃 id = 18 条
+        // （v1.1.5 T81：email-validate 新增，17 → 18）
         mgr.seed_builtin_rules().unwrap();
-        assert_eq!(mgr.count_rules().unwrap(), 17);
+        assert_eq!(mgr.count_rules().unwrap(), 18);
         // 6 条废弃 id 已删除
         assert!(mgr.get_rule("idcard-mask").unwrap().is_none());
         assert!(mgr.get_rule("phone-mask").unwrap().is_none());
@@ -2000,8 +2003,9 @@ mod tests {
         let list = mgr.list_rules().unwrap();
         // T55c 起 16 条内置规则（3 name + simple-mask + segment-mask + 5 extract
         // + 6 条 T67 validate：username/sex/birth/idcard/phone/address）。
-        // v1.1.4 续轮 T70：+ generic-validate = 17 条
-        assert_eq!(list.len(), 17);
+        // v1.1.4 续轮 T70：+ generic-validate
+        // v1.1.5 T81：+ email-validate = 18 条
+        assert_eq!(list.len(), 18);
         for r in &list {
             // 确认 kind 字符串化 + 反序列化闭环
             let s = r.kind.to_string();
