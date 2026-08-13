@@ -36,10 +36,20 @@ export function reducer(state, action) {
         ...state,
         aiPanel: { ...state.aiPanel, visible: Boolean(action.payload) },
       };
+    case ACTION.SET_AI_PANEL_PINNED:
+      return {
+        ...state,
+        aiPanel: { ...state.aiPanel, pinned: Boolean(action.payload) },
+      };
     case ACTION.SET_SIDE_PANEL_COLLAPSED:
       return {
         ...state,
         sidePanel: { ...state.sidePanel, collapsed: Boolean(action.payload) },
+      };
+    case ACTION.SET_SIDE_PANEL_PINNED:
+      return {
+        ...state,
+        sidePanel: { ...state.sidePanel, pinned: Boolean(action.payload) },
       };
 
     // ---- T3 ----

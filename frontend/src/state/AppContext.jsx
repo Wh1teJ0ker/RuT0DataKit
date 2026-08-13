@@ -25,9 +25,19 @@ export function AppProvider({ children }) {
     (visible) => dispatch({ type: ACTION.SET_AI_PANEL_VISIBLE, payload: visible }),
     []
   );
+  // v1.2.0：固定 AI 面板（pinned 时窄屏不自动折叠）
+  const setAiPanelPinned = useCallback(
+    (pinned) => dispatch({ type: ACTION.SET_AI_PANEL_PINNED, payload: pinned }),
+    []
+  );
   // v1.2.0 T99：左侧能力面板折叠态
   const setSidePanelCollapsed = useCallback(
     (collapsed) => dispatch({ type: ACTION.SET_SIDE_PANEL_COLLAPSED, payload: collapsed }),
+    []
+  );
+  // v1.2.0：固定左侧能力面板（pinned 时窄屏不自动折叠）
+  const setSidePanelPinned = useCallback(
+    (pinned) => dispatch({ type: ACTION.SET_SIDE_PANEL_PINNED, payload: pinned }),
     []
   );
 
@@ -120,7 +130,9 @@ export function AppProvider({ children }) {
       setView,
       setActiveCapability,
       setAiPanelVisible,
+      setAiPanelPinned,
       setSidePanelCollapsed,
+      setSidePanelPinned,
       addSheet,
       closeSheet,
       setActiveSheet,
@@ -146,7 +158,9 @@ export function AppProvider({ children }) {
       setView,
       setActiveCapability,
       setAiPanelVisible,
+      setAiPanelPinned,
       setSidePanelCollapsed,
+      setSidePanelPinned,
       addSheet,
       closeSheet,
       setActiveSheet,

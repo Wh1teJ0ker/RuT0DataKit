@@ -1,8 +1,10 @@
 import { useEffect } from "react";
-import { Button, Empty, Layout } from "antd";
+import { Button, Empty, Layout, Tooltip } from "antd";
 import {
   MenuFoldOutlined,
   MenuUnfoldOutlined,
+  PushpinOutlined,
+  PushpinFilled,
   SafetyCertificateOutlined,
   CheckCircleOutlined,
   FileSearchOutlined,
@@ -47,14 +49,14 @@ const CAPABILITY_ICONS = {
 // v1.1.0：`rules` 不在此列（改由 App.jsx 路由到主区 RulesPanel）。
 // v1.2.0 T99：折叠态下点击图标展开面板。
 export default function SidePanel({ activeCapability }) {
-  const { state, setSidePanelCollapsed, setActiveCapability } = useAppContext();
-  const { collapsed } = state.sidePanel;
+  const { state, setSidePanelCollapsed, setSidePanelPinned, setActiveCapability } = useAppContext();
+  const { collapsed, pinned } = state.sidePanel;
   const { isCompact } = useBreakpoint();
   const PanelComp = activeCapability ? PANELS[activeCapability] : null;
 
-  // 窄窗口自动折叠（用户展开后不强制收回，仅首次进入窄屏时触发）。
+  // 窄窗口自动折叠（pinned 时跳过，保持展开）。
   useEffect(() => {
-    if (isCompact && !collapsed) {
+    if (isCompact && !collapsed && !pinned) {
       setSidePanelCollapsed(true);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -96,10 +98,21 @@ export default function SidePanel({ activeCapability }) {
           <div
             style={{
               display: "flex",
+              alignItems: "center",
               justifyContent: "flex-end",
+              gap: 2,
               marginBottom: 4,
             }}
           >
+            <Tooltip title={pinned ? "取消固定" : "固定（窄屏不自动折叠）"}>
+              <Button
+                type="text"
+                size="small"
+                icon={pinned ? <PushpinFilled /> : <PushpinOutlined />}
+                style={{ color: pinned ? "#1677ff" : undefined }}
+                onClick={() => setSidePanelPinned(!pinned)}
+              />
+            </Tooltip>
             <Button
               type="text"
               size="small"

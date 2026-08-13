@@ -1,8 +1,10 @@
 import { useEffect } from "react";
-import { Button, Layout, Typography } from "antd";
+import { Button, Layout, Tooltip, Typography } from "antd";
 import {
   MenuFoldOutlined,
   MenuUnfoldOutlined,
+  PushpinOutlined,
+  PushpinFilled,
   RobotOutlined,
 } from "@ant-design/icons";
 
@@ -16,16 +18,16 @@ const { Sider } = Layout;
 // 设置入口已迁移到 TopToolbar 右端（T40）。
 // v1.2.0：窄窗口（isCompact）时自动折叠，镜像 SidePanel 模式。
 export default function AiPanel() {
-  const { state, setAiPanelVisible } = useAppContext();
-  const { visible } = state.aiPanel;
+  const { state, setAiPanelVisible, setAiPanelPinned } = useAppContext();
+  const { visible, pinned } = state.aiPanel;
   const { isCompact } = useBreakpoint();
 
-  // 窄窗口自动折叠 AI 面板，避免挤占 Workbench。
+  // 窄窗口自动折叠 AI 面板，避免挤占 Workbench（pinned 时跳过）。
   useEffect(() => {
-    if (isCompact && visible) {
+    if (isCompact && visible && !pinned) {
       setAiPanelVisible(false);
     }
-  }, [isCompact, visible, setAiPanelVisible]);
+  }, [isCompact, visible, pinned, setAiPanelVisible]);
   return (
     <Sider
       width={300}
@@ -76,12 +78,23 @@ export default function AiPanel() {
             <Typography.Text strong>
               <RobotOutlined /> AI 助手
             </Typography.Text>
-            <Button
-              type="text"
-              size="small"
-              icon={<MenuFoldOutlined />}
-              onClick={() => setAiPanelVisible(false)}
-            />
+            <div style={{ display: "flex", alignItems: "center", gap: 2 }}>
+              <Tooltip title={pinned ? "取消固定" : "固定（窄屏不自动折叠）"}>
+                <Button
+                  type="text"
+                  size="small"
+                  icon={pinned ? <PushpinFilled /> : <PushpinOutlined />}
+                  style={{ color: pinned ? "#1677ff" : undefined }}
+                  onClick={() => setAiPanelPinned(!pinned)}
+                />
+              </Tooltip>
+              <Button
+                type="text"
+                size="small"
+                icon={<MenuFoldOutlined />}
+                onClick={() => setAiPanelVisible(false)}
+              />
+            </div>
           </div>
           <div style={{ flex: 1, padding: 12, overflow: "auto" }}>
             <Typography.Paragraph type="secondary">
