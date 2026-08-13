@@ -31,8 +31,8 @@ export const MASK_PRESETS = [
       keepSuffix: 4,
       maskChar: "*",
       maskMinLen: 8,
-      minLen: 18,
-      maxLen: 18,
+      minLen: null,
+      maxLen: null,
     },
   },
   {
