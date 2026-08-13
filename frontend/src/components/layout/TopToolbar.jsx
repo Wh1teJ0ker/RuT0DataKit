@@ -6,14 +6,15 @@ import {
   SafetyCertificateOutlined,
   CheckCircleOutlined,
   FileSearchOutlined,
-  ControlOutlined,
   ColumnHeightOutlined,
   KeyOutlined,
+  ControlOutlined,
   SettingOutlined,
 } from "@ant-design/icons";
 import { open } from "@tauri-apps/plugin-dialog";
 import { importFile } from "../../tauri";
 import { useAppContext } from "../../state";
+import { useBreakpoint } from "../../hooks/useBreakpoint";
 import ExportModal from "../ExportModal";
 
 // 右组能力按钮配置：id 与 state.activeCapability 取值一致。
@@ -30,6 +31,7 @@ const CAPABILITIES = [
 export default function TopToolbar({ onImport }) {
   const { state, setActiveCapability, setView } = useAppContext();
   const { activeCapability } = state;
+  const { isCompact } = useBreakpoint();
   const activeSheet = state.sheets.find(
     (s) => s.id === state.activeSheetId
   );
@@ -110,20 +112,20 @@ export default function TopToolbar({ onImport }) {
           loading={importing}
           onClick={handleImport}
         >
-          导入
+          {!isCompact && "导入"}
         </Button>
         <Button
           icon={<ExportOutlined />}
           onClick={handleExport}
           disabled={!activeSheet}
         >
-          导出
+          {!isCompact && "导出"}
         </Button>
       </Space>
 
       <Divider type="vertical" style={{ height: 24, margin: "0 4px" }} />
 
-      <Space size={4}>
+      <Space size={4} wrap>
         {CAPABILITIES.map((cap) => (
           <Button
             key={cap.id}
@@ -131,7 +133,7 @@ export default function TopToolbar({ onImport }) {
             type={activeCapability === cap.id ? "primary" : "default"}
             onClick={() => setActiveCapability(cap.id)}
           >
-            {cap.label}
+            {!isCompact && cap.label}
           </Button>
         ))}
       </Space>

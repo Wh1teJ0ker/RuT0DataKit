@@ -236,7 +236,7 @@ export default function ExtractPanel() {
           <List
             size="small"
             bordered
-            style={{ marginTop: 4, maxHeight: 240, overflow: "auto" }}
+            style={{ marginTop: 4, maxHeight: "40vh", overflow: "auto" }}
             dataSource={hits}
             renderItem={(h) => (
               <List.Item style={{ padding: "4px 8px" }}>

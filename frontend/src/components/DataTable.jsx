@@ -371,7 +371,7 @@ export default function DataTable({ sheet, onSetPage }) {
             onSearch={handleSearch}
             loading={searching}
             enterButton
-            style={{ width: 220 }}
+            style={{ flex: "1 1 220px", minWidth: 120, maxWidth: 220 }}
           />
           <Space size={4}>
             <Switch
@@ -387,7 +387,7 @@ export default function DataTable({ sheet, onSetPage }) {
             value={state.searchState.colIdx}
             onChange={(v) => setSearchState({ colIdx: v })}
             options={colSelectOptions}
-            style={{ width: 140 }}
+            style={{ minWidth: 100, flex: "0 1 140px" }}
             size="small"
           />
           <Button size="small" onClick={clearSearch}>

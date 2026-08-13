@@ -315,7 +315,7 @@ export default function ValidatePanel() {
                               <InputNumber
                                 placeholder="不限"
                                 min={0}
-                                style={{ width: 100 }}
+                                style={{ flex: 1, minWidth: 80 }}
                               />
                             </Form.Item>
                             <Form.Item
@@ -326,7 +326,7 @@ export default function ValidatePanel() {
                               <InputNumber
                                 placeholder="不限"
                                 min={0}
-                                style={{ width: 100 }}
+                                style={{ flex: 1, minWidth: 80 }}
                               />
                             </Form.Item>
                           </Space>

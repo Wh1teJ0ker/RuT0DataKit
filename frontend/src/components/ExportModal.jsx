@@ -172,7 +172,8 @@ export default function ExportModal({ open, sheet, onClose }) {
       okText="导出"
       cancelText="取消"
       confirmLoading={exporting}
-      width={520}
+      width="90vw"
+      style={{ maxWidth: 520 }}
       okButtonProps={{ disabled: !sheet || orderedHeaders.length === 0 }}
     >
       <Space direction="vertical" style={{ width: "100%" }} size="middle">
@@ -304,7 +305,7 @@ export default function ExportModal({ open, sheet, onClose }) {
             <Checkbox.Group value={selectedCols} style={{ width: "100%" }}>
               <div
                 style={{
-                  maxHeight: 140,
+                  maxHeight: "30vh",
                   overflow: "auto",
                   border: "1px solid #f0f0f0",
                   borderRadius: 4,

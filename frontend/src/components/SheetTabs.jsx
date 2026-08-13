@@ -39,7 +39,7 @@ export default function SheetTabs() {
               if (e.key === "Escape") setEditing(null);
             }}
             onClick={(e) => e.stopPropagation()}
-            style={{ width: 120, margin: "-2px 0" }}
+            style={{ width: "100%", minWidth: 80, margin: "-2px 0" }}
           />
         ) : (
           <span

@@ -6,6 +6,7 @@ export const initialState = {
   currentView: "workbench", // 'workbench' | 'settings'
   activeCapability: null, // null | 'mask' | 'validate' | 'extract' | 'rules' | 'columnOps' | 'crypto'
   aiPanel: { visible: false }, // 默认折叠为图标条
+  sidePanel: { collapsed: false }, // v1.2.0 T99：左侧能力面板折叠态
   // T3 字段
   sheets: [], // Sheet[]
   activeSheetId: null, // string | null
@@ -27,6 +28,7 @@ export const ACTION = {
   SET_VIEW: "SET_VIEW",
   SET_ACTIVE_CAPABILITY: "SET_ACTIVE_CAPABILITY",
   SET_AI_PANEL_VISIBLE: "SET_AI_PANEL_VISIBLE",
+  SET_SIDE_PANEL_COLLAPSED: "SET_SIDE_PANEL_COLLAPSED", // v1.2.0 T99
   // T3 action
   ADD_SHEET: "ADD_SHEET",
   CLOSE_SHEET: "CLOSE_SHEET",

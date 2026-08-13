@@ -25,6 +25,11 @@ export function AppProvider({ children }) {
     (visible) => dispatch({ type: ACTION.SET_AI_PANEL_VISIBLE, payload: visible }),
     []
   );
+  // v1.2.0 T99：左侧能力面板折叠态
+  const setSidePanelCollapsed = useCallback(
+    (collapsed) => dispatch({ type: ACTION.SET_SIDE_PANEL_COLLAPSED, payload: collapsed }),
+    []
+  );
 
   // ---- T3 ----
   const addSheet = useCallback(
@@ -115,6 +120,7 @@ export function AppProvider({ children }) {
       setView,
       setActiveCapability,
       setAiPanelVisible,
+      setSidePanelCollapsed,
       addSheet,
       closeSheet,
       setActiveSheet,
@@ -140,6 +146,7 @@ export function AppProvider({ children }) {
       setView,
       setActiveCapability,
       setAiPanelVisible,
+      setSidePanelCollapsed,
       addSheet,
       closeSheet,
       setActiveSheet,

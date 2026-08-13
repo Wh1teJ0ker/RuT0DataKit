@@ -36,6 +36,11 @@ export function reducer(state, action) {
         ...state,
         aiPanel: { ...state.aiPanel, visible: Boolean(action.payload) },
       };
+    case ACTION.SET_SIDE_PANEL_COLLAPSED:
+      return {
+        ...state,
+        sidePanel: { ...state.sidePanel, collapsed: Boolean(action.payload) },
+      };
 
     // ---- T3 ----
     case ACTION.ADD_SHEET: {

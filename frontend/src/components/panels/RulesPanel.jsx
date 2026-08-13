@@ -20,6 +20,7 @@ import {
   message,
 } from "antd";
 import { useAppContext } from "../../state";
+import { useBreakpoint } from "../../hooks/useBreakpoint";
 import {
   toggleRule,
   updateRuleExtractConfig,
@@ -365,6 +366,7 @@ export default function RulesPanel() {
   };
 
   const sheet = state.sheets.find((s) => s.id === state.activeSheetId);
+  const { isCompact } = useBreakpoint();
 
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
@@ -373,15 +375,19 @@ export default function RulesPanel() {
           规则管理
         </Title>
       </div>
-      <Spin spinning={loading}>
-        <Row gutter={0} style={{ height: "calc(100vh - 96px)" }}>
+      <Spin spinning={loading} style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+        <Row gutter={0} style={{ flex: 1, minHeight: 0 }}>
           {/* 左：规则列表（按 kind 分组） */}
           <Col
-            flex="240px"
+            {...(isCompact
+              ? { span: 24 }
+              : { flex: "240px" })}
             style={{
-              borderRight: "1px solid #f0f0f0",
+              borderRight: isCompact ? "none" : "1px solid #f0f0f0",
+              borderBottom: isCompact ? "1px solid #f0f0f0" : "none",
               overflow: "auto",
               height: "100%",
+              maxHeight: isCompact ? 200 : undefined,
             }}
           >
             <div style={{ padding: 8 }}>
@@ -443,7 +449,9 @@ export default function RulesPanel() {
 
           {/* 右：详情 */}
           <Col
-            flex="auto"
+            {...(isCompact
+              ? { span: 24 }
+              : { flex: "auto" })}
             style={{ overflow: "auto", height: "100%" }}
           >
             {selected ? (
@@ -458,24 +466,24 @@ export default function RulesPanel() {
                   style={{ marginBottom: 16 }}
                 >
                   <Row gutter={[8, 8]}>
-                    <Col span={6}>
+                    <Col xs={{ span: 24 }} md={{ span: 6 }}>
                       <Text type="secondary">规则类别</Text>
                     </Col>
-                    <Col span={18}>
+                    <Col xs={{ span: 24 }} md={{ span: 18 }}>
                       <Tag color={KIND_COLOR[selected.kind]}>
                         {KIND_LABEL[selected.kind] || selected.kind}
                       </Tag>
                     </Col>
-                    <Col span={6}>
+                    <Col xs={{ span: 24 }} md={{ span: 6 }}>
                       <Text type="secondary">说明</Text>
                     </Col>
-                    <Col span={18}>
+                    <Col xs={{ span: 24 }} md={{ span: 18 }}>
                       <Text>{selected.description || "（无）"}</Text>
                     </Col>
-                    <Col span={6}>
+                    <Col xs={{ span: 24 }} md={{ span: 6 }}>
                       <Text type="secondary">启用</Text>
                     </Col>
-                    <Col span={18}>
+                    <Col xs={{ span: 24 }} md={{ span: 18 }}>
                       <Switch
                         size="small"
                         checked={selected.enabled}
