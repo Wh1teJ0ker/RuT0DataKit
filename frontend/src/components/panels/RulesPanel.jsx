@@ -47,6 +47,8 @@ import {
   buildGenericParamsForRun,
   VALIDATE_HINTS,
 } from "./validateParams";
+// v1.2.0：前端内联校验器 — 镜像后端 func_validator.rs 的程序化校验逻辑。
+import { runInlineValidator } from "../../utils/inlineValidators";
 
 const { Title, Text } = Typography;
 
@@ -281,8 +283,26 @@ export default function RulesPanel() {
     }
   };
 
-  // validate：前端正则预览（不写 DB）。
+  // validate 测试：优先走程序化校验器（luhn/ipv4/idcard 等），fallback 正则。
   const runValidateTest = () => {
+    // 有 params.validator 的程序化校验规则（luhn/ipv4/ipv6/idcard/username/sex/birth/address/generic/phonePrefix）。
+    if (selected.params?.validator) {
+      const params = selected.params.validator === "phonePrefix"
+        ? { ...selected.params, allowedPrefixes: draftAllowedPrefixes }
+        : selected.params.validator === "generic"
+          ? buildGenericParamsForRun(draftGenericParams)
+          : selected.params;
+      const result = runInlineValidator(testInput, selected.params.validator, params);
+      setTestResult({
+        ok: true,
+        kind: "validate",
+        passed: result.passed,
+        message: result.message,
+        note: result.note,
+      });
+      return;
+    }
+    // 无 params 的 validate 规则（如 name-validate）：走正则。
     const p = draftPattern || selected.pattern;
     if (!p) {
       message.warning("该规则未配置 pattern");
@@ -375,8 +395,13 @@ export default function RulesPanel() {
           规则管理
         </Title>
       </div>
-      <Spin spinning={loading} style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
-        <Row gutter={0} style={{ flex: 1, minHeight: 0 }}>
+      <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
+        <Spin
+          spinning={loading}
+          style={{ height: "100%", maxHeight: "100dvh" }}
+          wrapperStyle={{ height: "100%" }}
+        >
+          <Row gutter={0} style={{ height: "100%" }}>
           {/* 左：规则列表（按 kind 分组） */}
           <Col
             {...(isCompact
@@ -757,7 +782,13 @@ export default function RulesPanel() {
                   </Space>
 
                   {testResult && (
-                    <div style={{ marginTop: 12 }}>
+                    <div
+                      style={{
+                        marginTop: 12,
+                        maxHeight: "30vh",
+                        overflow: "auto",
+                      }}
+                    >
                       {testResult.error ? (
                         <Alert
                           type="error"
@@ -769,12 +800,14 @@ export default function RulesPanel() {
                           type={testResult.passed ? "success" : "warning"}
                           showIcon
                           message={testResult.message}
+                          description={testResult.note ? `附加信息：${testResult.note}` : undefined}
                         />
                       ) : testResult.kind === "extract" ? (
                         testResult.hits.length ? (
                           <List
                             size="small"
                             dataSource={testResult.hits}
+                            style={{ maxHeight: "20vh", overflow: "auto" }}
                             renderItem={(h, i) => (
                               <List.Item key={i}>
                                 <Text code>{h.value}</Text>
@@ -839,7 +872,8 @@ export default function RulesPanel() {
             )}
           </Col>
         </Row>
-      </Spin>
+        </Spin>
+      </div>
     </div>
   );
 }
