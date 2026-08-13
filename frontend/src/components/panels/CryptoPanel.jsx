@@ -1,13 +1,9 @@
 import { useState } from "react";
 import { Alert, Button, Form, Radio, Select, Typography, message } from "antd";
 import { useAppContext } from "../../state";
-import {
-  base64Column,
-  getSheetData,
-  hashColumn,
-  listUndoableOperations,
-} from "../../tauri";
-import { PAGE_SIZE } from "../../constants";
+import { base64Column, hashColumn } from "../../tauri";
+import { useSheetOps } from "../../hooks/useSheetOps";
+import ColumnSelect from "../shared/ColumnSelect";
 
 const { Title } = Typography;
 
@@ -18,13 +14,11 @@ const { Title } = Typography;
 //     before_snapshot 回写可撤销恢复原文）
 // 后续将扩展 URL-safe Base64 / AES 等命令。
 // 操作模式：目标列 + 操作类型（op）二级选择，统一「执行」按钮按 op 分发。
-// 执行流程：
-//   base64Column / hashColumn → getSheetData + SET_SHEET_DATA 刷新当前页 +
-//   listUndoableOperations + SET_UNDO_STACK 刷新撤销栈 + message.success。
-// 参考 MaskPanel/ExtractPanel 模式（Form + Select + Button + message +
-// 操作后 getSheetData + dispatch SET_SHEET_DATA 刷新）。
+// v1.2.0 T94：op-then-refresh 样板收敛到 useSheetOps.refreshActiveSheet，
+// 列 Select 收敛到 ColumnSelect。
 export default function CryptoPanel() {
   const { state, dispatch } = useAppContext();
+  const { refreshActiveSheet } = useSheetOps(dispatch, null);
   const [form] = Form.useForm();
   const [running, setRunning] = useState(false);
   // v1.1.5 T83: 哈希输出大小写（Lower=小写 / Upper=大写）
@@ -62,17 +56,8 @@ export default function CryptoPanel() {
         const algoLabel = { md5: "Md5", sha1: "Sha1", sha256: "Sha256" }[op];
         label = `${algoLabel} 哈希（${hashCase === "upper" ? "大写" : "小写"}）`;
       }
-      // 刷新当前页数据
-      const page = sheet.page || 1;
-      const pageSize = sheet.pageSize || PAGE_SIZE;
-      const data = await getSheetData(sheet.id, page, pageSize);
-      dispatch({
-        type: "SET_SHEET_DATA",
-        payload: { ...data, sheetId: sheet.id },
-      });
-      // 刷新撤销栈
-      const ops = await listUndoableOperations(sheet.id);
-      dispatch({ type: "SET_UNDO_STACK", payload: ops });
+      // 刷新当前页数据 + 撤销栈
+      await refreshActiveSheet(sheet);
       message.success(
         `${label}完成：${res.affected} 行，跳过 ${res.skipped ?? 0}`
       );
@@ -97,12 +82,7 @@ export default function CryptoPanel() {
       </Title>
       <Form form={form} layout="vertical" size="small">
         <Form.Item label="目标列" name="column">
-          <Select
-            placeholder="选择要操作的列"
-            options={headers.map((h) => ({ label: h, value: h }))}
-            showSearch
-            optionFilterProp="label"
-          />
+          <ColumnSelect headers={headers} placeholder="选择列" />
         </Form.Item>
         <Form.Item label="操作类型" name="op" initialValue="base64_encode">
           <Select
@@ -121,7 +101,7 @@ export default function CryptoPanel() {
               type="warning"
               showIcon
               message="哈希不可逆"
-              description="哈希操作无法解码还原，但可通过撤销恢复原文。"
+              description="不可逆，可通过撤销恢复原文。"
             />
           </Form.Item>
         )}

@@ -1,24 +1,20 @@
 import { useState } from "react";
 import { Button, Divider, Form, Select, Typography, message } from "antd";
 import { useAppContext } from "../../state";
-import {
-  getSheetData,
-  listUndoableOperations,
-  parseColumnAsJson,
-  transformColumn,
-} from "../../tauri";
-import { PAGE_SIZE } from "../../constants";
+import { parseColumnAsJson, transformColumn } from "../../tauri";
+import { useSheetOps } from "../../hooks/useSheetOps";
+import ColumnSelect from "../shared/ColumnSelect";
 
 const { Title } = Typography;
 
 // v1.1.2 列操作面板：
-// - JSON 解析为新 Tab：parseColumnAsJson → dispatch ADD_SHEET_FROM_PARSE → 拉首页
+// - JSON 解析为新 Tab：parseColumnAsJson → landNewSheet
 // v1.1.2 起 Base64 编解码已迁至独立 CryptoPanel（加解密能力按钮）。
 // v1.1.5 T86 新增：列变换（大小写归一化）。
-// 参考 MaskPanel/ExtractPanel/CryptoPanel 模式（Form + Select + Button + message +
-// 操作后 getSheetData + dispatch SET_SHEET_DATA 刷新）。
+// v1.2.0 T94：op-then-refresh 样板收敛到 useSheetOps，列 Select 收敛到 ColumnSelect。
 export default function ColumnOpsPanel() {
   const { state, dispatch, addSheetFromParse } = useAppContext();
+  const { refreshActiveSheet, landNewSheet } = useSheetOps(dispatch, addSheetFromParse);
   const [parseForm] = Form.useForm();
   const [transformForm] = Form.useForm();
   const [parsing, setParsing] = useState(false);
@@ -44,25 +40,7 @@ export default function ColumnOpsPanel() {
         column,
         sheet.sessionId
       );
-      addSheetFromParse({
-        newSheetId: res.newSheetId,
-        headers: res.headers,
-        rowCount: res.rowCount,
-        skipped: res.skipped,
-        sessionId: sheet.sessionId,
-        column,
-        name: `${column}_json`,
-      });
-      // 拉取新 Sheet 首页数据
-      const data = await getSheetData(
-        res.newSheetId,
-        1,
-        PAGE_SIZE
-      );
-      dispatch({
-        type: "SET_SHEET_DATA",
-        payload: { ...data, sheetId: res.newSheetId },
-      });
+      await landNewSheet(res, `${column}_json`, column, sheet.sessionId);
       message.success(`解析完成：${res.rowCount} 行，跳过 ${res.skipped ?? 0}`);
     } catch (e) {
       // eslint-disable-next-line no-console
@@ -74,8 +52,6 @@ export default function ColumnOpsPanel() {
   }
 
   // v1.1.5 T86：列变换（大小写归一化，就地变更，可撤销）。
-  // 流程：transformColumn → getSheetData + SET_SHEET_DATA 刷新当前页 →
-  //       listUndoableOperations + SET_UNDO_STACK 刷新撤销栈 → message.success。
   async function handleTransform() {
     if (!sheet) {
       message.warning("请先导入数据");
@@ -94,17 +70,8 @@ export default function ColumnOpsPanel() {
     setTransforming(true);
     try {
       const res = await transformColumn(sheet.id, column, op);
-      // 刷新当前页数据
-      const page = sheet.page || 1;
-      const pageSize = sheet.pageSize || PAGE_SIZE;
-      const data = await getSheetData(sheet.id, page, pageSize);
-      dispatch({
-        type: "SET_SHEET_DATA",
-        payload: { ...data, sheetId: sheet.id },
-      });
-      // 刷新撤销栈
-      const ops = await listUndoableOperations(sheet.id);
-      dispatch({ type: "SET_UNDO_STACK", payload: ops });
+      // 刷新当前页数据 + 撤销栈
+      await refreshActiveSheet(sheet);
       const label = op === "uppercase" ? "大写" : "小写";
       message.success(`列变换完成（${label}）：${res.affected} 行已更新`);
     } catch (e) {
@@ -123,12 +90,7 @@ export default function ColumnOpsPanel() {
       </Title>
       <Form form={parseForm} layout="vertical" size="small">
         <Form.Item label="目标列" name="column">
-          <Select
-            placeholder="选择要解析为 JSON 的列"
-            options={headers.map((h) => ({ label: h, value: h }))}
-            showSearch
-            optionFilterProp="label"
-          />
+          <ColumnSelect headers={headers} placeholder="选择列" />
         </Form.Item>
         <Form.Item>
           <Button
@@ -145,19 +107,14 @@ export default function ColumnOpsPanel() {
       <Title level={5}>列变换</Title>
       <Form form={transformForm} layout="vertical" size="small">
         <Form.Item label="目标列" name="column">
-          <Select
-            placeholder="选择要变换的列"
-            options={headers.map((h) => ({ label: h, value: h }))}
-            showSearch
-            optionFilterProp="label"
-          />
+          <ColumnSelect headers={headers} placeholder="选择列" />
         </Form.Item>
         <Form.Item label="变换操作" name="op">
           <Select
-            placeholder="选择大小写归一化操作"
+            placeholder="选择操作"
             options={[
-              { label: "大写（UPPERCASE）", value: "uppercase" },
-              { label: "小写（lowercase）", value: "lowercase" },
+              { label: "大写", value: "uppercase" },
+              { label: "小写", value: "lowercase" },
             ]}
           />
         </Form.Item>

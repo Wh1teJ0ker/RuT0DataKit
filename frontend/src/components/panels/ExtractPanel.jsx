@@ -1,12 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Button, Form, List, Select, Space, Tag, Typography, message } from "antd";
 import { useAppContext } from "../../state";
-import {
-  extractValidateToNewSheet,
-  getSheetData,
-  listRules,
-} from "../../tauri";
-import { PAGE_SIZE } from "../../constants";
+import { extractValidateToNewSheet } from "../../tauri";
+import { useRules } from "../../hooks/useRules";
+import { useSheetOps } from "../../hooks/useSheetOps";
+import ColumnSelect from "../shared/ColumnSelect";
+import PhonePrefixSelect from "../shared/PhonePrefixSelect";
 
 const { Text } = Typography;
 
@@ -19,29 +18,16 @@ const { Text } = Typography;
 // v1.1.3 T56：移除「仅支持单条规则」限制——多选若干 extract 规则一次批量提取
 // 到同一个新 Tab；新 Tab 输出改为纯两列 [类型, 数据值]（类型标签 = 规则名去掉
 // 「提取」后缀），只写有效候选。性别列在批量含 idcard-extract 时仍显示。
+// v1.2.0 T94：useRules 替代内联 listRules useEffect，landNewSheet 替代手动
+// getSheetData + dispatch，ColumnSelect / PhonePrefixSelect 替代重复 Select。
 export default function ExtractPanel() {
   const { state, applyRowStatuses, dispatch, addSheetFromParse } = useAppContext();
+  const { rules } = useRules("extract", { patternOnly: true });
+  const { landNewSheet } = useSheetOps(dispatch, addSheetFromParse);
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
   const [extracting, setExtracting] = useState(false);
-  const [rules, setRules] = useState([]);
   const [hits, setHits] = useState([]);
-
-  useEffect(() => {
-    let alive = true;
-    listRules()
-      .then((all) => {
-        if (!alive) return;
-        setRules(all.filter((r) => r.kind === "extract" && r.pattern));
-      })
-      .catch((e) => {
-        // eslint-disable-next-line no-console
-        console.error("listRules failed:", e);
-      });
-    return () => {
-      alive = false;
-    };
-  }, []);
 
   const sheet = state.sheets.find((s) => s.id === state.activeSheetId);
   const headers = sheet?.headers || [];
@@ -168,23 +154,9 @@ export default function ExtractPanel() {
         genderCol,
         phonePrefixes
       );
-      addSheetFromParse({
-        newSheetId: res.newSheetId,
-        headers: res.headers,
-        rowCount: res.rowCount,
-        skipped: res.skipped,
-        sessionId: sheet.sessionId,
-        column,
-        name: `${column}_提取`,
-      });
-      // 拉取新 Sheet 首页数据
-      const data = await getSheetData(res.newSheetId, 1, PAGE_SIZE);
-      dispatch({
-        type: "SET_SHEET_DATA",
-        payload: { ...data, sheetId: res.newSheetId },
-      });
+      await landNewSheet(res, `${column}_提取`, column, sheet.sessionId);
       message.success(
-        `批量提取完成：${res.rowCount} 条有效结果，无候选行 ${res.skipped ?? 0}`
+        `提取完成：${res.rowCount} 条，跳过 ${res.skipped ?? 0}`
       );
     } catch (e) {
       // eslint-disable-next-line no-console
@@ -199,17 +171,12 @@ export default function ExtractPanel() {
     <div style={{ padding: 4 }}>
       <Form form={form} layout="vertical" size="small">
         <Form.Item label="目标列" name="column">
-          <Select
-            placeholder="选择要提取的列"
-            options={headers.map((h) => ({ label: h, value: h }))}
-            showSearch
-            optionFilterProp="label"
-          />
+          <ColumnSelect headers={headers} placeholder="选择列" />
         </Form.Item>
         <Form.Item label="提取规则（可多选）" name="ruleIds">
           <Select
             mode="multiple"
-            placeholder="选择一条或多条提取规则"
+            placeholder="选择规则"
             options={rules.map((r) => ({ label: r.name, value: r.id }))}
             notFoundContent="无可用规则"
           />
@@ -218,14 +185,12 @@ export default function ExtractPanel() {
           <Form.Item
             label="性别列（联合校验）"
             name="genderCol"
-            extra="可选：选一个性别列，后端比对身份证第 17 位推断的性别（奇=男/偶=女）与该列值，矛盾判无效"
+            extra="比对身份证推断性别与该列，矛盾判无效"
           >
-            <Select
-              placeholder="选择性别列（可选，留空则跳过性别联合校验）"
-              options={headers.map((h) => ({ label: h, value: h }))}
+            <ColumnSelect
+              headers={headers}
+              placeholder="选择性别列"
               allowClear
-              showSearch
-              optionFilterProp="label"
             />
           </Form.Item>
         )}
@@ -233,14 +198,9 @@ export default function ExtractPanel() {
           <Form.Item
             label="手机号前缀白名单"
             name="phonePrefixes"
-            extra="可选：填三位数字前缀（如 134 / 159），留空则不限制前缀，仅对 phone-extract 规则生效"
+            extra="三位数字前缀，留空=不限"
           >
-            <Select
-              mode="tags"
-              placeholder="如 134、159（回车添加）"
-              tokenSeparators={[",", "，"]}
-              maxTagCount={5}
-            />
+            <PhonePrefixSelect />
           </Form.Item>
         )}
         <Form.Item>

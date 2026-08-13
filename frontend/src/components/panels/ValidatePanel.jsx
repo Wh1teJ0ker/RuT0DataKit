@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   Button,
   Checkbox,
@@ -13,11 +13,14 @@ import {
 import { DeleteOutlined, PlusOutlined } from "@ant-design/icons";
 import { useAppContext } from "../../state";
 import {
-  getSheetData,
-  listRules,
   validateMultiRulesToTwoSheets,
 } from "../../tauri";
-import { PAGE_SIZE } from "../../constants";
+// v1.2.0 T94：useRules 替代内联 listRules useEffect，useSheetOps.landNewSheet
+// 替代手动 getSheetData + dispatch 双 Tab 落地。ColumnSelect 替代重复列 Select。
+import { useRules } from "../../hooks/useRules";
+import { useSheetOps } from "../../hooks/useSheetOps";
+import ColumnSelect from "../shared/ColumnSelect";
+import PhonePrefixSelect from "../shared/PhonePrefixSelect";
 // v1.1.4 续轮 T71：generic-validate 行级参数共享模块。
 // 行内字段直接由 Form.List 收集，组装 multiRules 时把 charClasses 数组映射为
 // allowDigits/allowLetters 布尔 + specialChars 白名单字符串，minLen/maxLen 直接回传。
@@ -42,33 +45,19 @@ const BIRTH_FORMATS = [
 // v1.1.4 T69：重做为统一表单（非 Tabs）— 用户自由组合多条「列 + 校验规则」，
 //   一个「校验」按钮 → 调 validate_multi_rules_to_two_sheets → 双 Tab 落地。
 //   身份证规则行可勾选跨字段比对性别 / 出生日期列。
+// v1.2.0 T94：useRules 替代 listRules useEffect，useSheetOps.landNewSheet
+//   替代手动双 Tab getSheetData + dispatch。
 
 export default function ValidatePanel() {
   const { state, dispatch, addSheetFromParse } = useAppContext();
+  const { rules } = useRules("validate");
+  const { landNewSheet } = useSheetOps(dispatch, addSheetFromParse);
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
-  const [rules, setRules] = useState([]);
-
-  useEffect(() => {
-    let alive = true;
-    listRules()
-      .then((all) => {
-        if (!alive) return;
-        setRules(all.filter((r) => r.kind === "validate"));
-      })
-      .catch((e) => {
-        // eslint-disable-next-line no-console
-        console.error("listRules failed:", e);
-      });
-    return () => {
-      alive = false;
-    };
-  }, []);
 
   const sheet = state.sheets.find((s) => s.id === state.activeSheetId);
   const headers = sheet?.headers || [];
   const ruleOptions = rules.map((r) => ({ label: r.name, value: r.id }));
-  const columnOptions = headers.map((h) => ({ label: h, value: h }));
 
   const handleValidate = async () => {
     if (!sheet) {
@@ -155,27 +144,10 @@ export default function ValidatePanel() {
         multiRules,
         phonePrefixes,
       );
-      // 双 Tab 落地：valid + invalid 各走 addSheetFromParse + getSheetData +
-      // SET_SHEET_DATA（复用 v1.1.3 RowValidatePanel 的 landSheet 闭包模式）。
-      const landSheet = async (parse, name, columnHint) => {
-        addSheetFromParse({
-          newSheetId: parse.newSheetId,
-          headers: parse.headers,
-          rowCount: parse.rowCount,
-          skipped: parse.skipped ?? 0,
-          sessionId: sheet.sessionId,
-          column: columnHint,
-          name,
-        });
-        const data = await getSheetData(parse.newSheetId, 1, PAGE_SIZE);
-        dispatch({
-          type: "SET_SHEET_DATA",
-          payload: { ...data, sheetId: parse.newSheetId },
-        });
-      };
+      // 双 Tab 落地：valid + invalid 各走 landNewSheet。
       const srcName = sheet.name || `Sheet ${sheet.id}`;
-      await landSheet(res.validSheet, `${srcName}_校验通过`, "valid");
-      await landSheet(res.invalidSheet, `${srcName}_校验失败`, "invalid");
+      await landNewSheet(res.validSheet, `${srcName}_校验通过`, "valid", sheet.sessionId);
+      await landNewSheet(res.invalidSheet, `${srcName}_校验失败`, "invalid", sheet.sessionId);
       // 汇总消息：通过 / 失败行数 + top 失败原因（按 field 计数）。
       const validCount = res.validSheet.rowCount ?? 0;
       const invalidCount = res.invalidSheet.rowCount ?? 0;
@@ -222,11 +194,9 @@ export default function ValidatePanel() {
                       name={[name, "column"]}
                       style={{ flex: 1, marginBottom: 0 }}
                     >
-                      <Select
+                      <ColumnSelect
+                        headers={headers}
                         placeholder="选择列"
-                        options={columnOptions}
-                        showSearch
-                        optionFilterProp="label"
                       />
                     </Form.Item>
                     <Form.Item
@@ -270,12 +240,10 @@ export default function ValidatePanel() {
                               <Checkbox>对比性别一致性</Checkbox>
                             </Form.Item>
                             <Form.Item name={[name, "sexColumn"]} noStyle>
-                              <Select
+                              <ColumnSelect
+                                headers={headers}
                                 placeholder="性别列"
-                                options={columnOptions}
-                                showSearch
                                 allowClear
-                                optionFilterProp="label"
                               />
                             </Form.Item>
                           </Space>
@@ -288,12 +256,10 @@ export default function ValidatePanel() {
                               <Checkbox>对比出生日期一致性</Checkbox>
                             </Form.Item>
                             <Form.Item name={[name, "birthColumn"]} noStyle>
-                              <Select
+                              <ColumnSelect
+                                headers={headers}
                                 placeholder="出生日期列"
-                                options={columnOptions}
-                                showSearch
                                 allowClear
-                                optionFilterProp="label"
                               />
                             </Form.Item>
                           </Space>
@@ -336,7 +302,7 @@ export default function ValidatePanel() {
                             style={{ marginBottom: 0 }}
                           >
                             <Input
-                              placeholder="留空=不允许；如 _-.@ 表示只允许这些符号"
+                              placeholder="留空=不允许；如 _-.@"
                               allowClear
                             />
                           </Form.Item>
@@ -380,19 +346,14 @@ export default function ValidatePanel() {
                     {({ getFieldValue }) =>
                       getFieldValue(["rules", name, "ruleId"]) ===
                       "phone-validate" ? (
-                        <Form.Item
-                          name={[name, "phonePrefixes"]}
-                          label="手机号前缀白名单"
-                          style={{ marginTop: 4, marginBottom: 0 }}
-                          extra="可选：填三位数字前缀（如 134 / 159），留空则不限制前缀"
-                        >
-                          <Select
-                            mode="tags"
-                            placeholder="如 134、159（回车添加）"
-                            tokenSeparators={[",", "，"]}
-                            maxTagCount={5}
-                          />
-                        </Form.Item>
+                          <Form.Item
+                            name={[name, "phonePrefixes"]}
+                            label="手机号前缀白名单"
+                            style={{ marginTop: 4, marginBottom: 0 }}
+                            extra="三位数字前缀，留空=不限"
+                          >
+                            <PhonePrefixSelect />
+                          </Form.Item>
                       ) : null
                     }
                   </Form.Item>
@@ -412,7 +373,7 @@ export default function ValidatePanel() {
                           name={[name, "birthFormats"]}
                           label="生日格式"
                           style={{ marginTop: 4, marginBottom: 0 }}
-                          extra="全不选 = 接受所有格式（默认）；勾选后仅校验勾选的格式"
+                          extra="全不选=接受所有格式"
                         >
                           <Checkbox.Group options={BIRTH_FORMATS} />
                         </Form.Item>
@@ -444,10 +405,7 @@ export default function ValidatePanel() {
         </Form.Item>
       </Form>
       <Text type="secondary" style={{ fontSize: 12 }}>
-        添加多条「列 + 校验规则」组合，一个按钮校验。通过/失败的行分别写入两个新
-        Tab（保留原列，不新增列）。身份证规则可勾选跨字段比对性别/出生日期。
-        通用校验规则可在行内设置字符类与长度限制。手机号规则可在行内设置前缀白名单。
-        生日规则可在行内勾选要校验的格式（全不选=接受所有格式）。
+        多条「列+规则」组合一次校验，通过/失败行分写两个新 Tab。
       </Text>
     </div>
   );

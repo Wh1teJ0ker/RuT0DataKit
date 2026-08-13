@@ -21,23 +21,23 @@ import {
 } from "antd";
 import { useAppContext } from "../../state";
 import {
-  listRules,
   toggleRule,
   updateRuleExtractConfig,
   updateRuleParams,
   updateRuleTemplate,
 } from "../../tauri";
+// v1.2.0 T94：RulesPanel 需要「全部规则」（不分 kind）用于左侧列表分组，
+// useRules(null) 等价于 listRules + setRules，同时获得 reload 方法。
+import { useRules } from "../../hooks/useRules";
+import TemplateEditor from "../shared/TemplateEditor";
 import {
   DEFAULT_MASK_CHAR,
   EMPTY_SEGMENT_TEMPLATE,
   EMPTY_TEMPLATE,
-  MASK_PRESETS,
   buildTemplateForRun,
   detectPreset,
-  isSegmentTemplate,
   normalizeTemplate,
   previewMask,
-  templateFromPreset,
 } from "./maskTemplate";
 // v1.1.4 续轮 T71：校验规则参数共享模块（Generic 参数构造 + 校验提示文案）。
 import {
@@ -81,8 +81,8 @@ const KIND_ORDER = ["mask", "validate", "extract"];
 
 export default function RulesPanel() {
   const { state } = useAppContext();
-  const [rules, setRules] = useState([]);
-  const [loading, setLoading] = useState(false);
+  // v1.2.0 T94：useRules(null) 加载全部规则，reload/loading 供面板复用。
+  const { rules, loading, reload } = useRules(null);
   const [selectedId, setSelectedId] = useState(null);
   // 可填参数本地编辑态（保存前不提交）。
   const [draftPattern, setDraftPattern] = useState(null);
@@ -102,27 +102,23 @@ export default function RulesPanel() {
   const [testResult, setTestResult] = useState(null);
   const [testing, setTesting] = useState(false);
 
+  // v1.2.0 T94：refresh 收敛为直接调 reload（loading 由 useRules 管理）。
   const refresh = async () => {
-    setLoading(true);
-    try {
-      const all = await listRules();
-      setRules(all);
-      if (all.length && !selectedId) {
-        setSelectedId(all[0].id);
-      }
-    } catch (e) {
-      // eslint-disable-next-line no-console
-      console.error("listRules failed:", e);
-      message.error(`加载规则失败：${e}`);
-    } finally {
-      setLoading(false);
-    }
+    await reload();
   };
 
   useEffect(() => {
     refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // 首次 rules 加载后默认选中第一条。
+  useEffect(() => {
+    if (rules.length && !selectedId) {
+      setSelectedId(rules[0].id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rules]);
 
   const selected = useMemo(
     () => rules.find((r) => r.id === selectedId) || null,
@@ -262,62 +258,9 @@ export default function RulesPanel() {
     }
   };
 
-  // T51：选预设 → 填充 6 参数框（custom 不填充，保留当前用户输入）。
-  const handlePresetChange = (key) => {
-    setPresetKey(key);
-    const filled = templateFromPreset(key);
-    if (filled === null) return; // custom → 不填充
-    setDraftTemplate(filled);
-  };
-
-  // T51：编辑单个模板参数框 → 更新 draftTemplate + 重新检测匹配的预设。
-  const handleTemplateFieldChange = (field, value) => {
-    setDraftTemplate((prev) => {
-      const next = { ...prev, [field]: value };
-      setPresetKey(detectPreset(next));
-      return next;
-    });
-  };
-
-  // T52：编辑 Segment 段配置单字段（index/keepPrefix/keepSuffix/maskMinLen）。
-  const handleSegmentFieldChange = (segIdx, field, value) => {
-    setDraftTemplate((prev) => {
-      if (!isSegmentTemplate(prev)) return prev;
-      const segments = prev.segments.map((s, i) =>
-        i === segIdx ? { ...s, [field]: value } : s,
-      );
-      return { ...prev, segments };
-    });
-  };
-
-  // T52：新增段配置（默认 index 自增、keepPrefix=1、keepSuffix=1、maskMinLen=1）。
-  const handleAddSegment = () => {
-    setDraftTemplate((prev) => {
-      if (!isSegmentTemplate(prev)) return prev;
-      const nextIdx =
-        prev.segments.length > 0
-          ? Math.max(...prev.segments.map((s) => Number(s.index) || 0)) + 1
-          : 0;
-      return {
-        ...prev,
-        segments: [
-          ...prev.segments,
-          { index: nextIdx, keepPrefix: 1, keepSuffix: 1, maskMinLen: 1 },
-        ],
-      };
-    });
-  };
-
-  // T52：删除段配置。
-  const handleRemoveSegment = (segIdx) => {
-    setDraftTemplate((prev) => {
-      if (!isSegmentTemplate(prev)) return prev;
-      return {
-        ...prev,
-        segments: prev.segments.filter((_, i) => i !== segIdx),
-      };
-    });
-  };
+  // v1.2.0 T95：模板编辑 UI 收敛到 TemplateEditor，这里只保留选中规则同步草稿逻辑。
+  // handlePresetChange / handleTemplateFieldChange / handleSegmentFieldChange /
+  // handleAddSegment / handleRemoveSegment 全部移入 TemplateEditor 内部。
 
   // 内联测试：根据规则类型走不同路径（全部前端纯逻辑，不写 DB）。
   const handleTest = () => {
@@ -551,219 +494,25 @@ export default function RulesPanel() {
                   <Form layout="vertical" size="small">
                     {selected.kind === "mask" ? (
                       selected.id === "segment-mask" ? (
-                        // T52/T54：segment-mask 分段脱敏配置（按分隔符拆分后对指定段脱敏）。
-                        // 与脱敏面板一致，便于在规则管理里直接编辑/测试。
-                        <>
-                          <Form.Item label="分隔符" extra="如 @ . - / 等单字符或多字符">
-                            <Input
-                              value={draftTemplate.delimiter}
-                              onChange={(e) =>
-                                setDraftTemplate((prev) => ({
-                                  ...prev,
-                                  delimiter: e.target.value,
-                                }))
-                              }
-                              placeholder="@ / . 等"
-                              allowClear
-                            />
-                          </Form.Item>
-                          <Form.Item label="掩码字符" extra="默认 *；取首个字符">
-                            <Input
-                              value={draftTemplate.maskChar ?? ""}
-                              onChange={(e) =>
-                                setDraftTemplate((prev) => ({
-                                  ...prev,
-                                  maskChar: e.target.value || null,
-                                }))
-                              }
-                              placeholder={DEFAULT_MASK_CHAR}
-                              allowClear
-                            />
-                          </Form.Item>
-                          <Form.Item label="段配置">
-                            <Space direction="vertical" style={{ width: "100%" }}>
-                              {(draftTemplate.segments || []).map((seg, i) => (
-                                <Card
-                                  key={i}
-                                  size="small"
-                                  title={`段 #${i}`}
-                                  headStyle={{ minHeight: 32, padding: "0 8px" }}
-                                  bodyStyle={{ padding: 8 }}
-                                  extra={
-                                    <Button
-                                      size="small"
-                                      type="text"
-                                      onClick={() => handleRemoveSegment(i)}
-                                    >
-                                      删除
-                                    </Button>
-                                  }
-                                >
-                                  <Row gutter={8}>
-                                    <Col span={6}>
-                                      <Form.Item label="段索引" style={{ marginBottom: 8 }}>
-                                        <InputNumber
-                                          value={seg.index}
-                                          onChange={(v) =>
-                                            handleSegmentFieldChange(i, "index", v)
-                                          }
-                                          min={0}
-                                          style={{ width: "100%" }}
-                                          size="small"
-                                        />
-                                      </Form.Item>
-                                    </Col>
-                                    <Col span={6}>
-                                      <Form.Item label="保留前" style={{ marginBottom: 8 }}>
-                                        <InputNumber
-                                          value={seg.keepPrefix}
-                                          onChange={(v) =>
-                                            handleSegmentFieldChange(i, "keepPrefix", v)
-                                          }
-                                          min={0}
-                                          style={{ width: "100%" }}
-                                          size="small"
-                                        />
-                                      </Form.Item>
-                                    </Col>
-                                    <Col span={6}>
-                                      <Form.Item label="保留后" style={{ marginBottom: 8 }}>
-                                        <InputNumber
-                                          value={seg.keepSuffix}
-                                          onChange={(v) =>
-                                            handleSegmentFieldChange(i, "keepSuffix", v)
-                                          }
-                                          min={0}
-                                          style={{ width: "100%" }}
-                                          size="small"
-                                        />
-                                      </Form.Item>
-                                    </Col>
-                                    <Col span={6}>
-                                      <Form.Item label="最少掩码" style={{ marginBottom: 8 }}>
-                                        <InputNumber
-                                          value={seg.maskMinLen}
-                                          onChange={(v) =>
-                                            handleSegmentFieldChange(i, "maskMinLen", v)
-                                          }
-                                          min={0}
-                                          style={{ width: "100%" }}
-                                          size="small"
-                                        />
-                                      </Form.Item>
-                                    </Col>
-                                  </Row>
-                                </Card>
-                              ))}
-                              <Button size="small" onClick={handleAddSegment}>
-                                添加段配置
-                              </Button>
-                            </Space>
-                          </Form.Item>
-                        </>
+                        // v1.2.0 T95：segment-mask 模板编辑收敛到 TemplateEditor。
+                        <TemplateEditor
+                          mode="segment"
+                          template={draftTemplate}
+                          setTemplate={setDraftTemplate}
+                          presetKey={presetKey}
+                          setPresetKey={setPresetKey}
+                        />
                       ) : selected.id === "simple-mask" ? (
-                        // T51/T54：simple-mask 整段脱敏暴露预设下拉 + 7 个模板参数
-                        // （keepPrefix/keepSuffix/maskChar/maskMinLen + minLen/maxLen + T53 reverse）。
-                        <>
-                          <Form.Item
-                            label="子规则（预设）"
-                            extra="选预设填充参数，可继续修改；空模板=不脱敏（透传）"
-                          >
-                            <Select
-                              value={presetKey}
-                              onChange={handlePresetChange}
-                              options={MASK_PRESETS.map((p) => ({
-                                label: p.label,
-                                value: p.key,
-                              }))}
-                            />
-                          </Form.Item>
-                          <Form.Item label="保留前缀字符数">
-                            <InputNumber
-                              value={draftTemplate.keepPrefix}
-                              onChange={(v) =>
-                                handleTemplateFieldChange("keepPrefix", v)
-                              }
-                              placeholder="0"
-                              min={0}
-                              style={{ width: "100%" }}
-                            />
-                          </Form.Item>
-                          <Form.Item label="保留后缀字符数">
-                            <InputNumber
-                              value={draftTemplate.keepSuffix}
-                              onChange={(v) =>
-                                handleTemplateFieldChange("keepSuffix", v)
-                              }
-                              placeholder="0"
-                              min={0}
-                              style={{ width: "100%" }}
-                            />
-                          </Form.Item>
-                          <Form.Item label="掩码字符" extra="默认 *；取首个字符">
-                            <Input
-                              value={draftTemplate.maskChar ?? ""}
-                              onChange={(e) =>
-                                handleTemplateFieldChange(
-                                  "maskChar",
-                                  e.target.value || null
-                                )
-                              }
-                              placeholder={DEFAULT_MASK_CHAR}
-                              allowClear
-                            />
-                          </Form.Item>
-                          <Form.Item label="最少掩码字符数">
-                            <InputNumber
-                              value={draftTemplate.maskMinLen}
-                              onChange={(v) =>
-                                handleTemplateFieldChange("maskMinLen", v)
-                              }
-                              placeholder="1"
-                              min={0}
-                              style={{ width: "100%" }}
-                            />
-                          </Form.Item>
-                          <Form.Item
-                            label="反向脱敏"
-                            extra="开启后保留中间，对首 N 位和后 N 位脱敏（上方前后缀位数变为首尾脱码位数）"
-                          >
-                            <Switch
-                              size="small"
-                              checked={draftTemplate.reverse === true}
-                              onChange={(checked) =>
-                                handleTemplateFieldChange(
-                                  "reverse",
-                                  checked || null
-                                )
-                              }
-                            />
-                          </Form.Item>
-                          <Form.Item label="值长度下限（guard，空=不限）">
-                            <InputNumber
-                              value={draftTemplate.minLen}
-                              onChange={(v) =>
-                                handleTemplateFieldChange("minLen", v)
-                              }
-                              placeholder="不限"
-                              min={0}
-                              style={{ width: "100%" }}
-                            />
-                          </Form.Item>
-                          <Form.Item label="值长度上限（guard，空=不限）">
-                            <InputNumber
-                              value={draftTemplate.maxLen}
-                              onChange={(v) =>
-                                handleTemplateFieldChange("maxLen", v)
-                              }
-                              placeholder="不限"
-                              min={0}
-                              style={{ width: "100%" }}
-                            />
-                          </Form.Item>
-                        </>
+                        // v1.2.0 T95：simple-mask 模板编辑收敛到 TemplateEditor。
+                        <TemplateEditor
+                          mode="simple"
+                          template={draftTemplate}
+                          setTemplate={setDraftTemplate}
+                          presetKey={presetKey}
+                          setPresetKey={setPresetKey}
+                        />
                       ) : (
-                        <Form.Item label="掩码字符" extra="默认 *；取首个字符；保留首尾">
+                        <Form.Item label="掩码字符" extra="默认 *，保留首尾">
                           <Input
                             value={draftReplacement ?? ""}
                             onChange={(e) =>
@@ -817,7 +566,7 @@ export default function RulesPanel() {
                                   allowSpecialChars: e.target.value,
                                 }))
                               }
-                              placeholder="留空=不允许特殊符号；如 _-.@ 表示只允许这些符号"
+                              placeholder="留空=不允许；如 _-.@"
                               allowClear
                             />
                           </Form.Item>
@@ -863,13 +612,13 @@ export default function RulesPanel() {
                           </Form.Item>
                           <Form.Item
                             label="允许前缀"
-                            extra="输入 3 位前缀回车添加；空列表=默认 1 开头"
+                            extra="3 位前缀回车添加，留空=默认 1 开头"
                           >
                             <Select
                               mode="tags"
                               value={draftAllowedPrefixes}
                               onChange={(v) => setDraftAllowedPrefixes(v)}
-                              placeholder="留空=默认 1 开头"
+                              placeholder="回车添加前缀"
                               tokenSeparators={[",", " ", "\n"]}
                               open={false}
                               style={{ width: "100%" }}
@@ -879,7 +628,7 @@ export default function RulesPanel() {
                             <Input
                               value={draftPattern ?? ""}
                               onChange={(e) => setDraftPattern(e.target.value)}
-                              placeholder="提取正则（宽松召回，严格校验交给校验函数）"
+                              placeholder="提取正则"
                             />
                           </Form.Item>
                         </>
@@ -1053,7 +802,7 @@ export default function RulesPanel() {
                                 type="info"
                                 showIcon
                                 style={{ marginTop: 8 }}
-                                message="空模板（透传）：原样返回，未脱敏"
+                                message="空模板，原样返回"
                               />
                             </>
                           )}
@@ -1064,7 +813,7 @@ export default function RulesPanel() {
                                 type="warning"
                                 showIcon
                                 style={{ marginTop: 8 }}
-                                message="长度不在 [下限, 上限] 区间内（guard 命中）：原样返回"
+                                message="长度超出 guard 区间，原样返回"
                               />
                             </>
                           )}
