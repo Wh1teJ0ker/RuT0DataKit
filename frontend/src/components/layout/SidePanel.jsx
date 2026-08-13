@@ -94,7 +94,7 @@ export default function SidePanel({ activeCapability }) {
           <div style={{ flex: 1 }} />
         </div>
       ) : (
-        <div style={{ flex: 1, minHeight: 0, padding: 8, overflow: "auto" }}>
+        <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
           <div
             style={{
               display: "flex",
@@ -102,6 +102,7 @@ export default function SidePanel({ activeCapability }) {
               justifyContent: "flex-end",
               gap: 2,
               marginBottom: 4,
+              flexShrink: 0,
             }}
           >
             <Tooltip title={pinned ? "取消固定" : "固定（窄屏不自动折叠）"}>
@@ -120,14 +121,16 @@ export default function SidePanel({ activeCapability }) {
               onClick={() => setSidePanelCollapsed(true)}
             />
           </div>
-          {PanelComp ? (
-            <PanelComp />
-          ) : (
-            <Empty
-              style={{ marginTop: 48 }}
-              description="点击上方能力按钮展开面板"
-            />
-          )}
+          <div style={{ flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden", padding: 4 }}>
+            {PanelComp ? (
+              <PanelComp />
+            ) : (
+              <Empty
+                style={{ marginTop: 48 }}
+                description="点击上方能力按钮展开面板"
+              />
+            )}
+          </div>
         </div>
       )}
     </Sider>
