@@ -396,12 +396,22 @@ export default function RulesPanel() {
         </Title>
       </div>
       <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
-        <Spin
-          spinning={loading}
-          style={{ height: "100%", maxHeight: "100dvh" }}
-          wrapperStyle={{ height: "100%" }}
-        >
-          <Row gutter={0} style={{ height: "100%" }}>
+        {loading && (
+          <div
+            style={{
+              position: "absolute",
+              inset: 0,
+              zIndex: 10,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              background: "rgba(255,255,255,0.6)",
+            }}
+          >
+            <Spin />
+          </div>
+        )}
+        <Row gutter={0} style={{ height: "100%" }}>
           {/* 左：规则列表（按 kind 分组） */}
           <Col
             {...(isCompact
@@ -872,7 +882,6 @@ export default function RulesPanel() {
             )}
           </Col>
         </Row>
-        </Spin>
       </div>
     </div>
   );
