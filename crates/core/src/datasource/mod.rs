@@ -5,7 +5,7 @@
 //! - CSV：基于 `csv` crate，首行作为表头。
 //! - XLSX：基于 `calamine` crate，取首个工作表，首行作为表头。
 //! - JSON / JSONL：基于 `serde_json`。JSON 数组按对象展开；JSONL 每行一个对象。
-//! - TXT：整段文本读成单 cell `content`。
+//! - TXT：按行/定长分块读为多行 `content`（8.5 MB 无换行文件 → ~2080 行）。
 //! - SQL：用 `rusqlite` in-memory 执行全部语句并收集所有 SELECT 结果。
 //! - PCAP：调 `crate::pcap::PcapReader`（tshark 子进程）提取 HTTP 请求字段。
 //! - DB：用 `rusqlite::Connection::open(path)` 打开外部 .db / .sqlite / .sqlite3
