@@ -69,10 +69,19 @@ export default function ExtractPanel() {
       const base = (page - 1) * (sheet.pageSize || 50);
       const rowStatuses = {};
       const flatHits = [];
+      // 超大单元格防护：超过阈值的单元格跳过主线程同步正则，
+      // 提示用户改用「提取并校验到新 Tab」（后端 Rust re.find_iter，不冻结前端）。
+      const EXTRACT_INPUT_LIMIT = 50000;
+      let skippedLargeCells = 0;
       rows.forEach((r, i) => {
         const value = r[column];
         if (value == null || value === "") return;
         const input = String(value);
+        // 大单元格防护：跳过主线程同步正则，避免冻结前端
+        if (input.length > EXTRACT_INPUT_LIMIT) {
+          skippedLargeCells += 1;
+          return;
+        }
         ruleIds.forEach((rid) => {
           const rule = ruleById[rid];
           if (!rule || !rule.pattern) return;
@@ -106,7 +115,13 @@ export default function ExtractPanel() {
         applyRowStatuses({ sheetId: sheet.id, rowStatuses });
       }
       setHits(flatHits);
-      message.success(`提取完成：${flatHits.length} 个命中`);
+      if (skippedLargeCells > 0) {
+        message.warning(
+          `提取完成：${flatHits.length} 个命中；跳过 ${skippedLargeCells} 个超大单元格，请用「提取并校验到新 Tab」处理`
+        );
+      } else {
+        message.success(`提取完成：${flatHits.length} 个命中`);
+      }
     } catch (e) {
       // eslint-disable-next-line no-console
       console.error("extract failed:", e);
