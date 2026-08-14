@@ -197,13 +197,19 @@ export async function exportSheetToJson(sheet, opts = {}) {
 }
 
 /**
- * 把当前 Sheet 按模板导出为 TXT（每行一条）。
+ * 把当前 Sheet 按模板导出为 TXT。
  *
- * 模板语法：`{字段名}` → 该列名；`{值}` → 该单元格值。
+ * 模板有两种模式，由模板内容自动判定：
+ *
+ * 1. 逐列模式（向后兼容）：模板含 `{字段名}` / `{name}` / `{值}` / `{value}`
+ *    占位符。对每行数据的每个选中列各渲染一行。
+ *    示例：`{字段名}_{值}` → username_zhangsan（每列一行）
+ *
+ * 2. 合并行模式：模板用 `{列名}` 直接引用具体列（如 `{类型}_{数据值}`）。
+ *    每行数据只渲染一行，将多列值合并到同一行。
+ *    示例：`{类型}_{数据值}` → ip_163.211.48.156（一行合并多列）
+ *
  * 其余字符（_、-、: 等）按字面输出，可自由填写作为连接符。
- *
- * 渲染规则：对每行数据的每个选中列各渲染一行。
- * 默认模板 `{字段名}_{值}` → 形如 `username_zhangsan`。
  *
  * 修复 BUG：内部 fetchAllRowsForExport 拉全表，不再只导当前页。
  *
@@ -217,14 +223,31 @@ export async function exportSheetToTxt(sheet, opts = {}) {
   const eol = resolveLineEnding(opts.lineEnding ?? "crlf");
   const template = opts.template && opts.template.trim() ? opts.template : "{字段名}_{值}";
   const lines = [];
-  for (const row of rows) {
-    for (const h of selHeaders) {
+
+  // 判定模式：含逐列占位符 → 逐列模式；否则 → 合并行模式。
+  const hasPerColPlaceholder = /\{字段名\}|\{name\}|\{值\}|\{value\}/.test(template);
+
+  if (hasPerColPlaceholder) {
+    // 逐列模式：每行 × 每选中列 → 各一行
+    for (const row of rows) {
+      for (const h of selHeaders) {
+        lines.push(
+          template
+            .replace(/\{字段名\}/g, h)
+            .replace(/\{name\}/g, h)
+            .replace(/\{值\}/g, row[h] ?? "")
+            .replace(/\{value\}/g, row[h] ?? "")
+        );
+      }
+    }
+  } else {
+    // 合并行模式：每行只渲染一行，{列名} → 该行列值
+    for (const row of rows) {
       lines.push(
-        template
-          .replace(/\{字段名\}/g, h)
-          .replace(/\{name\}/g, h)
-          .replace(/\{值\}/g, row[h] ?? "")
-          .replace(/\{value\}/g, row[h] ?? "")
+        template.replace(/\{([^}]+)\}/g, (match, key) => {
+          const val = row[key];
+          return val != null ? String(val) : "";
+        })
       );
     }
   }

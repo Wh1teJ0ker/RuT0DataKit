@@ -68,7 +68,7 @@ export default function ExportModal({ open, sheet, onClose }) {
   const [jsonIndent, setJsonIndent] = useState(2);
   const [jsonFormat, setJsonFormat] = useState("array");
   // TXT
-  const [txtTemplate, setTxtTemplate] = useState("{字段名}_{值}");
+  const [txtTemplate, setTxtTemplate] = useState("{类型}_{数据值}");
   const [txtLineEnding, setTxtLineEnding] = useState("crlf");
 
   // 列顺序：遵循 columnOrder，否则用 headers。
@@ -79,7 +79,7 @@ export default function ExportModal({ open, sheet, onClose }) {
 
   // TXT 默认模板：{字段名}_{值}（字段名与值之间用下划线连接）。
   const defaultTemplate = useMemo(
-    () => "{字段名}_{值}",
+    () => "{类型}_{数据值}",
     []
   );
 
@@ -92,7 +92,7 @@ export default function ExportModal({ open, sheet, onClose }) {
       setCsvWithHeader(true);
       setJsonIndent(2);
       setJsonFormat("array");
-      setTxtTemplate("{字段名}_{值}");
+      setTxtTemplate("{类型}_{数据值}");
       setTxtLineEnding("crlf");
     }
   }, [open, orderedHeaders, defaultTemplate]);
@@ -138,7 +138,8 @@ export default function ExportModal({ open, sheet, onClose }) {
           });
           break;
         case "txt":
-          // 模板模式：{字段名}_{值} → username_zhangsan
+          // 模板模式：{类型}_{数据值} → ip_163.211.48.156（合并行）
+          //          {字段名}_{值} → 类型_ip（逐列，每列一行）
           ok = await exportSheetToTxt(sheet, {
             template: txtTemplate.trim() ? txtTemplate : null,
             lineEnding: txtLineEnding,
@@ -256,16 +257,18 @@ export default function ExportModal({ open, sheet, onClose }) {
               <Input.TextArea
                 value={txtTemplate}
                 onChange={(e) => setTxtTemplate(e.target.value)}
-                placeholder="{字段名}_{值}"
+                placeholder="{类型}_{数据值}"
                 autoSize={{ minRows: 2, maxRows: 4 }}
                 style={{ fontFamily: "monospace", marginTop: 4 }}
               />
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                用 `{"{字段名}"}` 引用列名、`{"{值}"}` 引用单元格值；连接符（
-                {"_"}、-、: 等）可自由填写。每行数据的每个选中列各渲染一行。
+                <strong>逐列模式</strong>：用 `{"{字段名}"}` 引用列名、`{"{值}"}` 引用单元格值；每行数据的每个选中列各渲染一行。
               </Typography.Text>
               <Typography.Text type="secondary" style={{ fontSize: 12, display: "block" }}>
-                示例：`{"{字段名}_{值}"}` → username_zhangsan；`{"{字段名}-{值}"}` → username-zhangsan
+                <strong>合并行模式</strong>：用 `{"{列名}"}` 直接引用具体列（如 `{"{类型}_{数据值}"}`）；每行数据只渲染一行，多列值合并到同一行。
+              </Typography.Text>
+              <Typography.Text type="secondary" style={{ fontSize: 12, display: "block" }}>
+                示例：`{"{类型}_{数据值}"}` → ip_163.211.48.156；`{"{字段名}_{值}"}` → 类型_ip（每列一行）
               </Typography.Text>
             </div>
             <Row gutter={[8, 8]}>
@@ -327,7 +330,7 @@ export default function ExportModal({ open, sheet, onClose }) {
             </Checkbox.Group>
             {isTxt && (
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                模板对每个选中列各渲染一行；未选中列不导出。
+                逐列模式（含 `{"{字段名}"}`/`{"{值}"}`）对每个选中列各渲染一行；合并行模式（用 `{"{列名}"}` 引用具体列）每行数据只渲染一行。未选中列在逐列模式下不导出。
               </Typography.Text>
             )}
           </>
