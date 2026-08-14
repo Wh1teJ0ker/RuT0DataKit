@@ -148,15 +148,18 @@ fn normalize_gender(s: &str) -> Option<char> {
 /// 流程：
 /// 1. `find_col_idx` + `query_column_cells` 读源列全部数据行
 /// 2. 从 DB 取所有规则（`get_rule`），预编译各规则 `pattern` 正则（宽松召回）
-/// 3. 逐行 → 逐规则 `find_iter` 提取候选 → 对每个候选调 `validate_extracted`
+/// 3. **拼接全列文本**（无分隔符）后统一跑 `find_iter`，确保跨块边界
+///    （TXT 导入 4096 字节定长分块产生的相邻行）的模式不被截断，
+///    且分块制造的人工 `\b` 不复存在——与官方题解做法一致
+/// 4. 对每个候选调 `validate_extracted`
 ///    → 收集 `(源行号, 类型标签, 提取值, 有效, 说明)`
 ///    （T78：phone-extract 规则 + `phone_prefixes` 非空 → 用运行时白名单覆盖）
-/// 4. （T55c）若任一规则 `params == IdCard` 且指定 `gender_col_idx`：
+/// 5. （T55c）若任一规则 `params == IdCard` 且指定 `gender_col_idx`：
 ///    读性别列 → 构建行号→性别值映射 → 对有效 idcard 候选比对推断性别
 ///    与性别列值；矛盾则 `valid=false` + `note` 标注不一致
-/// 5. `create_sheet(session_id, "{column}_提取", 0)` + `write_cells`
+/// 6. `create_sheet(session_id, "{column}_提取", 0)` + `write_cells`
 ///    （表头 `[类型, 数据值]` + **仅有效**数据行）
-/// 6. `log_operation("extract_to_sheet", before_snapshot=None)`（不进撤销栈）
+/// 7. `log_operation("extract_to_sheet", before_snapshot=None)`（不进撤销栈）
 ///
 /// 新 Tab 只含**有效候选**（`valid==true`），无效候选不写入但仍在返回的
 /// `Vec<ExtractValidateRow>` 中保留供测试断言。
@@ -227,59 +230,89 @@ pub fn extract_validate_to_new_sheet_inner(
         HashMap::new()
     };
 
-    // 逐行 → 逐规则提取候选 → 校验 → 收集结果。
-    let mut results: Vec<ExtractValidateRow> = Vec::new();
-    let mut skipped: u32 = 0; // 无任何候选的行数
+    // 拼接全列文本 + 记录每行起始偏移，用于映射匹配→源行号。
+    //
+    // 背景：TXT 导入器对无换行超大文件按 4096 字节定长分块，每块成为独立
+    // DB 行。逐行跑正则会导致两类问题：
+    // 1) 跨块边界模式被截断（如 IP "192.168.1.1" 被拆为 "...19"+"2.168.1.1..."）
+    // 2) 逐行在块边界制造人工 \b，使原本连续的长数字串碎片通过校验
+    //    （如 21 位 "850233386999983226607" 被分块后，碎片 "3386999983226607"
+    //     长度 16 且通过 Luhn，作为假银行卡号入结果）
+    //
+    // 正确做法（与官方题解一致）：拼接全列后整体跑正则，\b 只在原文的
+    // 自然边界生效，分块制造的人工 \b 不复存在。用偏移二分查找映射回源行号。
+    //
+    // 分隔符策略（按 source_type 区分）：
+    // - txt：TXT 导入器对单行文件按 4096 字节分块，行间是同一连续字符串
+    //   的片段 → 不插入分隔符，拼接后与原文逐字节一致，跨边界模式可恢复。
+    //   插入 \n 会在拼接处制造 \b，使跨边界模式只匹配后半截。
+    // - csv / xlsx / json 等：每行是独立记录 → 行间插入 \n 分隔符，为 \b
+    //   提供自然边界，避免相邻纯数字行拼接后 \b 失效（如两个 11 位手机号
+    //   拼成 22 位数字串，\b1\d{10}\b 无法匹配）。
+    let is_chunked_txt = db
+        .get_session(session_id)
+        .map(|d| d.session.source_type == "txt")
+        .unwrap_or(false);
+
+    let mut full_string = String::new();
+    let mut offsets: Vec<(u32, usize)> = Vec::with_capacity(rows.len()); // (row_idx, start_offset)
     for (row_idx, value) in &rows {
-        let input = value.as_deref().unwrap_or("");
-        let mut row_hit = false;
-        for (rule, re, label) in &compiled {
-            let is_idcard = matches!(rule.params.as_ref(), Some(ExtractParams::IdCard));
-            // T78：phone-extract 规则 + 运行时 phone_prefixes 非空 → 用运行时
-            // 白名单覆盖 DB rule.params 的 allowed_prefixes。
-            let is_phone_extract = rule.id == "phone-extract";
-            for m in re.find_iter(input) {
-                let candidate = m.as_str();
-                let (mut valid, mut note) = if is_phone_extract && !phone_prefixes.is_empty() {
-                    let params_override = ExtractParams::PhonePrefix {
-                        allowed_prefixes: phone_prefixes.to_vec(),
-                    };
-                    validate_extracted_with_params(&params_override, candidate)
-                } else {
-                    validate_extracted(rule, candidate)
-                };
-                // T55c：身份证性别联合校验（仅当指定性别列 + 候选本身有效 + 可推断性别）
-                if is_idcard && valid {
-                    if let Some(inferred) = idcard_gender(candidate) {
-                        if let Some(col_val) = gender_map.get(row_idx) {
-                            if let Some(norm) = normalize_gender(col_val) {
-                                if norm != inferred {
-                                    valid = false;
-                                    note = format!(
-                                        "性别不一致: 身份证推断{inferred}，性别列{col_val}"
-                                    );
-                                }
-                                // 一致 → 保持 valid=true + note=性别（已由 validate_extracted 设置）
-                            }
-                            // 性别列值不可识别 → 跳过比对，保持 valid=true
-                        }
-                        // 无对应行 → 跳过比对
-                    }
-                }
-                results.push(ExtractValidateRow {
-                    source_row: *row_idx,
-                    type_label: label.clone(),
-                    value: candidate.to_string(),
-                    valid,
-                    note,
-                });
-                row_hit = true;
-            }
-        }
-        if !row_hit {
-            skipped += 1;
+        offsets.push((*row_idx, full_string.len()));
+        full_string.push_str(value.as_deref().unwrap_or(""));
+        if !is_chunked_txt {
+            full_string.push('\n');
         }
     }
+
+    // 在拼接文本上整体扫描正则（与官方题解一致）：
+    // - 跨块边界的完整模式可被正确匹配（无人工 \b 干扰）
+    // - 原本连续的长数字串不会因分块而产生碎片假匹配
+    let mut results: Vec<ExtractValidateRow> = Vec::new();
+    let mut rows_with_hits: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    for (rule, re, label) in &compiled {
+        let is_idcard = matches!(rule.params.as_ref(), Some(ExtractParams::IdCard));
+        let is_phone_extract = rule.id == "phone-extract";
+        for m in re.find_iter(&full_string) {
+            let candidate = m.as_str();
+            // 二分查找匹配起始偏移对应的源行号。
+            let row_idx = match offsets.binary_search_by(|(_, start)| start.cmp(&m.start())) {
+                Ok(idx) => offsets[idx].0,
+                Err(idx) => offsets[idx.saturating_sub(1)].0,
+            };
+            let (mut valid, mut note) = if is_phone_extract && !phone_prefixes.is_empty() {
+                let params_override = ExtractParams::PhonePrefix {
+                    allowed_prefixes: phone_prefixes.to_vec(),
+                };
+                validate_extracted_with_params(&params_override, candidate)
+            } else {
+                validate_extracted(rule, candidate)
+            };
+            if is_idcard && valid {
+                if let Some(inferred) = idcard_gender(candidate) {
+                    if let Some(col_val) = gender_map.get(&row_idx) {
+                        if let Some(norm) = normalize_gender(col_val) {
+                            if norm != inferred {
+                                valid = false;
+                                note = format!(
+                                    "性别不一致: 身份证推断{inferred}，性别列{col_val}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            results.push(ExtractValidateRow {
+                source_row: row_idx,
+                type_label: label.clone(),
+                value: candidate.to_string(),
+                valid,
+                note,
+            });
+            rows_with_hits.insert(row_idx);
+        }
+    }
+
+    let skipped = (rows.len() as u32) - (rows_with_hits.len() as u32);
 
     // 新 Tab 只写有效候选：2 列 [类型, 数据值]。
     let valid_rows: Vec<&ExtractValidateRow> = results.iter().filter(|r| r.valid).collect();
@@ -1195,9 +1228,21 @@ mod tests {
     // ---- T55：提取 + 函数式校验 → 新 Tab ----
 
     /// 构造一个 sheet：1 列（col0=raw），表头 + 多行数据（含有效/无效候选）。
-    /// 返回 (session_id, sheet_id)。
+    /// 返回 (session_id, sheet_id)。source_type 默认 "csv"（独立记录，行间插 \n）。
     fn setup_extract_sheet(db: &DbManager, values: &[&str]) -> (i64, i64) {
-        let session_id = db.create_session("extract-test", None, "csv", 0).unwrap();
+        setup_extract_sheet_with_type(db, values, "csv")
+    }
+
+    /// 同 setup_extract_sheet，但可指定 source_type。
+    /// source_type="txt" 模拟 TXT 4096 字节分块（行间无分隔符，连续字符串片段）。
+    fn setup_extract_sheet_with_type(
+        db: &DbManager,
+        values: &[&str],
+        source_type: &str,
+    ) -> (i64, i64) {
+        let session_id = db
+            .create_session("extract-test", None, source_type, 0)
+            .unwrap();
         let sheet_id = db.create_sheet(session_id, "raw", 0).unwrap();
         let mut cells: Vec<Cell> = Vec::with_capacity(values.len() + 1);
         cells.push(Cell {
@@ -1367,6 +1412,68 @@ mod tests {
         assert_eq!(data_col0[0].1.as_deref(), Some("银行卡号"));
     }
 
+    // ---- 跨块边界提取（拼接修复）----
+
+    /// IPv4 地址跨行（块）边界：TXT 导入 4096 字节分块后，IP "192.168.1.1"
+    /// 被拆为 "...prefix 19"（row1 末尾）+ "2.168.1.1 suffix"（row2 开头）。
+    /// 逐行提取：row1 无 IP；row2 找到 "2.168.1.1"（值错误）。
+    /// 拼接提取：找到完整 "192.168.1.1"，source_row = 1（匹配起始在 row1）。
+    #[test]
+    fn extract_validate_ip_cross_chunk_boundary() {
+        let (_dir, db) = setup_db();
+        db.seed_builtin_rules().unwrap();
+        let values = ["prefix 19", "2.168.1.1 suffix"];
+        let (session_id, sheet_id) = setup_extract_sheet_with_type(&db, &values, "txt");
+
+        let (parse_result, rows) = extract_validate_to_new_sheet_inner(
+            &db,
+            sheet_id,
+            "raw",
+            &["ip4-extract".to_string()],
+            session_id,
+            None,
+            &[],
+        )
+        .unwrap();
+
+        // 拼接后找到完整 192.168.1.1（而非截断的 2.168.1.1）。
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].valid);
+        assert_eq!(rows[0].value, "192.168.1.1");
+        assert_eq!(rows[0].source_row, 1); // 匹配起始在 row1
+        assert_eq!(parse_result.row_count, 1);
+        assert_eq!(parse_result.skipped, 1); // row2 无独立候选
+    }
+
+    /// 银行卡号跨行（块）边界：19 位卡号被拆为 13 位 + 6 位。
+    /// 逐行提取：row1 找到 13 位 "6222021234567"（Luhn 失败）；
+    /// row2 无候选。拼接提取：找到完整 19 位 "6222021234567890128"
+    ///（Luhn 通过）。
+    #[test]
+    fn extract_validate_bankcard_cross_chunk_boundary() {
+        let (_dir, db) = setup_db();
+        db.seed_builtin_rules().unwrap();
+        let values = ["data 6222021234567", "890128 end"];
+        let (session_id, sheet_id) = setup_extract_sheet_with_type(&db, &values, "txt");
+
+        let (parse_result, rows) = extract_validate_to_new_sheet_inner(
+            &db,
+            sheet_id,
+            "raw",
+            &["bankcard-extract".to_string()],
+            session_id,
+            None,
+            &[],
+        )
+        .unwrap();
+
+        // 拼接后找到完整 19 位 Luhn-valid 卡号，而非截断的 13 位。
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].value, "6222021234567890128");
+        assert_eq!(rows[0].source_row, 1); // 匹配起始在 row1
+        assert_eq!(parse_result.skipped, 1); // row2 无独立候选
+    }
+
     #[test]
     fn extract_validate_ipv4_to_new_sheet() {
         // IPv4：192.168.1.1 有效；256.1.1.1 无效（超范围）；
@@ -1401,9 +1508,10 @@ mod tests {
     fn extract_validate_ipv6_to_new_sheet() {
         // IPv6：::1 / 2001:db8::1 有效；1:2:3 无效（仅 3 段且无 :: 缩写，
         // IPv6 要求 8 段或 :: 压缩）。宽松正则会召回三者。
+        // 每行用空格分隔，避免拼接后跨行边界产生伪 IPv6 匹配。
         let (_dir, db) = setup_db();
         db.seed_builtin_rules().unwrap();
-        let values = ["::1", "2001:db8::1", "1:2:3"];
+        let values = ["::1", " 2001:db8::1", " 1:2:3"];
         let (session_id, sheet_id) = setup_extract_sheet(&db, &values);
 
         let (parse_result, rows) = extract_validate_to_new_sheet_inner(
