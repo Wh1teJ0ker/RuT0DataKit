@@ -199,22 +199,24 @@ export async function exportSheetToJson(sheet, opts = {}) {
 /**
  * 把当前 Sheet 按模板导出为 TXT。
  *
- * 模板有两种模式，由模板内容自动判定：
+ * 模板有两种模式，由 opts.mode 显式指定（前端下拉选择）：
  *
- * 1. 逐列模式（向后兼容）：模板含 `{字段名}` / `{name}` / `{值}` / `{value}`
+ * 1. "percol" 逐列模式：模板含 `{字段名}` / `{name}` / `{值}` / `{value}`
  *    占位符。对每行数据的每个选中列各渲染一行。
  *    示例：`{字段名}_{值}` → username_zhangsan（每列一行）
  *
- * 2. 合并行模式：模板用 `{列名}` 直接引用具体列（如 `{类型}_{数据值}`）。
+ * 2. "merge" 合并行模式：模板用 `{列名}` 直接引用具体列（如 `{类型}_{数据值}`）。
  *    每行数据只渲染一行，将多列值合并到同一行。
  *    示例：`{类型}_{数据值}` → ip_163.211.48.156（一行合并多列）
+ *
+ * 未传 mode 时按模板内容自动判定（向后兼容）：含逐列占位符 → 逐列；否则 → 合并行。
  *
  * 其余字符（_、-、: 等）按字面输出，可自由填写作为连接符。
  *
  * 修复 BUG：内部 fetchAllRowsForExport 拉全表，不再只导当前页。
  *
  * @param {{id: number, name?: string}} sheet
- * @param {{template?: string, lineEnding?: "crlf"|"lf", headers?: string[]}} [opts]
+ * @param {{template?: string, lineEnding?: "crlf"|"lf", headers?: string[], mode?: "merge"|"percol"}} [opts]
  * @returns {Promise<boolean>}
  */
 export async function exportSheetToTxt(sheet, opts = {}) {
@@ -224,10 +226,11 @@ export async function exportSheetToTxt(sheet, opts = {}) {
   const template = opts.template && opts.template.trim() ? opts.template : "{字段名}_{值}";
   const lines = [];
 
-  // 判定模式：含逐列占位符 → 逐列模式；否则 → 合并行模式。
+  // 模式判定：显式 mode 优先；未传时按模板内容自动判定（向后兼容）。
   const hasPerColPlaceholder = /\{字段名\}|\{name\}|\{值\}|\{value\}/.test(template);
+  const isPerCol = opts.mode ? opts.mode === "percol" : hasPerColPlaceholder;
 
-  if (hasPerColPlaceholder) {
+  if (isPerCol) {
     // 逐列模式：每行 × 每选中列 → 各一行
     for (const row of rows) {
       for (const h of selHeaders) {

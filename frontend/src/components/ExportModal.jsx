@@ -47,6 +47,12 @@ const LINE_ENDING_OPTIONS = [
   { value: "lf", label: "LF (Unix)" },
 ];
 
+// TXT 导出模式下拉项。
+const TXT_MODE_OPTIONS = [
+  { value: "merge", label: "合并行（每行数据 → 一行）" },
+  { value: "percol", label: "逐列（每列各一行）" },
+];
+
 // JSON 结构下拉项。
 const JSON_FORMAT_OPTIONS = [
   { value: "array", label: "数组 [{},{}]" },
@@ -70,6 +76,7 @@ export default function ExportModal({ open, sheet, onClose }) {
   // TXT
   const [txtTemplate, setTxtTemplate] = useState("{类型}_{数据值}");
   const [txtLineEnding, setTxtLineEnding] = useState("crlf");
+  const [txtMode, setTxtMode] = useState("merge");
 
   // 列顺序：遵循 columnOrder，否则用 headers。
   const orderedHeaders = useMemo(() => {
@@ -94,6 +101,7 @@ export default function ExportModal({ open, sheet, onClose }) {
       setJsonFormat("array");
       setTxtTemplate("{类型}_{数据值}");
       setTxtLineEnding("crlf");
+      setTxtMode("merge");
     }
   }, [open, orderedHeaders, defaultTemplate]);
 
@@ -138,12 +146,13 @@ export default function ExportModal({ open, sheet, onClose }) {
           });
           break;
         case "txt":
-          // 模板模式：{类型}_{数据值} → ip_163.211.48.156（合并行）
-          //          {字段名}_{值} → 类型_ip（逐列，每列一行）
+          // 合并行模式：{类型}_{数据值} → ip_163.211.48.156
+          // 逐列模式：{字段名}_{值} → 类型_ip（每列一行）
           ok = await exportSheetToTxt(sheet, {
             template: txtTemplate.trim() ? txtTemplate : null,
             lineEnding: txtLineEnding,
             headers: selectedCols,
+            mode: txtMode,
           });
           break;
         default:
@@ -248,28 +257,54 @@ export default function ExportModal({ open, sheet, onClose }) {
           </>
         )}
 
-        {/* TXT 专属选项：模板 + 行尾 */}
+        {/* TXT 专属选项：模式 + 模板 + 行尾 */}
         {isTxt && orderedHeaders.length > 0 && (
           <>
             <Divider style={{ margin: 0 }} />
+            <div>
+              <Typography.Text>导出模式：</Typography.Text>
+              <Select
+                value={txtMode}
+                onChange={(v) => {
+                  setTxtMode(v);
+                  if (v === "percol") {
+                    setTxtTemplate("{字段名}_{值}");
+                  } else {
+                    setTxtTemplate("{类型}_{数据值}");
+                  }
+                }}
+                style={{ width: "100%", marginTop: 4 }}
+                options={TXT_MODE_OPTIONS}
+              />
+            </div>
             <div>
               <Typography.Text>TXT 模板：</Typography.Text>
               <Input.TextArea
                 value={txtTemplate}
                 onChange={(e) => setTxtTemplate(e.target.value)}
-                placeholder="{类型}_{数据值}"
+                placeholder={txtMode === "merge" ? "{类型}_{数据值}" : "{字段名}_{值}"}
                 autoSize={{ minRows: 2, maxRows: 4 }}
                 style={{ fontFamily: "monospace", marginTop: 4 }}
               />
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                <strong>逐列模式</strong>：用 `{"{字段名}"}` 引用列名、`{"{值}"}` 引用单元格值；每行数据的每个选中列各渲染一行。
-              </Typography.Text>
-              <Typography.Text type="secondary" style={{ fontSize: 12, display: "block" }}>
-                <strong>合并行模式</strong>：用 `{"{列名}"}` 直接引用具体列（如 `{"{类型}_{数据值}"}`）；每行数据只渲染一行，多列值合并到同一行。
-              </Typography.Text>
-              <Typography.Text type="secondary" style={{ fontSize: 12, display: "block" }}>
-                示例：`{"{类型}_{数据值}"}` → ip_163.211.48.156；`{"{字段名}_{值}"}` → 类型_ip（每列一行）
-              </Typography.Text>
+              {txtMode === "merge" ? (
+                <>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    合并行模式：用 `{"{列名}"}` 直接引用具体列；每行数据只渲染一行，多列值合并到同一行。
+                  </Typography.Text>
+                  <Typography.Text type="secondary" style={{ fontSize: 12, display: "block" }}>
+                    示例：`{"{类型}_{数据值}"}` → ip_163.211.48.156
+                  </Typography.Text>
+                </>
+              ) : (
+                <>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    逐列模式：用 `{"{字段名}"}` 引用列名、`{"{值}"}` 引用单元格值；每行数据的每个选中列各渲染一行。
+                  </Typography.Text>
+                  <Typography.Text type="secondary" style={{ fontSize: 12, display: "block" }}>
+                    示例：`{"{字段名}_{值}"}` → 类型_ip（每列一行）
+                  </Typography.Text>
+                </>
+              )}
             </div>
             <Row gutter={[8, 8]}>
               <Col xs={{ span: 24 }} sm={{ span: 12 }}>
@@ -330,7 +365,9 @@ export default function ExportModal({ open, sheet, onClose }) {
             </Checkbox.Group>
             {isTxt && (
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                逐列模式（含 `{"{字段名}"}`/`{"{值}"}`）对每个选中列各渲染一行；合并行模式（用 `{"{列名}"}` 引用具体列）每行数据只渲染一行。未选中列在逐列模式下不导出。
+                {txtMode === "merge"
+                  ? "合并行模式：每行数据渲染一行；模板中 {列名} 引用具体列值。"
+                  : "逐列模式：每个选中列各渲染一行；未选中列不导出。"}
               </Typography.Text>
             )}
           </>
