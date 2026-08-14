@@ -80,6 +80,12 @@ function HeaderCell({ "data-colkey": colkey, ...rest }) {
 // 不能直接用 JS string slice（UTF-16 code unit 索引）切片——中文等多字节字符
 // 会导致 end > text.length 误判越界而 break，表现为无高亮。
 // 这里用 TextEncoder 取 UTF-8 字节、TextDecoder 按字节区间还原字符串，保证偏移语义一致。
+// 单元格文本长度阈值：超过此值时跳过 TextEncoder.encode + mark 高亮，
+// 直接返回纯文本，防止 8.5MB 级大单元格在主线程上分配巨型 Uint8Array 冻结 UI。
+// 用 text.length（UTF-16 code unit 数）做粗判，避免为判断阈值本身先 encode 一遍。
+// 与 ExtractPanel 的阈值保持一致。
+const HIGHLIGHT_BYTE_LIMIT = 50000;
+
 const _encoder = new TextEncoder();
 const _decoder = new TextDecoder("utf-8", { fatal: false });
 
@@ -87,6 +93,8 @@ function highlightCell(value, hitRanges) {
   if (value == null) return value;
   const text = String(value);
   if (!hitRanges || hitRanges.length === 0) return text;
+  // 大单元格防护：跳过 TextEncoder.encode，直接返回纯文本（无 mark 高亮）
+  if (text.length > HIGHLIGHT_BYTE_LIMIT) return text;
   const bytes = _encoder.encode(text);
   const byteLen = bytes.length;
   const sorted = [...hitRanges].sort((a, b) => a[0] - b[0]);
@@ -161,9 +169,18 @@ export default function DataTable({ sheet, onSetPage }) {
         key: h,
         // 通过 onHeaderCell 把列 key 透传给 header cell 组件
         onHeaderCell: () => ({ "data-colkey": h }),
+        ellipsis: true,
         // v1.1.1 搜索命中高亮：取 sheet.searchHits?.[record.key]?.[h]
-        render: (text, record) =>
-          highlightCell(text, sheet.searchHits?.[record.key]?.[h]),
+        // 兜底截断：highlightCell 返回纯字符串且超 200 字符时截断加 …，
+        // 防止 antd ellipsis 在某些场景未生效时整页渲染长文本
+        render: (text, record) => {
+          const hits = sheet.searchHits?.[record.key]?.[h];
+          const rendered = highlightCell(text, hits);
+          if (typeof rendered === "string" && rendered.length > 200) {
+            return rendered.slice(0, 200) + "…";
+          }
+          return rendered;
+        },
       }));
   }, [sheet]);
 
@@ -445,7 +462,7 @@ export default function DataTable({ sheet, onSetPage }) {
             }}
             size="small"
             bordered
-            scroll={{ x: "max-content" }}
+            scroll={{ x: "max-content", y: "calc(100vh - 280px)" }}
             components={{
               header: { cell: HeaderCell },
             }}
