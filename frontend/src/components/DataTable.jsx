@@ -482,10 +482,10 @@ export default function DataTable({ sheet, onSetPage }) {
       >
         <Form form={replaceForm} layout="vertical" size="small">
           <Form.Item label="查找" name="from" rules={[{ required: true }]}>
-            <Input allowClear />
+            <Input allowClear autoComplete="off" autoCapitalize="off" spellCheck={false} />
           </Form.Item>
           <Form.Item label="替换为" name="to">
-            <Input allowClear />
+            <Input allowClear autoComplete="off" autoCapitalize="off" spellCheck={false} />
           </Form.Item>
           <Form.Item label="正则" name="useRegex" valuePropName="checked">
             <Switch />
