@@ -22,10 +22,10 @@
 //! 预设示例（仅 `simple-mask` 适用，`segment-mask` 不内置预设）：
 //! ```json
 //! { "id": "simple-mask", ..., "template": { "keepPrefix": 6, "keepSuffix": 4,
-//!   "maskChar": "*", "maskMinLen": 8, "minLen": 18, "maxLen": 18 } }
+//!   "maskChar": "*", "maskMinLen": 8 } }
 //! ```
-//! v1.1.3 T52：`TemplateParams` 改为 untagged enum（`Simple` / `Segment`）。
-//! - `Simple` = 原 6 字段 flat 结构（向后兼容旧 DB JSON）。
+//! v1.1.3 T52：`TemplateParams` 改为 untagged enum（`Segment` / `Simple`）。
+//! - `Simple` = 原 flat 结构（向后兼容旧 DB JSON，多余字段被忽略）。
 //! - `Segment` = 按 `delimiter` 拆分值，对 `segments` 中列出的段做保留首尾脱敏
 //!   （如 `zhangsan@example.com` 按 `@` 拆分，对第 0 段保留首尾各 1）。
 //!
@@ -945,8 +945,6 @@ mod tests {
         assert_eq!(s.keep_prefix, Some(6));
         assert_eq!(s.keep_suffix, Some(4));
         assert_eq!(s.mask_min_len, Some(8));
-        assert_eq!(s.min_len, Some(18));
-        assert_eq!(s.max_len, Some(18));
         // T53：预设不反转（正向）
         assert_eq!(s.reverse, None);
         assert!(!tpl.is_empty());
@@ -959,8 +957,6 @@ mod tests {
         assert_eq!(s.keep_prefix, Some(3));
         assert_eq!(s.keep_suffix, Some(4));
         assert_eq!(s.mask_min_len, Some(4));
-        assert_eq!(s.min_len, Some(11));
-        assert_eq!(s.max_len, Some(11));
         assert_eq!(s.reverse, None);
     }
 
@@ -971,8 +967,6 @@ mod tests {
         assert_eq!(s.keep_prefix, Some(8));
         assert_eq!(s.keep_suffix, Some(0));
         assert_eq!(s.mask_min_len, Some(2));
-        assert_eq!(s.min_len, Some(10));
-        assert_eq!(s.max_len, Some(10));
         assert_eq!(s.reverse, None);
     }
 
@@ -983,9 +977,6 @@ mod tests {
         assert_eq!(s.keep_prefix, Some(4));
         assert_eq!(s.keep_suffix, Some(4));
         assert_eq!(s.mask_min_len, Some(1));
-        // 银行卡不设长度 guard（15~19 位不等）
-        assert_eq!(s.min_len, None);
-        assert_eq!(s.max_len, None);
         assert_eq!(s.reverse, None);
     }
 
@@ -997,8 +988,6 @@ mod tests {
         assert!(json.contains("keepPrefix"));
         assert!(json.contains("keepSuffix"));
         assert!(json.contains("maskMinLen"));
-        assert!(json.contains("minLen"));
-        assert!(json.contains("maxLen"));
         let back: TemplateParams = serde_json::from_str(&json).unwrap();
         assert_eq!(back, tpl);
     }
@@ -1033,7 +1022,8 @@ mod tests {
 
     #[test]
     fn old_flat_json_deserializes_to_simple() {
-        // 旧 DB 里的 flat JSON（无 delimiter/reverse 字段）→ 反序列化为 Simple
+        // 旧 DB 里的 flat JSON（无 delimiter/reverse，但含已删除的 minLen/maxLen）
+        // → Segment 变体无 delimiter 失败 → 回退到 Simple，多余字段被忽略
         let old = r#"{"keepPrefix":6,"keepSuffix":4,"maskChar":"*","maskMinLen":8,"minLen":18,"maxLen":18}"#;
         let tpl: TemplateParams = serde_json::from_str(old).unwrap();
         match tpl {

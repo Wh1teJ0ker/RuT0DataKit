@@ -12,9 +12,8 @@
 //! 四种脱敏模式：
 //! - **模板驱动**（`rule.kind == Mask` + `rule.template.is_some()` 且**非空模板**）：
 //!   保留前 `keep_prefix` 字符 + 后 `keep_suffix` 字符，中间替换为 `mask_char`
-//!   （至少 `mask_min_len` 个）。`min_len`/`max_len` 为值总字符数 guard——不在
-//!   区间内原样返回。对齐 v0.8.0 `TemplateOp`。前端选预设（身份证 / 手机 /
-//!   出生日期 / 银行卡）填充 `simple-mask` 的 `template` 后走此分支。
+//!   （至少 `mask_min_len` 个）。对齐 v0.8.0 `TemplateOp`。前端选预设（身份证 /
+//!   手机 / 出生日期 / 银行卡）填充 `simple-mask` 的 `template` 后走此分支。
 //!   T53 `reverse=true`：反向脱敏——掩码首 `keep_prefix` + 尾 `keep_suffix` 字符，
 //!   中间原样保留（如 `13812345678` + kp=3,ks=4 → `***1234****`）。
 //! - **空模板透传**（`rule.kind == Mask` + `rule.template` 为**空模板**，
@@ -54,8 +53,8 @@ pub trait Masker {
 ///
 /// - **模板驱动**（`rule.kind == Mask` + `rule.template` 非空，v1.1.3）：
 ///   保留前 `keep_prefix` + 后 `keep_suffix` 字符，中间替换为 `mask_char`（至少
-///   `mask_min_len` 个）。`min_len`/`max_len` 为值总字符数 guard。对齐 v0.8.0
-///   `TemplateOp`。前端选预设填充 `simple-mask` 的 `template` 后走此分支。
+///   `mask_min_len` 个）。对齐 v0.8.0 `TemplateOp`。前端选预设填充
+///   `simple-mask` 的 `template` 后走此分支。
 /// - **空模板透传**（`rule.template` 为空模板，T49）：原样返回，不脱敏。
 /// - **规则驱动（无模板，v1.1.0）**（`rule.kind == Mask` + `rule.template.is_none()`）：
 ///   - 长度 ≥ 3：保留首尾各 1 字符，中间用「掩码字符」替换（「张三丰」→「张*丰」）。
@@ -141,7 +140,6 @@ impl Masker for SimpleMasker {
 /// 应用通用模板脱敏（v1.1.3）。保留前 `keep_prefix` + 后 `keep_suffix` 字符，
 /// 中间替换为 `mask_char`（至少 `mask_min_len` 个）。
 ///
-/// - `min_len`/`max_len` 为值总字符数 guard——不在区间内原样返回。
 /// - 保留段重叠（`keep_prefix + keep_suffix >= n`）→ 仅输出 `mask_min_len` 个 `mask_char`。
 /// - T53 `reverse=true`：反向脱敏——掩码首 `keep_prefix` + 尾 `keep_suffix` 字符，
 ///   中间原样保留。`keep_prefix`/`keep_suffix` 语义变为「首尾脱码位数」。
@@ -158,24 +156,6 @@ fn apply_template(
     let kp = tpl.keep_prefix.unwrap_or(0);
     let ks = tpl.keep_suffix.unwrap_or(0);
     let mml = tpl.mask_min_len.unwrap_or(1);
-
-    // guard：长度不在 [min_len, max_len] 区间原样返回。
-    if let Some(min) = tpl.min_len {
-        if n < min {
-            return MaskResult {
-                output: chars.iter().collect(),
-                rule_id: rule_id.to_string(),
-            };
-        }
-    }
-    if let Some(max) = tpl.max_len {
-        if n > max {
-            return MaskResult {
-                output: chars.iter().collect(),
-                rule_id: rule_id.to_string(),
-            };
-        }
-    }
 
     // T53：reverse=true → 反向脱敏（掩码首尾，保留中间）
     if tpl.reverse.unwrap_or(false) {
@@ -232,7 +212,7 @@ fn apply_template(
 /// - `delimiter` 为空 或 `segments` 为空 → 透传（原样返回）。
 /// - 段 `index` 超出拆分后的段数 → 该配置被忽略（不影响其他段）。
 /// - 单段脱敏复用 `apply_segment_part`（保留前 `keep_prefix` + 后 `keep_suffix` 字符，
-///   中间替换为 `mask_char`，至少 `mask_min_len` 个；无 min/max guard）。
+///   中间替换为 `mask_char`，至少 `mask_min_len` 个）。
 fn apply_segment_template(
     tpl: &SegmentTemplate,
     input: &str,
@@ -712,17 +692,16 @@ mod tests {
     }
 
     #[test]
-    fn template_reverse_guard_still_works() {
-        // reverse=true + min_len=18 → 15 位输入原样返回（guard 在反向分支前检查）
+    fn template_reverse_masks_short_input_without_guard() {
+        // reverse=true（无长度 guard）→ 15 位输入仍被反向脱敏
+        // kp=3, ks=4 → head=***, middle=10190010, tail=****
         let m = SimpleMasker;
         let rule = simple_mask_with_template(TemplateParams::Simple(
-            SimpleTemplate::new(3, 4, 1)
-                .with_reverse(true)
-                .with_len_range(18, 18),
+            SimpleTemplate::new(3, 4, 1).with_reverse(true),
         ));
         assert_eq!(
             m.mask("110101900101123", Some(&rule)).unwrap().output,
-            "110101900101123"
+            "***10190010****"
         );
     }
 

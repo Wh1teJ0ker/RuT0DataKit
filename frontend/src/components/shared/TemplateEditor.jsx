@@ -261,24 +261,6 @@ export default function TemplateEditor({
           }
         />
       </Form.Item>
-      <Form.Item label="长度下限">
-        <InputNumber
-          value={template.minLen}
-          onChange={(v) => handleFieldChange("minLen", v)}
-          placeholder="不限"
-          min={0}
-          style={{ width: "100%" }}
-        />
-      </Form.Item>
-      <Form.Item label="长度上限">
-        <InputNumber
-          value={template.maxLen}
-          onChange={(v) => handleFieldChange("maxLen", v)}
-          placeholder="不限"
-          min={0}
-          style={{ width: "100%" }}
-        />
-      </Form.Item>
     </>
   );
 }

@@ -857,17 +857,6 @@ export default function RulesPanel() {
                               />
                             </>
                           )}
-                          {testResult.template && testResult.skipped && (
-                            <>
-                              <br />
-                              <Alert
-                                type="warning"
-                                showIcon
-                                style={{ marginTop: 8 }}
-                                message="长度超出 guard 区间，原样返回"
-                              />
-                            </>
-                          )}
                         </div>
                       ) : null}
                     </div>

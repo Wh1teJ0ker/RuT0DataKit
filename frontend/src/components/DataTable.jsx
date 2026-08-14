@@ -29,7 +29,12 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { useAppContext } from "../state";
-import { searchRows, replaceAll, getSheetData } from "../tauri";
+import {
+  searchRows,
+  replaceAll,
+  getSheetData,
+  listUndoableOperations,
+} from "../tauri";
 import { PAGE_SIZE } from "../constants";
 import "./DataTable.css";
 
@@ -332,6 +337,14 @@ export default function DataTable({ sheet, onSetPage }) {
       });
       // 数据已变 → 退出搜索态（清空 searchRows/searchHits/searchState）
       clearSearch();
+      // 刷新撤销栈（全局替换是可撤销操作，不刷新会导致撤销/重做按钮失效）
+      try {
+        const ops = await listUndoableOperations(sheet.id);
+        dispatch({ type: "SET_UNDO_STACK", payload: ops });
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.error("listUndoableOperations refresh failed:", e);
+      }
     } catch (e) {
       if (e?.errorFields) return; // 表单校验失败，antd 自带提示
       // eslint-disable-next-line no-console

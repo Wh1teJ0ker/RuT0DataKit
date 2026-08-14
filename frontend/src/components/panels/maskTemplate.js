@@ -3,9 +3,9 @@
 //
 // 对齐后端 crates/core/src/processor/masker.rs：
 //   - TemplateParams 是 untagged enum：
-//     - Simple（7 个 Option 字段，旧 flat 结构向后兼容；T53 新增 reverse）
 //     - Segment（T52：delimiter + segments[]，按分隔符拆分后对指定段脱敏）
-//   - apply_template 逻辑（keep_prefix/keep_suffix/mask_char/mask_min_len + min_len/max_len guard
+//     - Simple（5 个 Option 字段，旧 flat 结构向后兼容；T53 新增 reverse）
+//   - apply_template 逻辑（keep_prefix/keep_suffix/mask_char/mask_min_len
 //     + T53 reverse 反向：掩码首尾、保留中间）
 //   - apply_segment_template 逻辑（split → 对每段调 apply_segment_part → join）
 //   - 空模板（Simple 全 None / Segment delimiter 空或 segments 空）= 不脱敏（透传）
@@ -19,7 +19,7 @@ export const DEFAULT_MASK_CHAR = "*";
 export const TEMPLATE_TYPE_SIMPLE = "simple";
 export const TEMPLATE_TYPE_SEGMENT = "segment";
 
-/// 整段脱敏预设（simple-mask 的预设）。选预设 → 填充 7 个可编辑参数框。
+/// 整段脱敏预设（simple-mask 的预设）。选预设 → 填充可编辑参数框。
 // 参数对齐后端 TemplateParams::Simple（camelCase）。
 // 仅 Simple 模板内置预设；Segment 模板不内置预设（用户自行配置分段）。
 export const MASK_PRESETS = [
@@ -31,8 +31,6 @@ export const MASK_PRESETS = [
       keepSuffix: 4,
       maskChar: "*",
       maskMinLen: 8,
-      minLen: null,
-      maxLen: null,
     },
   },
   {
@@ -43,8 +41,6 @@ export const MASK_PRESETS = [
       keepSuffix: 4,
       maskChar: "*",
       maskMinLen: 4,
-      minLen: 11,
-      maxLen: 11,
     },
   },
   {
@@ -55,8 +51,6 @@ export const MASK_PRESETS = [
       keepSuffix: 0,
       maskChar: "*",
       maskMinLen: 2,
-      minLen: 10,
-      maxLen: 10,
     },
   },
   {
@@ -67,8 +61,6 @@ export const MASK_PRESETS = [
       keepSuffix: 4,
       maskChar: "*",
       maskMinLen: 1,
-      minLen: null,
-      maxLen: null,
     },
   },
   { key: "custom", label: "自定义", params: null },
@@ -83,8 +75,6 @@ export const EMPTY_TEMPLATE = {
   keepSuffix: null,
   maskChar: null,
   maskMinLen: null,
-  minLen: null,
-  maxLen: null,
   reverse: null,
 };
 
@@ -120,14 +110,12 @@ export function normalizeTemplate(tpl) {
         : [],
     };
   }
-  // Simple 变体（旧 flat 6 字段 + T53 reverse）
+  // Simple 变体（旧 flat 字段 + T53 reverse）
   return {
     keepPrefix: tpl.keepPrefix ?? null,
     keepSuffix: tpl.keepSuffix ?? null,
     maskChar: tpl.maskChar ?? null,
     maskMinLen: tpl.maskMinLen ?? null,
-    minLen: tpl.minLen ?? null,
-    maxLen: tpl.maxLen ?? null,
     reverse: tpl.reverse === true ? true : null,
   };
 }
@@ -159,7 +147,7 @@ export function detectPreset(t) {
   return "custom";
 }
 
-/// 按预设 key 填充 6 参数框。custom 不填充（保留当前用户输入）。
+/// 按预设 key 填充参数框。custom 不填充（保留当前用户输入）。
 /// 预设都是 Simple 模板，切换到预设时自动用 Simple 空模板初始化。
 export function templateFromPreset(key) {
   const preset = MASK_PRESETS.find((p) => p.key === key);
@@ -188,14 +176,6 @@ function buildSimpleForRun(template) {
   }
   if (template.maskMinLen != null && template.maskMinLen !== "") {
     tpl.maskMinLen = Number(template.maskMinLen);
-    hasAny = true;
-  }
-  if (template.minLen != null && template.minLen !== "") {
-    tpl.minLen = Number(template.minLen);
-    hasAny = true;
-  }
-  if (template.maxLen != null && template.maxLen !== "") {
-    tpl.maxLen = Number(template.maxLen);
     hasAny = true;
   }
   if (template.reverse === true) {
@@ -244,7 +224,7 @@ export function buildTemplateForRun(template) {
 }
 
 /// 前端单段脱敏预览（移植自后端 apply_segment_part，纯逻辑不写 DB）。
-/// 保留前 kp + 后 ks 字符，中间替换为 maskChar（至少 mml 个）。无 min/max guard。
+/// 保留前 kp + 后 ks 字符，中间替换为 maskChar（至少 mml 个）。
 function previewSegmentPart(part, cfg, maskChar) {
   const chars = [...part];
   const n = chars.length;
@@ -297,14 +277,6 @@ function previewSimpleMask(template, input, fallbackMaskChar) {
       ? built.maskChar[0]
       : null) || fallbackMaskChar || DEFAULT_MASK_CHAR;
 
-  // guard：长度不在 [minLen, maxLen] 区间原样返回。
-  if (built.minLen != null && n < built.minLen) {
-    return { output: value, skipped: true };
-  }
-  if (built.maxLen != null && n > built.maxLen) {
-    return { output: value, skipped: true };
-  }
-
   // T53：反向脱敏——掩码首尾，保留中间。
   if (built.reverse === true) {
     if (n === 0) return { output: "", skipped: false };
@@ -336,8 +308,7 @@ function previewSimpleMask(template, input, fallbackMaskChar) {
 /// 前端模板脱敏预览（移植自后端 apply_template / apply_segment_template）。
 /// 空模板（全 null / segment 空）→ 原样返回（透传）。
 ///
-/// 返回 { output, skipped }：skipped=true 表示 guard 命中（长度不在区间内），
-/// output 为原值。
+/// 返回 { output, skipped }：skipped 恒为 false（已移除长度 guard）。
 export function previewMask(template, input, fallbackMaskChar) {
   if (isSegmentTemplate(template)) {
     return previewSegmentMask(template, input, fallbackMaskChar);

@@ -3,15 +3,15 @@
 //! 两种变体：
 //! - `Simple`：整段脱敏（原 v1.1.3 T48 逻辑）。保留前 `keep_prefix` 字符 +
 //!   后 `keep_suffix` 字符，中间替换为 `mask_char`（至少 `mask_min_len` 个）。
-//!   `min_len` / `max_len` 为值总字符数 guard。所有字段 `Option`，`None` 取语义
-//!   默认值（0/0/*/1/None/None）。
+//!   所有字段 `Option`，`None` 取语义默认值（0/0/*/1/None）。
 //! - `Segment`：分段脱敏（T52 新增）。按 `delimiter` 拆分值，对 `segments` 中
 //!   列出的段（按 0-based `index`）做保留首尾脱敏，其余段原样保留。
 //!
-//! serde untagged：旧 DB 里的 flat JSON（无 `delimiter` 字段）反序列化为 `Simple`，
-//! 新 JSON（含 `delimiter`）反序列化为 `Segment`。`SimpleTemplate` 所有字段
-//! `Option` + `SegmentTemplate` 需要 `delimiter: String`（非 Option）→ serde
-//! 先尝试 `Simple`（命中旧 JSON），再尝试 `Segment`（命中含 `delimiter` 的新 JSON）。
+//! serde untagged（`Segment` 在前）：旧 DB 里的 flat JSON（无 `delimiter` 字段）
+//! 反序列化为 `Simple`，新 JSON（含 `delimiter`）反序列化为 `Segment`。
+//! `SegmentTemplate` 需要 `delimiter: String`（非 Option）→ serde 先尝试
+//! `Segment`（Simple JSON 无 delimiter → 失败），再尝试 `Simple`（命中旧 JSON，
+//! 多余字段被忽略，向后兼容）。
 //!
 //! T49 子规则化：`general-mask` 规则持有**空模板**（`TemplateParams::default()`，
 //! 即 `Simple` 全 `None`）→ `SimpleMasker` 视为不脱敏（透传）。前端选预设
@@ -19,6 +19,9 @@
 //! 的 `template` 临时参数覆盖，或经 `update_rule_template` 持久化到 DB。
 //!
 //! v1.2.0 T93：从 `rules.rs` 拆出，承载模板类型 + 构造器 + 预设常量。
+//!
+//! v1.1.6：删除 `min_len` / `max_len` 长度 guard 字段（脱敏场景无用），同时
+//! 删除 `deny_unknown_fields` 并将 `Segment` 变体置前以保证旧 DB JSON 向后兼容。
 
 use serde::{Deserialize, Serialize};
 
@@ -27,31 +30,32 @@ use serde::{Deserialize, Serialize};
 /// 两种变体：
 /// - `Simple`：整段脱敏（原 v1.1.3 T48 逻辑）。保留前 `keep_prefix` 字符 +
 ///   后 `keep_suffix` 字符，中间替换为 `mask_char`（至少 `mask_min_len` 个）。
-///   `min_len` / `max_len` 为值总字符数 guard。所有字段 `Option`，`None` 取语义
-///   默认值（0/0/*/1/None/None）。
+///   所有字段 `Option`，`None` 取语义默认值（0/0/*/1/None）。
 /// - `Segment`：分段脱敏（T52 新增）。按 `delimiter` 拆分值，对 `segments` 中
 ///   列出的段（按 0-based `index`）做保留首尾脱敏，其余段原样保留。
+///
+/// v1.1.6：`Segment` 变体置前（替代旧 `deny_unknown_fields` 消歧方案），
+/// 保证旧 DB flat JSON（无 `delimiter`）回退到 `Simple` 且多余字段被忽略。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", untagged)]
 pub enum TemplateParams {
-    /// 整段脱敏（v1.1.3 T48 原逻辑）。
-    Simple(SimpleTemplate),
     /// 分段脱敏（v1.1.3 T52）：按 `delimiter` 拆分，对指定段做保留首尾脱敏。
     Segment(SegmentTemplate),
+    /// 整段脱敏（v1.1.3 T48 原逻辑）。
+    Simple(SimpleTemplate),
 }
 
 /// 整段脱敏模板参数（v1.1.3 T48，T52 从 `TemplateParams` 拆出作为 `Simple` 变体）。
 ///
-/// `#[serde(deny_unknown_fields)]`：untagged enum 反序列化时，含 `delimiter` /
-/// `segments` 字段的 Segment JSON 不会误匹配 Simple（否则 Simple 全 Option 字段
-/// 会"吞掉"额外字段，导致 Segment 永远不被尝试）。
+/// v1.1.6：已删除 `min_len` / `max_len` 长度 guard 字段（脱敏场景无用），
+/// 同时删除 `deny_unknown_fields`（改由 `Segment` 变体置前消歧）。
 ///
 /// T53：`reverse: Option<bool>` 反向脱敏标志。`None`/`false` = 正向（保留首尾、
 /// 掩码中间）；`true` = 反向（掩码首尾、保留中间）。反向时 `keep_prefix` /
 /// `keep_suffix` 语义变为「首部脱码位数」/「尾部脱码位数」。旧 JSON 无此字段 →
 /// `None` → 正向，向后兼容。
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct SimpleTemplate {
     /// 保留前缀字符数（默认 0）。`reverse=true` 时变为「首部脱码位数」。
     pub keep_prefix: Option<usize>,
@@ -62,10 +66,6 @@ pub struct SimpleTemplate {
     /// 脱敏段至少插入多少个掩码字符（默认 1）。正向 = 中间段最小掩码长度；
     /// 反向 = 重叠全脱敏时的最小长度兜底。
     pub mask_min_len: Option<usize>,
-    /// 值总字符数下限 guard（默认 None = 不限制）。
-    pub min_len: Option<usize>,
-    /// 值总字符数上限 guard（默认 None = 不限制）。
-    pub max_len: Option<usize>,
     /// 反向脱敏标志（T53）。`None`/`false` = 正向（保留首尾、掩码中间）；
     /// `true` = 反向（掩码首尾、保留中间）。旧 JSON 无此字段 → `None` → 正向。
     pub reverse: Option<bool>,
@@ -119,8 +119,6 @@ impl TemplateParams {
             keep_suffix: Some(keep_suffix),
             mask_char: None,
             mask_min_len: Some(mask_min_len),
-            min_len: None,
-            max_len: None,
             reverse: None,
         })
     }
@@ -136,21 +134,9 @@ impl TemplateParams {
         }
     }
 
-    /// 链式设置 min_len / max_len guard（仅对 Simple 变体有效）。
-    pub fn with_len_range(self, min: usize, max: usize) -> Self {
-        match self {
-            TemplateParams::Simple(mut s) => {
-                s.min_len = Some(min);
-                s.max_len = Some(max);
-                TemplateParams::Simple(s)
-            }
-            other => other,
-        }
-    }
-
     /// 是否为空模板（透传，不脱敏）。
     ///
-    /// - `Simple` → 6 字段全 `None`。
+    /// - `Simple` → 5 字段全 `None`。
     /// - `Segment` → `delimiter` 为空 或 `segments` 为空。
     pub fn is_empty(&self) -> bool {
         match self {
@@ -159,8 +145,6 @@ impl TemplateParams {
                     && s.keep_suffix.is_none()
                     && s.mask_char.is_none()
                     && s.mask_min_len.is_none()
-                    && s.min_len.is_none()
-                    && s.max_len.is_none()
             }
             TemplateParams::Segment(s) => s.delimiter.is_empty() || s.segments.is_empty(),
         }
@@ -183,8 +167,6 @@ impl SimpleTemplate {
             keep_suffix: Some(keep_suffix),
             mask_char: None,
             mask_min_len: Some(mask_min_len),
-            min_len: None,
-            max_len: None,
             reverse: None,
         }
     }
@@ -192,13 +174,6 @@ impl SimpleTemplate {
     /// 链式设置 mask_char。
     pub fn with_mask_char(mut self, c: char) -> Self {
         self.mask_char = Some(c);
-        self
-    }
-
-    /// 链式设置 min_len / max_len guard（长度上下限，含端点）。
-    pub fn with_len_range(mut self, min: usize, max: usize) -> Self {
-        self.min_len = Some(min);
-        self.max_len = Some(max);
         self
     }
 
@@ -246,30 +221,28 @@ impl SegmentTemplate {
 // ---- T49 通用脱敏预设（general-mask 的子规则）----
 //
 // 4 条预设对应原 v1.1.3 独立规则（idcard/phone/birthdate/bankcard）的模板参数，
-// 现作为 `general-mask` 的子规则供前端选择。前端选预设 → 填充 6 个可编辑参数框
+// 现作为 `general-mask` 的子规则供前端选择。前端选预设 → 填充可编辑参数框
 // → 用户可继续修改 → 执行脱敏时把模板透传给 `mask_column`。
 // 预设只是 `TemplateParams` 常量构造器，不再单独 seed 到 DB。
 
 /// 身份证号预设：保留前 6 位地区码 + 后 4 位校验码，中间 8 位用 `*` 替换。
-/// `min_len=max_len=18` guard → 非 18 位原样返回。
 pub fn idcard_preset() -> TemplateParams {
-    TemplateParams::new(6, 4, 8).with_len_range(18, 18)
+    TemplateParams::new(6, 4, 8)
 }
 
 /// 手机号预设：保留前 3 位 + 后 4 位，中间 4 位用 `*` 替换。
-/// `min_len=max_len=11` guard → 非 11 位原样返回。
 pub fn phone_preset() -> TemplateParams {
-    TemplateParams::new(3, 4, 4).with_len_range(11, 11)
+    TemplateParams::new(3, 4, 4)
 }
 
 /// 出生日期预设：保留年份和月份（前 8 字符 `YYYY-MM-`），日期 2 位用 `*` 替换。
-/// `min_len=max_len=10` guard → 非 10 位原样返回。例：`1990-01-15` → `1990-01-**`。
+/// 例：`1990-01-15` → `1990-01-**`。
 pub fn birthdate_preset() -> TemplateParams {
-    TemplateParams::new(8, 0, 2).with_len_range(10, 10)
+    TemplateParams::new(8, 0, 2)
 }
 
 /// 银行卡号预设：保留前 4 位 + 后 4 位，中间位数用 `*` 替换。
-/// 不设长度 guard（银行卡号长度 15~19 位不等）。例：`6222021234567890123` → `6222***********0123`。
+/// 银行卡号长度 15~19 位不等。例：`6222021234567890123` → `6222***********0123`。
 pub fn bankcard_preset() -> TemplateParams {
     TemplateParams::new(4, 4, 1)
 }

@@ -511,7 +511,7 @@ mod tests {
         let sm0 = mgr.get_rule("simple-mask").unwrap().unwrap();
         assert!(sm0.template.as_ref().unwrap().is_empty());
         // 更新为 idcard 预设
-        let tpl = TemplateParams::new(6, 4, 8).with_len_range(18, 18);
+        let tpl = TemplateParams::new(6, 4, 8);
         assert!(mgr.update_rule_template("simple-mask", Some(&tpl)).unwrap());
         let sm1 = mgr.get_rule("simple-mask").unwrap().unwrap();
         let got = sm1.template.expect("template should be Some");
@@ -523,8 +523,6 @@ mod tests {
         assert_eq!(got.keep_prefix, Some(6));
         assert_eq!(got.keep_suffix, Some(4));
         assert_eq!(got.mask_min_len, Some(8));
-        assert_eq!(got.min_len, Some(18));
-        assert_eq!(got.max_len, Some(18));
         // 清空模板 → 写 NULL
         assert!(mgr.update_rule_template("simple-mask", None).unwrap());
         let sm2 = mgr.get_rule("simple-mask").unwrap().unwrap();

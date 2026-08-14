@@ -4,6 +4,7 @@ import { useAppContext } from "../../state";
 import {
   maskColumn,
   getSheetData,
+  listUndoableOperations,
   updateRuleParams,
   updateRuleTemplate,
 } from "../../tauri";
@@ -182,6 +183,14 @@ export default function MaskPanel() {
         rowStatuses[`${sheet.id}-${page}-${i}`] = "masked";
       });
       applyRowStatuses({ sheetId: sheet.id, rowStatuses });
+      // 刷新撤销栈（脱敏是可撤销操作，不刷新会导致撤销/重做按钮失效）
+      try {
+        const ops = await listUndoableOperations(sheet.id);
+        dispatch({ type: "SET_UNDO_STACK", payload: ops });
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.error("listUndoableOperations refresh failed:", e);
+      }
       message.success(`脱敏完成：${res.affected ?? 0} 行`);
     } catch (e) {
       // eslint-disable-next-line no-console
