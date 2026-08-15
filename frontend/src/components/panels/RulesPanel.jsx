@@ -109,6 +109,8 @@ export default function RulesPanel() {
   const [presetKey, setPresetKey] = useState("empty");
   // T55：提取规则编辑态。phonePrefix 的允许前缀草稿（空数组=默认1开头）。
   const [draftAllowedPrefixes, setDraftAllowedPrefixes] = useState([]);
+  // idcard-extract：是否允许首位为 0（勾选后 pattern 改为 \b\d{17}[\dXx]\b）。
+  const [draftAllowLeadingZero, setDraftAllowLeadingZero] = useState(false);
   // v1.1.4 续轮 T71：generic-validate 参数草稿（字符类 + 长度限制）。
   const [draftGenericParams, setDraftGenericParams] = useState({ ...EMPTY_GENERIC_PARAMS });
   const [saving, setSaving] = useState(false);
@@ -191,6 +193,19 @@ export default function RulesPanel() {
         setDraftGenericParams(normalizeGenericParams(selected.params));
       } else {
         setDraftGenericParams({ ...EMPTY_GENERIC_PARAMS });
+      }
+      // idcard-extract：从 DB pattern 推断"允许首位为 0"初始状态。
+      // pattern 含 [1-9] → false（首位非零），否则 → true（宽松召回）。
+      // 仅对 idcard-extract 生效（idcard-validate 无 pattern）。
+      if (
+        selected.params?.validator === "idcard" &&
+        selected.kind === "extract"
+      ) {
+        setDraftAllowLeadingZero(
+          selected.pattern && !selected.pattern.includes("[1-9]")
+        );
+      } else {
+        setDraftAllowLeadingZero(false);
       }
       setTestResult(null);
       setTestInput("");
@@ -687,8 +702,47 @@ export default function RulesPanel() {
                             />
                           </Form.Item>
                         </>
+                      ) : selected.params.validator === "idcard" &&
+                        selected.kind === "extract" ? (
+                        // idcard-extract：只读 Tag + "允许首位为 0" 开关 + 正则输入框。
+                        // 仅对提取规则生效（idcard-validate 无 pattern，不显示）。
+                        <>
+                          <Form.Item label="校验类型">
+                            <Tag color="blue" style={{ margin: 0 }}>
+                              身份证
+                            </Tag>
+                          </Form.Item>
+                          <Form.Item label="允许首位为 0">
+                            <Switch
+                              checked={draftAllowLeadingZero}
+                              onChange={(checked) => {
+                                setDraftAllowLeadingZero(checked);
+                                setDraftPattern(
+                                  checked
+                                    ? "\\b\\d{17}[\\dXx]\\b"
+                                    : "\\b[1-9]\\d{16}[\\dXx]\\b"
+                                );
+                              }}
+                            />
+                            <Text
+                              type="secondary"
+                              style={{ marginLeft: 8, fontSize: 12 }}
+                            >
+                              {draftAllowLeadingZero
+                                ? "首位可为 0（宽松召回）"
+                                : "首位必须非零（默认）"}
+                            </Text>
+                          </Form.Item>
+                          <Form.Item label="正则模式">
+                            <Input
+                              value={draftPattern ?? ""}
+                              onChange={(e) => setDraftPattern(e.target.value)}
+                              placeholder="提取正则"
+                            />
+                          </Form.Item>
+                        </>
                       ) : (
-                        // 其他 validator（luhn/ipv4/ipv6/idcard/username/sex/birth/address）：
+                        // 其他 validator（luhn/ipv4/ipv6/username/sex/birth/address）：
                         // 只读 Tag + hint 文案，不显示空正则输入框。
                         <>
                           <Form.Item label="校验类型">
@@ -768,6 +822,8 @@ export default function RulesPanel() {
                             setDraftPattern(
                               BUILTIN_PATTERNS[selected.id] ?? selected.pattern ?? ""
                             );
+                            // idcard-extract 重置 → 恢复首位非零出厂状态。
+                            setDraftAllowLeadingZero(false);
                           }
                         }}
                       >
