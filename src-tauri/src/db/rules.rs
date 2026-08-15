@@ -247,9 +247,28 @@ impl DbManager {
                 self.upsert_rule(rule)?;
             }
         }
+        // v1.1.5：phone-extract 正则从 `\b1\d{10}\b` 升级为 `\b[1-9]\d{10}\b`
+        // （放宽召回，兼容 7xx 等非标准前缀）。老 DB 存的是旧正则，需精确替换。
+        // 用 WHERE pattern = ? 精确匹配旧值，避免覆盖用户自定义的其他正则。
+        self.migrate_phone_extract_pattern()?;
         // T50：清理 v1.1.3 T48 遗留的 4 条独立脱敏规则（T49 收敛为预设）。
         // T54：追加 general-mask（拆分为 simple-mask + segment-mask 后废弃）。
         self.cleanup_deprecated_rules()?;
+        Ok(())
+    }
+
+    /// v1.1.5 迁移：phone-extract 正则从 `\b1\d{10}\b` 升级为 `\b[1-9]\d{10}\b`。
+    ///
+    /// 老用户 DB 中 phone-extract 的 pattern 列可能存的是 v1.1.3 的旧正则
+    /// `\b1\d{10}\b`（只匹配 1 开头），导致 7xx 等非标准前缀手机号全部漏召回。
+    /// 本方法用 `WHERE pattern = ?` 精确匹配旧值后替换，不影响用户自定义的
+    /// 其他正则（若用户已手动改过，不会被覆盖）。幂等：已是新正则则匹配 0 行。
+    fn migrate_phone_extract_pattern(&self) -> Result<(), DbError> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        conn.execute(
+            "UPDATE rules SET pattern = ?1 WHERE id = 'phone-extract' AND pattern = ?2",
+            params![r"\b[1-9]\d{10}\b", r"\b1\d{10}\b"],
+        )?;
         Ok(())
     }
 
