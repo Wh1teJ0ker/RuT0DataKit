@@ -2,39 +2,30 @@
 //!
 //! 全部 `#[tauri::command]` → `Result<T, String>` + `.map_err(|e| e.to_string())`。
 //! 依赖 `DbManager`（列读写 + 规则持久化 + sheet 创建）。
+//!
+//! v1.2.1 T8：公共类型（`ExtractValidateRow` / `RowInvalidReason` /
+//! `TwoSheetResult` / `CrossFieldConfig` / `MultiRuleValidation`）与共享 helper
+//! （`validate_single` / `group_cells_by_row` / `query_all_data_cells` /
+//! `read_headers` / `write_sheet`）移入 [`super::helpers`]，本文件仅保留
+//! 命令 + 核心逻辑。
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 
-use serde::{Deserialize, Serialize};
-
-use ruT0_data_kit_core::processor::validators::{
-    clean_birth, idcard_gender, is_valid_birth, is_valid_phone,
-    validate_extracted, validate_extracted_with_params,
-};
 use ruT0_data_kit_core::processor::rules::ExtractParams;
+use ruT0_data_kit_core::processor::validators::{
+    clean_birth, idcard_gender, is_valid_birth, validate_extracted, validate_extracted_with_params,
+};
 
 use crate::commands::columns::ParseResult;
+use crate::commands::processor::helpers::{
+    group_cells_by_row, query_all_data_cells, read_headers, validate_single, write_sheet,
+    CrossFieldConfig, ExtractValidateRow, MultiRuleValidation, RowInvalidReason, TwoSheetResult,
+};
 use crate::db::{Cell, DbManager};
 
 // ---------------------------------------------------------------------------
 // 提取 + 函数式校验 → 新 Tab（v1.1.3 T55）
 // ---------------------------------------------------------------------------
-
-/// 单条提取候选的校验结果（camelCase）。新 Tab 一行对应一条有效候选。
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ExtractValidateRow {
-    /// 源 sheet 中的行号（1-based 数据行；表头不算）。
-    pub source_row: u32,
-    /// 类型标签（规则名去掉「提取」后缀，如「身份证号」「手机号」）。
-    pub type_label: String,
-    /// 正则提取出的候选原文。
-    pub value: String,
-    /// 是否通过 `validate_extracted` 校验。
-    pub valid: bool,
-    /// 校验说明（通过为空串；失败给原因，如「Luhn 校验未通过」）。
-    pub note: String,
-}
 
 /// 性别值归一化（T55c）。去空格 + 小写后匹配：
 /// - "男"/"male"/"m"/"1" → '男'
@@ -344,76 +335,8 @@ pub fn extract_validate_to_new_sheet(
 }
 
 // ---------------------------------------------------------------------------
-// 双 Tab 校验结果结构体（T57/T68 共用）
-// ---------------------------------------------------------------------------
-
-/// 单行单字段的校验失败原因（camelCase）。不写入 sheet（用户要求「保留原有字段，
-/// 不新增列」），仅随 IPC 返回供前端 summary 消息展示。
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RowInvalidReason {
-    /// 源 sheet 数据行号（1-based；表头 row_idx=0 不校验）。
-    pub source_row: u32,
-    /// 失败字段名（username/name/sex/birth/idcard/phone/address；跨字段失败用
-    /// `sex`/`birth`，理由注明「与身份证号不一致」）。
-    pub field: String,
-    pub reason: String,
-}
-
-/// 双 Tab 校验结果（camelCase）。`valid_sheet` / `invalid_sheet` 各为一份
-/// `ParseResult`，前端分别 `ADD_SHEET_FROM_PARSE` + `SET_SHEET_DATA` 落地。
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TwoSheetResult {
-    pub valid_sheet: ParseResult,
-    pub invalid_sheet: ParseResult,
-    pub invalid_reasons: Vec<RowInvalidReason>,
-}
-
-// ---------------------------------------------------------------------------
 // 多规则行级校验 → 双 Tab 输出（T68）
 // ---------------------------------------------------------------------------
-
-/// 单条校验规则的跨字段配置（仅 idcard 规则用，camelCase）。
-///
-/// 前端为 idcard-validate 规则条目附上此配置：
-/// - `checkSex=true` + `sexColumn="sex"` → 比对性别列值与 idcard 第 17 位推断性别
-/// - `checkBirth=true` + `birthColumn="birth"` → 比对出生日期列值与 idcard[6..14]
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct CrossFieldConfig {
-    /// 是否比对性别一致性。
-    pub check_sex: bool,
-    /// 性别列名（`checkSex=true` 时必填）。
-    pub sex_column: Option<String>,
-    /// 是否比对出生日期一致性。
-    pub check_birth: bool,
-    /// 出生日期列名（`checkBirth=true` 时必填）。
-    pub birth_column: Option<String>,
-}
-
-/// 一条「列 + 规则」校验组合（camelCase）。T68。
-///
-/// 前端为源 sheet 的每个待校验列各发一条：`column` = 源列名，
-/// `ruleId` 指向 DB `rules` 表（如 `username-validate` / `name-validate` /
-/// `idcard-validate` 等）。`crossField` 仅在 `ruleId` 为 idcard-validate 时
-/// 携带，用于触发跨字段联合校验。
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MultiRuleValidation {
-    /// 要校验的源列名。
-    pub column: String,
-    /// 校验规则 id（指向 DB `rules` 表）。
-    pub rule_id: String,
-    /// 跨字段配置（仅 idcard-validate 规则用）。
-    #[serde(default)]
-    pub cross_field: Option<CrossFieldConfig>,
-    /// 参数覆盖（v1.1.4 续轮 T70）：允许前端为每行发送参数覆盖 DB 默认值。
-    /// 目前主要服务于 `generic-validate` 规则（前端 UI 编辑字符类开关 +
-    /// 长度范围后下发）。`None` = 用 DB `rule.params`。
-    #[serde(default)]
-    pub params_override: Option<ExtractParams>,
-}
 
 /// 多规则行级校验核心逻辑（接受 `&DbManager`，便于单测直接调用）。T68。
 ///
@@ -449,35 +372,14 @@ pub fn validate_multi_rules_to_two_sheets_inner(
         .ok_or_else(|| format!("sheet {sheet_id} 不存在"))?;
 
     // 表头（row_idx=0）。
-    let header_cells = db.query_row_cells(sheet_id, 0).map_err(|e| e.to_string())?;
-    let mut header_pairs: Vec<(u32, String)> = header_cells
-        .iter()
-        .map(|c| (c.col_idx, c.value.clone().unwrap_or_default()))
-        .collect();
-    header_pairs.sort_by_key(|(col, _)| *col);
-    let headers: Vec<String> = header_pairs.into_iter().map(|(_, v)| v).collect();
+    let headers = read_headers(db, sheet_id)?;
     let col_count = headers.len();
 
     // 分页读全部数据行 cells（query_cells 已排除 row_idx=0 表头）。
-    let total_rows = db.count_rows(sheet_id).map_err(|e| e.to_string())?;
-    let page_size: u32 = 500;
-    let pages = total_rows.div_ceil(page_size).max(1);
-    let mut all_cells: Vec<Cell> = Vec::new();
-    for p in 1..=pages {
-        let cells = db
-            .query_cells(sheet_id, p, page_size)
-            .map_err(|e| e.to_string())?;
-        all_cells.extend(cells);
-    }
+    let all_cells = query_all_data_cells(db, sheet_id)?;
 
     // 按 row_idx 分组，组内按 col_idx 排序。
-    let mut grouped: BTreeMap<u32, Vec<(u32, Option<String>)>> = BTreeMap::new();
-    for c in all_cells {
-        grouped
-            .entry(c.row_idx)
-            .or_default()
-            .push((c.col_idx, c.value));
-    }
+    let grouped = group_cells_by_row(all_cells);
 
     // 预解析每条规则：col_idx + Rule（从 DB 取，找不到 → 报错）。
     // 同时预编译正则（rule.pattern 非空时），避免逐行重复编译。
@@ -522,7 +424,7 @@ pub fn validate_multi_rules_to_two_sheets_inner(
 
     for (&row_idx, cells_row) in grouped.iter() {
         debug_assert!(row_idx > 0, "T68: query_cells should exclude header");
-        // 行内按 col_idx 排序对齐到 col_count 列（缺列补 None）。
+        // 行内按 col_idx 排序对齐到 headers.len() 列（缺列补 None）。
         let mut row_vals: Vec<Option<String>> = vec![None; col_count];
         let mut sorted_cells = cells_row.clone();
         sorted_cells.sort_by_key(|(col, _)| *col);
@@ -544,41 +446,14 @@ pub fn validate_multi_rules_to_two_sheets_inner(
                 .flatten()
                 .unwrap_or_default();
 
-            // 分发校验：
-            // - phone-validate → is_valid_phone（整串严格校验）
-            // - rule.params 或 params_override 非空 → validate_extracted_with_params
-            //   （override 优先于 DB rule.params；T70 新增 generic-validate 支持）
-            // - rule.pattern 非空 → 正则 is_match
-            // - 其他 → 默认通过
-            let (passed, msg) = if rr.rule.id == "phone-validate" {
-                let ok = is_valid_phone(&value, phone_prefixes);
-                (
-                    ok,
-                    if ok {
-                        String::new()
-                    } else {
-                        "手机号须为 11 位纯数字".into()
-                    },
-                )
-            } else {
-                // 合并 params：override 优先，否则用 rule.params。
-                let effective_params = rr.params_override.as_ref().or(rr.rule.params.as_ref());
-                if let Some(params) = effective_params {
-                    validate_extracted_with_params(params, &value)
-                } else if let Some(ref re) = rr.re {
-                    let ok = re.is_match(&value);
-                    (
-                        ok,
-                        if ok {
-                            String::new()
-                        } else {
-                            format!("值不匹配规则 {}", rr.rule.name)
-                        },
-                    )
-                } else {
-                    (true, String::new())
-                }
-            };
+            // 单行校验分发（v1.2.1 T8：复用 helpers::validate_single）。
+            let (passed, msg) = validate_single(
+                &rr.rule,
+                rr.re.as_ref(),
+                &value,
+                phone_prefixes,
+                rr.params_override.as_ref(),
+            );
 
             if !passed {
                 row_invalid_reasons.push((rr.column.clone(), msg));
@@ -666,7 +541,7 @@ pub fn validate_multi_rules_to_two_sheets_inner(
         }
     }
 
-    // 双 Tab 写出（复用 validate_rows_to_two_sheets_inner 的模式）。
+    // 双 Tab 写出（v1.2.1 T8：复用 helpers::write_sheet）。
     let valid_sheet_name = format!("{sheet_name}_校验通过");
     let invalid_sheet_name = format!("{sheet_name}_校验失败");
     let valid_sheet_id = db
@@ -676,36 +551,8 @@ pub fn validate_multi_rules_to_two_sheets_inner(
         .create_sheet(session_id, &invalid_sheet_name, 0)
         .map_err(|e| e.to_string())?;
 
-    let write_sheet = |sid: i64, rows: &[Vec<Option<String>>]| -> Result<u32, String> {
-        let mut cells: Vec<Cell> = Vec::with_capacity((rows.len() + 1) * col_count.max(1));
-        // 表头（row_idx=0）
-        for (col, header) in headers.iter().enumerate() {
-            cells.push(Cell {
-                sheet_id: sid,
-                row_idx: 0,
-                col_idx: col as u32,
-                value: Some(header.clone()),
-            });
-        }
-        // 数据行（从 row_idx=1 起）
-        for (r, row) in rows.iter().enumerate() {
-            for (c, val) in row.iter().enumerate() {
-                cells.push(Cell {
-                    sheet_id: sid,
-                    row_idx: (r + 1) as u32,
-                    col_idx: c as u32,
-                    value: val.clone(),
-                });
-            }
-        }
-        if !cells.is_empty() {
-            db.write_cells(sid, &cells).map_err(|e| e.to_string())?;
-        }
-        Ok(rows.len() as u32)
-    };
-
-    let valid_count = write_sheet(valid_sheet_id, &valid_rows)?;
-    let invalid_count = write_sheet(invalid_sheet_id, &invalid_rows)?;
+    let valid_count = write_sheet(db, valid_sheet_id, &headers, &valid_rows)?;
+    let invalid_count = write_sheet(db, invalid_sheet_id, &headers, &invalid_rows)?;
 
     db.log_operation(
         Some(sheet_id),

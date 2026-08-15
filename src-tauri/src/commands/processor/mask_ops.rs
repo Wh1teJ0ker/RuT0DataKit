@@ -2,25 +2,19 @@
 //!
 //! 全部 `#[tauri::command]` → `Result<T, String>` + `.map_err(|e| e.to_string())`。
 //! 依赖 `DbManager`（列读写 + 规则持久化）。
+//!
+//! v1.2.1 T8：`MaskResult` + `validate_single` 共享 helper 移入
+//! [`super::helpers`]，本文件仅保留脱敏命令逻辑。
 
-use serde::Serialize;
-
-use ruT0_data_kit_core::processor::validators::{is_valid_phone, validate_extracted_with_params};
 use ruT0_data_kit_core::processor::rules::{ExtractParams, TemplateParams};
 use ruT0_data_kit_core::processor::Masker;
 
+use crate::commands::processor::helpers::{validate_single, MaskResult};
 use crate::db::Cell;
 
 // ---------------------------------------------------------------------------
 // 脱敏命令
 // ---------------------------------------------------------------------------
-
-/// 脱敏结果（camelCase）。
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MaskResult {
-    pub affected: u32,
-}
 
 /// 脱敏指定列：读取列全部数据行 → `SimpleMasker::mask` → 回写 cells（upsert）
 /// → `log_operation("mask")`。返回受影响行数。
@@ -150,25 +144,16 @@ pub fn mask_column(
     let mut cells: Vec<Cell> = Vec::with_capacity(rows.len());
     for (row_idx, value) in &rows {
         let input = value.as_deref().unwrap_or("");
-        // T84：先校验再脱敏。校验分发与 validate_multi_rules_to_two_sheets_inner
-        //   的单行逻辑保持一致：
-        //   - phone-validate → is_valid_phone（整串严格校验）
-        //   - params / params_override → validate_extracted_with_params（override 优先）
-        //   - pattern → 正则 is_match
-        //   - 其他 → 默认通过
+        // T84：先校验再脱敏。校验分发复用 helpers::validate_single（与
+        //   validate_multi_rules_to_two_sheets_inner 单行逻辑保持一致）。
         let output = if let Some(vrule) = &validate_rule {
-            let passed = if vrule.id == "phone-validate" {
-                is_valid_phone(input, &phone_prefixes_ref)
-            } else {
-                let effective_params = params_override.as_ref().or(vrule.params.as_ref());
-                if let Some(params) = effective_params {
-                    validate_extracted_with_params(params, input).0
-                } else if let Some(ref re) = validate_re {
-                    re.is_match(input)
-                } else {
-                    true
-                }
-            };
+            let (passed, _msg) = validate_single(
+                vrule,
+                validate_re.as_ref(),
+                input,
+                &phone_prefixes_ref,
+                params_override.as_ref(),
+            );
             if passed {
                 masker
                     .mask(input, rule_ref.as_ref())
