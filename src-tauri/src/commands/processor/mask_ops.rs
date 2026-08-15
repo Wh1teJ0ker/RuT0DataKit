@@ -1,18 +1,18 @@
-//! 脱敏命令（mask_column）+ 脱敏/校验/提取结果结构体。
+//! 脱敏命令（mask_column）+ 脱敏结果结构体。
 //!
 //! 全部 `#[tauri::command]` → `Result<T, String>` + `.map_err(|e| e.to_string())`。
 //! 依赖 `DbManager`（列读写 + 规则持久化）。
 
 use serde::Serialize;
 
-use ruT0_data_kit_core::processor::func_validator::{is_valid_phone, validate_extracted_with_params};
+use ruT0_data_kit_core::processor::validators::{is_valid_phone, validate_extracted_with_params};
 use ruT0_data_kit_core::processor::rules::{ExtractParams, TemplateParams};
 use ruT0_data_kit_core::processor::Masker;
 
 use crate::db::Cell;
 
 // ---------------------------------------------------------------------------
-// 脱敏 / 校验 / 提取命令
+// 脱敏命令
 // ---------------------------------------------------------------------------
 
 /// 脱敏结果（camelCase）。
@@ -20,23 +20,6 @@ use crate::db::Cell;
 #[serde(rename_all = "camelCase")]
 pub struct MaskResult {
     pub affected: u32,
-}
-
-/// 校验单行结果（camelCase）。
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RowValidation {
-    pub row_idx: u32,
-    pub passed: bool,
-    pub message: String,
-}
-
-/// 提取单行命中（camelCase）。
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RowExtract {
-    pub row_idx: u32,
-    pub hits: Vec<ruT0_data_kit_core::processor::ExtractItem>,
 }
 
 /// 脱敏指定列：读取列全部数据行 → `SimpleMasker::mask` → 回写 cells（upsert）

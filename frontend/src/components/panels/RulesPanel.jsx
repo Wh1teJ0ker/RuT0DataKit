@@ -171,7 +171,7 @@ export default function RulesPanel() {
         setPresetKey("empty");
       }
       // T55：提取规则带 params 时初始化允许前缀草稿。
-      // phonePrefix 的 allowedPrefixes 空 = 默认（正则保证 1 开头）。
+      // phonePrefix 的 allowedPrefixes 空 = 不过滤前缀（11 位纯数字均放行）。
       // v1.1.4 续轮 T71 rework：条件扩展为 extract||validate，与可填参数 Card 分支一致，
       // 否则选中 phone-validate（kind=validate）时草稿被清空，用户直接保存会覆盖 DB 已配置前缀。
       if (
@@ -682,7 +682,7 @@ export default function RulesPanel() {
                           </Form.Item>
                           <Form.Item
                             label="允许前缀"
-                            extra="3 位前缀回车添加，留空=默认 1 开头"
+                            extra="3 位前缀回车添加，留空=不限"
                           >
                             <Select
                               mode="tags"
@@ -806,7 +806,7 @@ export default function RulesPanel() {
                           } else if (
                             selected.params?.validator === "phonePrefix"
                           ) {
-                            // 重置 = 恢复出厂正则 + 空前缀列表（默认 1 开头）。
+                            // 重置 = 恢复出厂正则 + 空前缀列表（不过滤前缀）。
                             setDraftPattern(BUILTIN_PATTERNS[selected.id] ?? "");
                             setDraftAllowedPrefixes([]);
                           } else if (

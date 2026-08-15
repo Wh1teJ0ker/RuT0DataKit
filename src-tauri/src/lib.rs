@@ -3,8 +3,7 @@
 //! 装配 `tauri-plugin-dialog`、`tauri-plugin-fs`、`tauri-plugin-updater` 与 `DbManager`（SQLite 持久层）。
 //!
 //! v1.1.0: 规则持久化到 DB（`rules` 表），启动时 `seed_builtin_rules`；
-//! 注册 6 个 processor IPC（`mask_column` / `validate_column` / `extract_column`
-//! / `list_rules` / `toggle_rule` / `update_rule_params`）。
+//! 注册 processor IPC（`mask_column` / `list_rules` / `toggle_rule` / `update_rule_params`）。
 //! v1.1.1: 新增 3 个撤销/重做 IPC（`undo_operation` / `redo_operation`
 //! / `list_undoable_operations`）；`mask_column` 改用
 //! `log_operation_with_snapshot` 存 before/after 快照。
@@ -46,15 +45,12 @@ pub fn run() {
             commands::settings::load_page_size,
             commands::settings::save_page_size,
             commands::processor::mask_column,
-            commands::processor::validate_column,
-            commands::processor::extract_column,
             commands::processor::list_rules,
             commands::processor::toggle_rule,
             commands::processor::update_rule_params,
             commands::processor::update_rule_template,
             commands::processor::update_rule_extract_config,
             commands::processor::extract_validate_to_new_sheet,
-            commands::processor::validate_rows_to_two_sheets,
             commands::processor::validate_multi_rules_to_two_sheets,
             commands::processor::undo_operation,
             commands::processor::redo_operation,

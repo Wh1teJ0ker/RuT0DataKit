@@ -4,7 +4,7 @@
 //! - `commands::data`     → import_file / get_sheet_data / ai_suggest / invoke_ai_op
 //! - `commands::settings` → tshark 设置 IO + detect_tshark / load_tshark_path / save_tshark_path
 //! - `commands::update`   → check_update / install_update
-//! - `commands::processor`（v1.1.0 新增）→ mask_column / validate_column / extract_column / list_rules / toggle_rule / update_rule_params（6 命令）
+//! - `commands::processor`（v1.1.0 新增）→ mask_column / list_rules / toggle_rule / update_rule_params
 //! - `commands::search`   → search_cells / replace_all（v1.1.1 新增）
 //! - `commands::columns`  → parse_column_as_json / replace_in_column（v1.1.1 新增）
 //!

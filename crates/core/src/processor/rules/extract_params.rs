@@ -1,6 +1,6 @@
 //! 提取规则的函数式校验参数（v1.1.3 T55 新增）。
 //!
-//! 提取正则宽松（召回优先），严格性由 [`crate::processor::func_validator`]
+//! 提取正则宽松（召回优先），严格性由 [`crate::processor::validators`]
 //! 的对应函数兜底。serde 用 `tag = "validator"` 内部标签，DB 存为 `params TEXT`
 //! JSON 列。现有非提取规则（name-extract 等）`params = None`，行为不变。
 //!
@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 /// 提取规则的函数式校验参数（v1.1.3 T55 新增）。
 ///
-/// 提取正则宽松（召回优先），严格性由 [`crate::processor::func_validator`]
+/// 提取正则宽松（召回优先），严格性由 [`crate::processor::validators`]
 /// 的对应函数兜底。serde 用 `tag = "validator"` 内部标签，DB 存为 `params TEXT`
 /// JSON 列。现有非提取规则（name-extract 等）`params = None`，行为不变。
 ///

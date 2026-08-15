@@ -8,7 +8,7 @@
 use super::{row_to_rule, DbManager, DbError};
 #[allow(unused_imports)]
 use ruT0_data_kit_core::processor::rules::{
-    ExtractParams, Rule, RuleKind, RuleRegistry, TemplateParams,
+    BuiltinRules, ExtractParams, Rule, RuleKind, RuleRegistry, TemplateParams,
 };
 use rusqlite::params;
 
@@ -329,7 +329,7 @@ mod tests {
     fn rule_crud_upsert_list_get() {
         let (_dir, mgr) = test_support::open();
         assert_eq!(mgr.count_rules().unwrap(), 0);
-        let r = RuleRegistry::name_validate_rule();
+        let r = BuiltinRules::name_validate_rule();
         mgr.upsert_rule(&r).unwrap();
         assert_eq!(mgr.count_rules().unwrap(), 1);
         // list
@@ -347,7 +347,7 @@ mod tests {
     #[test]
     fn rule_crud_upsert_overwrites_same_id() {
         let (_dir, mgr) = test_support::open();
-        let mut r = RuleRegistry::name_validate_rule();
+        let mut r = BuiltinRules::name_validate_rule();
         mgr.upsert_rule(&r).unwrap();
         // 修改 pattern 后再 upsert → 覆盖
         r.pattern = Some(r"^[\u4e00-\u9fa5]{2,8}$".into());
@@ -360,7 +360,7 @@ mod tests {
     #[test]
     fn rule_crud_toggle_enabled() {
         let (_dir, mgr) = test_support::open();
-        mgr.upsert_rule(&RuleRegistry::name_validate_rule())
+        mgr.upsert_rule(&BuiltinRules::name_validate_rule())
             .unwrap();
         assert!(mgr.get_rule("name-validate").unwrap().unwrap().enabled);
         assert!(mgr.set_rule_enabled("name-validate", false).unwrap());
@@ -371,7 +371,7 @@ mod tests {
     #[test]
     fn rule_crud_update_params() {
         let (_dir, mgr) = test_support::open();
-        mgr.upsert_rule(&RuleRegistry::name_validate_rule())
+        mgr.upsert_rule(&BuiltinRules::name_validate_rule())
             .unwrap();
         // 更新 pattern
         assert!(mgr
@@ -380,7 +380,7 @@ mod tests {
         let got = mgr.get_rule("name-validate").unwrap().unwrap();
         assert_eq!(got.pattern.as_deref(), Some(r"^[\u4e00-\u9fa5]{2,8}$"));
         // 更新 replacement（mask 规则）
-        mgr.upsert_rule(&RuleRegistry::name_mask_rule()).unwrap();
+        mgr.upsert_rule(&BuiltinRules::name_mask_rule()).unwrap();
         assert!(mgr
             .update_rule_params("name-mask", None, Some("***"))
             .unwrap());
@@ -433,10 +433,10 @@ mod tests {
         // idcard-extract），且已存在规则参数不丢。
         let (_dir, mgr) = test_support::open();
         // 模拟 v1.1.2 老 DB：只 seed 3 条 name 规则。
-        mgr.upsert_rule(&RuleRegistry::name_validate_rule())
+        mgr.upsert_rule(&BuiltinRules::name_validate_rule())
             .unwrap();
-        mgr.upsert_rule(&RuleRegistry::name_mask_rule()).unwrap();
-        mgr.upsert_rule(&RuleRegistry::name_extract_rule()).unwrap();
+        mgr.upsert_rule(&BuiltinRules::name_mask_rule()).unwrap();
+        mgr.upsert_rule(&BuiltinRules::name_extract_rule()).unwrap();
         assert_eq!(mgr.count_rules().unwrap(), 3);
         // 用户修改 name-validate pattern
         mgr.update_rule_params("name-validate", Some(r"^[\u4e00-\u9fa5]{2,8}$"), None)

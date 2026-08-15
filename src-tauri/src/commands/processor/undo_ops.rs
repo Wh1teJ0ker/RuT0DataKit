@@ -145,8 +145,7 @@ pub fn list_undoable_operations(
 #[cfg(test)]
 mod tests {
     use crate::db::{Cell, DbManager, OperationRow, UndoableOpRow};
-    use ruT0_data_kit_core::processor::rules::RuleRegistry;
-    use ruT0_data_kit_core::processor::{Masker, SimpleMasker, Validator};
+    use ruT0_data_kit_core::processor::{Masker, SimpleMasker};
 
 
     /// 构造一个 tempdir + 空 DbManager。返回 TempDir 以保活（TempDir drop 会

@@ -33,13 +33,10 @@ export {
 } from "./mask";
 
 export {
-  validateColumn,
-  validateRowsToTwoSheets,
   validateMultiRulesToTwoSheets,
 } from "./validate";
 
 export {
-  extractColumn,
   extractValidateToNewSheet,
 } from "./extract";
 

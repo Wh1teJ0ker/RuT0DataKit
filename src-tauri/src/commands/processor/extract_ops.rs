@@ -1,4 +1,4 @@
-//! 校验 / 提取 / 提取+校验→新 Tab / 行级多字段校验 / 多规则行级校验命令。
+//! 提取+校验→新 Tab / 行级多字段校验 / 多规则行级校验命令。
 //!
 //! 全部 `#[tauri::command]` → `Result<T, String>` + `.map_err(|e| e.to_string())`。
 //! 依赖 `DbManager`（列读写 + 规则持久化 + sheet 创建）。
@@ -7,108 +7,14 @@ use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 
-use ruT0_data_kit_core::processor::func_validator::{
-    clean_birth, idcard_gender, is_valid_address, is_valid_birth, is_valid_idcard, is_valid_phone,
-    is_valid_sex, is_valid_username, validate_extracted, validate_extracted_with_params,
+use ruT0_data_kit_core::processor::validators::{
+    clean_birth, idcard_gender, is_valid_birth, is_valid_phone,
+    validate_extracted, validate_extracted_with_params,
 };
 use ruT0_data_kit_core::processor::rules::ExtractParams;
-use ruT0_data_kit_core::processor::{Extractor, PiiExtractor, RegexValidator, Validator};
 
 use crate::commands::columns::ParseResult;
-use crate::commands::processor::mask_ops::{RowExtract, RowValidation};
 use crate::db::{Cell, DbManager};
-
-/// 校验指定列：读取列全部数据行 → `RegexValidator::validate` → 返回逐行结果
-/// → `log_operation("validate")`。不通过的行由前端高亮 `invalid`。
-///
-/// 规则从 DB `rules` 表读取（`rule_id` 必填）。
-#[tauri::command]
-pub fn validate_column(
-    sheet_id: i64,
-    column: String,
-    rule_id: String,
-    db: tauri::State<'_, crate::db::DbManager>,
-) -> Result<Vec<RowValidation>, String> {
-    let col_idx = db
-        .find_col_idx(sheet_id, &column)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("列 `{column}` 不存在"))?;
-
-    let rule = db
-        .get_rule(&rule_id)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("规则 `{rule_id}` 不存在"))?;
-
-    let rows = db
-        .query_column_cells(sheet_id, col_idx)
-        .map_err(|e| e.to_string())?;
-
-    let validator = RegexValidator;
-    let mut results = Vec::with_capacity(rows.len());
-    for (row_idx, value) in &rows {
-        let input = value.as_deref().unwrap_or("");
-        let vr = validator
-            .validate(input, &rule)
-            .map_err(|e| e.to_string())?;
-        results.push(RowValidation {
-            row_idx: *row_idx,
-            passed: vr.passed,
-            message: vr.message,
-        });
-    }
-
-    db.log_operation(
-        Some(sheet_id),
-        "validate",
-        &serde_json::json!({ "column": column, "ruleId": rule_id, "rows": results.len() })
-            .to_string(),
-        "{}",
-    )
-    .map_err(|e| e.to_string())?;
-
-    Ok(results)
-}
-
-/// 提取指定列 PII：读取列全部数据行 → `PiiExtractor::extract` → 返回逐行命中
-/// → `log_operation("extract")`。命中的行由前端高亮 `hit`。
-#[tauri::command]
-pub fn extract_column(
-    sheet_id: i64,
-    column: String,
-    db: tauri::State<'_, crate::db::DbManager>,
-) -> Result<Vec<RowExtract>, String> {
-    let col_idx = db
-        .find_col_idx(sheet_id, &column)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("列 `{column}` 不存在"))?;
-
-    let rows = db
-        .query_column_cells(sheet_id, col_idx)
-        .map_err(|e| e.to_string())?;
-
-    let extractor = PiiExtractor::new().map_err(|e| e.to_string())?;
-    let mut results = Vec::with_capacity(rows.len());
-    for (row_idx, value) in &rows {
-        let input = value.as_deref().unwrap_or("");
-        let hits = extractor.extract(input).map_err(|e| e.to_string())?;
-        results.push(RowExtract {
-            row_idx: *row_idx,
-            hits,
-        });
-    }
-
-    let total_hits: usize = results.iter().map(|r| r.hits.len()).sum();
-    db.log_operation(
-        Some(sheet_id),
-        "extract",
-        &serde_json::json!({ "column": column, "totalHits": total_hits, "rows": results.len() })
-            .to_string(),
-        "{}",
-    )
-    .map_err(|e| e.to_string())?;
-
-    Ok(results)
-}
 
 // ---------------------------------------------------------------------------
 // 提取 + 函数式校验 → 新 Tab（v1.1.3 T55）
@@ -438,22 +344,8 @@ pub fn extract_validate_to_new_sheet(
 }
 
 // ---------------------------------------------------------------------------
-// 行级多字段校验 → 双 Tab 输出（T57）
+// 双 Tab 校验结果结构体（T57/T68 共用）
 // ---------------------------------------------------------------------------
-
-/// 字段→列名映射（T57）。前端为每个字段类型选择对应的源 sheet 列头名；
-/// 未映射（`None`）的字段不校验，原值原样复制到两个输出 Tab。
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct FieldColumnMapping {
-    pub username: Option<String>,
-    pub name: Option<String>,
-    pub sex: Option<String>,
-    pub birth: Option<String>,
-    pub idcard: Option<String>,
-    pub phone: Option<String>,
-    pub address: Option<String>,
-}
 
 /// 单行单字段的校验失败原因（camelCase）。不写入 sheet（用户要求「保留原有字段，
 /// 不新增列」），仅随 IPC 返回供前端 summary 消息展示。
@@ -476,340 +368,6 @@ pub struct TwoSheetResult {
     pub valid_sheet: ParseResult,
     pub invalid_sheet: ParseResult,
     pub invalid_reasons: Vec<RowInvalidReason>,
-}
-
-/// 行级多字段校验核心逻辑（接受 `&DbManager`，便于单测直接调用）。
-///
-/// 流程：
-/// 1. `get_sheet_name(sheet_id)` → 源 sheet 名（None → 报错「sheet 不存在」）
-/// 2. `query_cells` 分页读全部 cells（page_size=500）→ 按 row_idx 分组 →
-///    `Vec<Vec<Option<String>>>`（跳过 row_idx=0 表头）+ headers
-/// 3. `find_col_idx` 把 mapping 里每个字段名转 col_idx（找不到列 → 报错）
-/// 4. 逐行：对每个已映射字段取 cell value → 校验：
-///    - username → [`is_valid_username`]
-///    - name → 正则 `^[\u4e00-\u9fa5]{2,4}$`
-///    - sex → [`is_valid_sex`]
-///    - birth → [`is_valid_birth`]
-///    - idcard → [`is_valid_idcard`]
-///    - phone → [`is_valid_phone`]（带前缀白名单）
-///    - address → [`is_valid_address`]
-/// 5. 跨字段联合（仅当相关字段都映射且 idcard 本身有效）：
-///    - sex vs idcard：[`idcard_gender`] 推断与 [`normalize_gender`] 比对
-///    - birth vs idcard：idcard 第 7-14 位（1-based）== birth 值
-/// 6. 任一字段失败 → 收集 [`RowInvalidReason`]，整行归入 invalid；全部通过 → valid
-/// 7. `create_sheet` ×2：`{name}_校验通过` + `{name}_校验失败`，各写表头 + 对应行
-/// 8. `log_operation("validate_rows_to_two_sheets", ...)`（不进撤销栈）
-/// 9. 返回 [`TwoSheetResult`]
-///
-/// 输出 Tab 保留原列（列数 = headers.len()，列顺序与源 sheet 一致），不新增列。
-/// `phone_prefixes` 为手机号前缀白名单（空=仅检查 1 开头+11 位）。
-pub fn validate_rows_to_two_sheets_inner(
-    db: &DbManager,
-    sheet_id: i64,
-    session_id: i64,
-    mapping: &FieldColumnMapping,
-    phone_prefixes: &[String],
-) -> Result<TwoSheetResult, String> {
-    // 至少映射一个字段，否则校验无意义。
-    let any_mapped = [
-        &mapping.username,
-        &mapping.name,
-        &mapping.sex,
-        &mapping.birth,
-        &mapping.idcard,
-        &mapping.phone,
-        &mapping.address,
-    ]
-    .iter()
-    .any(|o| o.as_ref().is_some_and(|s| !s.is_empty()));
-    if !any_mapped {
-        return Err("请至少映射一个字段".into());
-    }
-
-    let sheet_name = db
-        .get_sheet_name(sheet_id)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("sheet {sheet_id} 不存在"))?;
-
-    // T62：表头通过 query_row_cells(sheet_id, 0) 单独读取（query_cells 已排除 row_idx=0）。
-    let header_cells = db.query_row_cells(sheet_id, 0).map_err(|e| e.to_string())?;
-    let mut header_pairs: Vec<(u32, String)> = header_cells
-        .iter()
-        .map(|c| (c.col_idx, c.value.clone().unwrap_or_default()))
-        .collect();
-    header_pairs.sort_by_key(|(col, _)| *col);
-    let headers: Vec<String> = header_pairs.into_iter().map(|(_, v)| v).collect();
-    let col_count = headers.len();
-
-    // 分页读全部 cells（T62：query_cells 只返回数据行，不含表头）。
-    let total_rows = db.count_rows(sheet_id).map_err(|e| e.to_string())?;
-    let page_size: u32 = 500;
-    let pages = total_rows.div_ceil(page_size).max(1);
-    let mut all_cells: Vec<Cell> = Vec::new();
-    for p in 1..=pages {
-        let cells = db
-            .query_cells(sheet_id, p, page_size)
-            .map_err(|e| e.to_string())?;
-        all_cells.extend(cells);
-    }
-
-    // 按 row_idx 分组，组内按 col_idx 排序（query_cells 已 ASC，这里稳定）。
-    let mut grouped: BTreeMap<u32, Vec<(u32, Option<String>)>> = BTreeMap::new();
-    for c in all_cells {
-        grouped
-            .entry(c.row_idx)
-            .or_default()
-            .push((c.col_idx, c.value));
-    }
-
-    // 字段 → col_idx 解析（找不到列 → 报错，避免静默跳过）。
-    let resolve_col = |field: &str, name: &Option<String>| -> Result<Option<u32>, String> {
-        match name.as_ref().filter(|s| !s.is_empty()) {
-            Some(col_name) => {
-                let idx = db
-                    .find_col_idx(sheet_id, col_name)
-                    .map_err(|e| e.to_string())?
-                    .ok_or_else(|| format!("字段 {field} 的列 `{col_name}` 不存在"))?;
-                Ok(Some(idx))
-            }
-            None => Ok(None),
-        }
-    };
-    let username_col = resolve_col("username", &mapping.username)?;
-    let name_col = resolve_col("name", &mapping.name)?;
-    let sex_col = resolve_col("sex", &mapping.sex)?;
-    let birth_col = resolve_col("birth", &mapping.birth)?;
-    let idcard_col = resolve_col("idcard", &mapping.idcard)?;
-    let phone_col = resolve_col("phone", &mapping.phone)?;
-    let address_col = resolve_col("address", &mapping.address)?;
-
-    // 姓名正则预编译（2-4 位中文，同 name-validate 规则）。
-    let name_re = regex::Regex::new(r"^[\u4e00-\u9fa5]{2,4}$")
-        .map_err(|e| format!("姓名正则编译失败: {e}"))?;
-
-    // 逐行校验。T62：query_cells 已排除表头，grouped 里不再有 row_idx=0。
-    let mut valid_rows: Vec<Vec<Option<String>>> = Vec::new();
-    let mut invalid_rows: Vec<Vec<Option<String>>> = Vec::new();
-    let mut invalid_reasons: Vec<RowInvalidReason> = Vec::new();
-
-    for (&row_idx, cells_row) in grouped.iter() {
-        debug_assert!(row_idx > 0, "T62: query_cells should exclude header");
-        // 行内按 col_idx 排序对齐到 col_count 列（缺列补 None）。
-        let mut row_vals: Vec<Option<String>> = vec![None; col_count];
-        let mut sorted_cells = cells_row.clone();
-        sorted_cells.sort_by_key(|(col, _)| *col);
-        for (col, val) in sorted_cells {
-            if (col as usize) < row_vals.len() {
-                row_vals[col as usize] = val;
-            }
-        }
-
-        // 取某列的字符串值（col_idx 越界或 None → ""）。
-        let cell_str = |col: Option<u32>| -> String {
-            col.and_then(|c| row_vals.get(c as usize).and_then(|v| v.clone()))
-                .unwrap_or_default()
-        };
-
-        let mut row_invalid_reasons: Vec<(String, String)> = Vec::new();
-
-        // ---- 单字段校验 ----
-        if let Some(col) = username_col {
-            let v = cell_str(Some(col));
-            if !is_valid_username(&v) {
-                row_invalid_reasons.push(("username".into(), "用户名须为纯字母数字".into()));
-            }
-        }
-        if let Some(col) = name_col {
-            let v = cell_str(Some(col));
-            if !name_re.is_match(&v) {
-                row_invalid_reasons.push(("name".into(), "姓名须为 2-4 位中文".into()));
-            }
-        }
-        if let Some(col) = sex_col {
-            let v = cell_str(Some(col));
-            if !is_valid_sex(&v) {
-                row_invalid_reasons.push(("sex".into(), "性别须为「男」或「女」".into()));
-            }
-        }
-        if let Some(col) = birth_col {
-            let v = cell_str(Some(col));
-            if !is_valid_birth(&v) {
-                row_invalid_reasons.push((
-                    "birth".into(),
-                    "出生日期格式不符（清理后须为 8 位有效日期）".into(),
-                ));
-            }
-        }
-        let idcard_val = idcard_col.map(|c| cell_str(Some(c))).unwrap_or_default();
-        let idcard_valid = if idcard_col.is_some() {
-            if !is_valid_idcard(&idcard_val) {
-                row_invalid_reasons.push(("idcard".into(), "非合法身份证号".into()));
-                false
-            } else {
-                true
-            }
-        } else {
-            false // 未映射 idcard → 不做跨字段校验
-        };
-        if let Some(col) = phone_col {
-            let v = cell_str(Some(col));
-            if !is_valid_phone(&v, phone_prefixes) {
-                row_invalid_reasons.push(("phone".into(), "手机号须为 11 位、默认 1 开头".into()));
-            }
-        }
-        if let Some(col) = address_col {
-            let v = cell_str(Some(col));
-            if !is_valid_address(&v) {
-                row_invalid_reasons.push((
-                    "address".into(),
-                    "地址格式不符（须含中文+地址关键词）".into(),
-                ));
-            }
-        }
-
-        // ---- 跨字段联合校验（仅当 idcard 本身有效 + 相关字段都映射）----
-        if idcard_valid {
-            // sex vs idcard 性别
-            if sex_col.is_some() {
-                let sex_val = cell_str(sex_col);
-                // 仅当 sex 列值本身是合法的「男」/「女」时才比对（非法值已在单字段校验记录）
-                if let Some(norm) = normalize_gender(&sex_val) {
-                    if let Some(inferred) = idcard_gender(&idcard_val) {
-                        if norm != inferred {
-                            row_invalid_reasons.push((
-                                "sex".into(),
-                                format!("性别不一致: 身份证推断{inferred}，性别列{sex_val}"),
-                            ));
-                        }
-                    }
-                }
-            }
-            // birth vs idcard 出生日期码（idcard 第 7-14 位，0-indexed [6..14]）
-            if birth_col.is_some() {
-                let birth_val = cell_str(birth_col);
-                if is_valid_birth(&birth_val) {
-                    // idcard_val 一定 18 位且前 17 纯数字（is_valid_idcard 已保证）。
-                    // T70：birth 可能含分隔符（如 "1949-12-31"），用 clean_birth 归一化后比对。
-                    let cleaned_birth = clean_birth(&birth_val);
-                    let idcard_birth = &idcard_val[6..14];
-                    if cleaned_birth != idcard_birth {
-                        row_invalid_reasons.push((
-                            "birth".into(),
-                            format!(
-                                "出生日期与身份证号不一致: 身份证{idcard_birth}，出生日期{birth_val}"
-                            ),
-                        ));
-                    }
-                }
-            }
-        }
-
-        if row_invalid_reasons.is_empty() {
-            valid_rows.push(row_vals);
-        } else {
-            for (field, reason) in row_invalid_reasons {
-                invalid_reasons.push(RowInvalidReason {
-                    source_row: row_idx,
-                    field,
-                    reason,
-                });
-            }
-            invalid_rows.push(row_vals);
-        }
-    }
-
-    // 创建两个新 sheet + 写表头 + 数据行。
-    let valid_sheet_name = format!("{sheet_name}_校验通过");
-    let invalid_sheet_name = format!("{sheet_name}_校验失败");
-    let valid_sheet_id = db
-        .create_sheet(session_id, &valid_sheet_name, 0)
-        .map_err(|e| e.to_string())?;
-    let invalid_sheet_id = db
-        .create_sheet(session_id, &invalid_sheet_name, 0)
-        .map_err(|e| e.to_string())?;
-
-    let write_sheet = |sid: i64, rows: &[Vec<Option<String>>]| -> Result<u32, String> {
-        let mut cells: Vec<Cell> = Vec::with_capacity((rows.len() + 1) * col_count.max(1));
-        // 表头（row_idx=0）
-        for (col, header) in headers.iter().enumerate() {
-            cells.push(Cell {
-                sheet_id: sid,
-                row_idx: 0,
-                col_idx: col as u32,
-                value: Some(header.clone()),
-            });
-        }
-        // 数据行（从 row_idx=1 起）
-        for (r, row) in rows.iter().enumerate() {
-            for (c, val) in row.iter().enumerate() {
-                cells.push(Cell {
-                    sheet_id: sid,
-                    row_idx: (r + 1) as u32,
-                    col_idx: c as u32,
-                    value: val.clone(),
-                });
-            }
-        }
-        if !cells.is_empty() {
-            db.write_cells(sid, &cells).map_err(|e| e.to_string())?;
-        }
-        Ok(rows.len() as u32)
-    };
-
-    let valid_count = write_sheet(valid_sheet_id, &valid_rows)?;
-    let invalid_count = write_sheet(invalid_sheet_id, &invalid_rows)?;
-
-    db.log_operation(
-        Some(sheet_id),
-        "validate_rows_to_two_sheets",
-        &serde_json::json!({
-            "sourceSheetId": sheet_id,
-            "sourceSheetName": sheet_name,
-            "validSheetId": valid_sheet_id,
-            "invalidSheetId": invalid_sheet_id,
-            "validCount": valid_count,
-            "invalidCount": invalid_count,
-        })
-        .to_string(),
-        "{}",
-    )
-    .map_err(|e| e.to_string())?;
-
-    Ok(TwoSheetResult {
-        valid_sheet: ParseResult {
-            new_sheet_id: valid_sheet_id,
-            headers: headers.clone(),
-            row_count: valid_count,
-            skipped: 0,
-        },
-        invalid_sheet: ParseResult {
-            new_sheet_id: invalid_sheet_id,
-            headers,
-            row_count: invalid_count,
-            skipped: 0,
-        },
-        invalid_reasons,
-    })
-}
-
-/// `validate_rows_to_two_sheets` 的 Tauri 命令包装。
-///
-/// 行级多字段校验：读源 sheet 全部行 → 逐字段校验 → 跨字段联合校验
-/// （sex vs idcard 性别、birth vs idcard 出生日期码）→ 整行按通过/失败分流
-/// 到两个新 Tab（`{源sheet名}_校验通过` / `{源sheet名}_校验失败`），保留原列
-/// 不新增。`invalid_reasons` 仅随返回值回前端用于 summary 消息，不写入 sheet。
-///
-/// - `field_columns`：字段类型 → 源列名映射（未映射的字段不校验）
-/// - `phone_prefixes`：手机号前缀白名单（空=仅检查 1 开头+11 位）
-#[tauri::command]
-pub fn validate_rows_to_two_sheets(
-    sheet_id: i64,
-    session_id: i64,
-    field_columns: FieldColumnMapping,
-    phone_prefixes: Vec<String>,
-    db: tauri::State<'_, DbManager>,
-) -> Result<TwoSheetResult, String> {
-    validate_rows_to_two_sheets_inner(&db, sheet_id, session_id, &field_columns, &phone_prefixes)
 }
 
 // ---------------------------------------------------------------------------
@@ -859,9 +417,8 @@ pub struct MultiRuleValidation {
 
 /// 多规则行级校验核心逻辑（接受 `&DbManager`，便于单测直接调用）。T68。
 ///
-/// 与 [`validate_rows_to_two_sheets_inner`]（固定 7 字段映射）不同，本函数
 /// 接收任意「列名 + 规则 id」组合，逐行逐规则分发校验：
-/// - `phone-validate` → 直接调 [`is_valid_phone`]（整串 11 位 + 纯数字 + 默认 1 开头 + 前缀白名单）
+/// - `phone-validate` → 直接调 [`is_valid_phone`]（整串 11 位 + 纯数字 + 前缀白名单，空=不限）
 /// - `rule.params` 非空 → [`validate_extracted`]（函数式：Username/Sex/Birth/
 ///   IdCard/Address/PhonePrefix/Luhn/Ipv4/Ipv6 分发）
 /// - `rule.pattern` 非空 → 正则 `is_match`（如 name-validate）
@@ -869,7 +426,7 @@ pub struct MultiRuleValidation {
 ///
 /// 身份证跨字段联合校验（仅当 idcard-validate 规则带 `crossField` 配置 +
 /// idcard 本身校验通过）：
-/// - 比对性别：[`normalize_gender`](Self::normalize_gender)(sex_col_val) vs [`idcard_gender`](ruT0_data_kit_core::processor::func_validator::idcard_gender)
+/// - 比对性别：[`normalize_gender`](Self::normalize_gender)(sex_col_val) vs [`idcard_gender`](ruT0_data_kit_core::processor::validators::idcard_gender)
 /// - 比对出生日期：`idcard_val[6..14] == birth_col_val`（且 birth 是 8 位数字）
 ///
 /// 整行分流：任一规则失败 → 整行入 invalid + 收集 [`RowInvalidReason`]；
@@ -1000,7 +557,7 @@ pub fn validate_multi_rules_to_two_sheets_inner(
                     if ok {
                         String::new()
                     } else {
-                        "手机号须为 11 位、默认 1 开头".into()
+                        "手机号须为 11 位纯数字".into()
                     },
                 )
             } else {
@@ -1215,13 +772,10 @@ pub fn validate_multi_rules_to_two_sheets(
 mod tests {
     use super::{
         extract_validate_to_new_sheet_inner, validate_multi_rules_to_two_sheets_inner,
-        validate_rows_to_two_sheets_inner, CrossFieldConfig, FieldColumnMapping,
-        MultiRuleValidation,
+        CrossFieldConfig, MultiRuleValidation,
     };
-    use crate::commands::processor::RowValidation;
     use crate::db::{Cell, DbManager};
     use ruT0_data_kit_core::processor::rules::{ExtractParams, RuleRegistry};
-    use ruT0_data_kit_core::processor::{RegexValidator, Validator};
 
     /// 构造一个 tempdir + 空 DbManager。返回 TempDir 以保活（TempDir drop 会
     /// 删除目录与 db 文件，必须跨测试函数持有）。
@@ -1309,10 +863,10 @@ mod tests {
 
     #[test]
     fn extract_validate_phone_to_new_sheet() {
-        // 手机号：13412345678 / 15987654321 有效（默认须 1 开头 + 11 位）；
+        // 手机号：13412345678 / 15987654321 有效（11 位纯数字，空名单不过滤前缀）；
         // 1201234567a 无效（非纯数字）；134123456 长度不足；134123456789 超长。
         // 正则 `\b[1-9]\d{10}\b` 召回 11 位首位非零纯数字串，故 1201234567a /
-        // 134123456 / 134123456789 不命中。默认空前缀列表须 1 开头。
+        // 134123456 / 134123456789 不命中。默认空前缀列表不过滤前缀。
         let (_dir, db) = setup_db();
         db.seed_builtin_rules().unwrap();
         let values = ["13412345678", "15987654321", "1201234567a", "134123456"];
@@ -1329,7 +883,7 @@ mod tests {
         )
         .unwrap();
 
-        // 2 个有效候选（正则召回 11 位首位非零纯数字，默认须 1 开头）。
+        // 2 个有效候选（正则召回 11 位首位非零纯数字，空名单不过滤前缀）。
         assert_eq!(rows.len(), 2);
         assert!(rows.iter().all(|r| r.valid));
         assert_eq!(rows[0].value, "13412345678");
@@ -1358,14 +912,14 @@ mod tests {
 
     #[test]
     fn extract_validate_phone_non_standard_prefix() {
-        // 非标准前缀（如 7xx）：默认空前缀列表会拒绝（须 1 开头），
-        // 须通过运行时前缀白名单放行。
+        // 非标准前缀（如 7xx）：默认空前缀列表不过滤前缀，11 位纯数字均通过；
+        // 须通过运行时前缀白名单限定特定前缀。
         let (_dir, db) = setup_db();
         db.seed_builtin_rules().unwrap();
         let values = ["79996258889", "78638972987", "13412345678"];
         let (session_id, sheet_id) = setup_extract_sheet(&db, &values);
 
-        // 1) 默认空前缀列表：7x 号码被判无效（须 1 开头），仅 134 通过。
+        // 1) 默认空前缀列表：7x 号码也通过（不过滤前缀），全部有效。
         let (parse_result, rows) = extract_validate_to_new_sheet_inner(
             &db,
             sheet_id,
@@ -1377,10 +931,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(rows.len(), 3);
-        assert!(!rows[0].valid);  // 79996258889
-        assert!(!rows[1].valid);  // 78638972987
+        assert!(rows[0].valid);   // 79996258889
+        assert!(rows[1].valid);   // 78638972987
         assert!(rows[2].valid);   // 13412345678
-        assert_eq!(parse_result.row_count, 1);
+        assert_eq!(parse_result.row_count, 3);
 
         // 2) 运行时白名单 ["799","786"]：7x 号码放行，134 被拒。
         let (parse_result2, rows2) = extract_validate_to_new_sheet_inner(
@@ -1403,7 +957,7 @@ mod tests {
     #[test]
     fn extract_validate_phone_with_prefix_filter() {
         // phone-extract 运行时前缀白名单覆盖。DB 规则 params.allowed_prefixes
-        // 为空（默认须 1 开头），运行时传 ["134"] → 仅 134 开头候选有效，其余判无效。
+        // 为空（不过滤前缀），运行时传 ["134"] → 仅 134 开头候选有效，其余判无效。
         let (_dir, db) = setup_db();
         db.seed_builtin_rules().unwrap();
         let values = ["13412345678", "15987654321"];
@@ -1840,300 +1394,6 @@ mod tests {
         assert_eq!(data_col1[2].1.as_deref(), Some("13412345678"));
     }
 
-    // ---- T57：行级多字段校验集成测试 ----
-
-    /// 构造一个 7 列 sheet：username/name/sex/birth/idcard/phone/address。
-    /// 表头 + 每行数据；`rows` 为 7 元组切片。返回 (session_id, sheet_id)。
-    fn setup_validate_sheet(
-        db: &DbManager,
-        rows: &[(&str, &str, &str, &str, &str, &str, &str)],
-    ) -> (i64, i64) {
-        let session_id = db.create_session("validate-test", None, "csv", 0).unwrap();
-        let sheet_id = db.create_sheet(session_id, "raw", 0).unwrap();
-        let headers = [
-            "username", "name", "sex", "birth", "idcard", "phone", "address",
-        ];
-        let mut cells: Vec<Cell> = Vec::with_capacity((rows.len() + 1) * 7);
-        // 表头
-        for (c, h) in headers.iter().enumerate() {
-            cells.push(Cell {
-                sheet_id,
-                row_idx: 0,
-                col_idx: c as u32,
-                value: Some((*h).to_string()),
-            });
-        }
-        for (i, row) in rows.iter().enumerate() {
-            let r = (i + 1) as u32;
-            for (c, v) in [row.0, row.1, row.2, row.3, row.4, row.5, row.6]
-                .iter()
-                .enumerate()
-            {
-                cells.push(Cell {
-                    sheet_id,
-                    row_idx: r,
-                    col_idx: c as u32,
-                    value: Some((*v).to_string()),
-                });
-            }
-        }
-        db.write_cells(sheet_id, &cells).unwrap();
-        (session_id, sheet_id)
-    }
-
-    /// 7 字段全映射。全有效行 → valid sheet 有 N 行，invalid sheet 0 行。
-    #[test]
-    fn validate_rows_to_two_sheets_all_fields_valid() {
-        let (_dir, db) = setup_db();
-        let rows = [
-            (
-                "admin",
-                "张三",
-                "男",
-                "19491231",
-                "110105194912310038",
-                "13412345678",
-                "内蒙古自治区呼和浩特市玉泉区大南街街道1340号540室",
-            ),
-            (
-                "lufe1jian",
-                "李四",
-                "女",
-                "19491231",
-                "11010519491231002X",
-                "15987654321",
-                "北京市朝阳区建国路1号101室",
-            ),
-        ];
-        let (session_id, sheet_id) = setup_validate_sheet(&db, &rows);
-        let mapping = FieldColumnMapping {
-            username: Some("username".into()),
-            name: Some("name".into()),
-            sex: Some("sex".into()),
-            birth: Some("birth".into()),
-            idcard: Some("idcard".into()),
-            phone: Some("phone".into()),
-            address: Some("address".into()),
-        };
-        let res =
-            validate_rows_to_two_sheets_inner(&db, sheet_id, session_id, &mapping, &[]).unwrap();
-        assert_eq!(res.valid_sheet.row_count, 2);
-        assert_eq!(res.invalid_sheet.row_count, 0);
-        assert!(res.invalid_reasons.is_empty());
-        // 验证列数 = 7（保留原列）
-        let valid_cells = db
-            .query_cells(res.valid_sheet.new_sheet_id, 0, 100)
-            .unwrap();
-        let max_col = valid_cells.iter().map(|c| c.col_idx).max().unwrap();
-        assert_eq!(max_col, 6);
-    }
-
-    /// 部分有效 / 部分无效 → 正确分流。
-    #[test]
-    fn validate_rows_to_two_sheets_mixed_valid_invalid() {
-        let (_dir, db) = setup_db();
-        let rows = [
-            // 有效行
-            (
-                "admin",
-                "张三",
-                "男",
-                "19491231",
-                "110105194912310038",
-                "13412345678",
-                "北京市朝阳区建国路1号101室",
-            ),
-            // 无效行：username 含非法字符
-            (
-                "ab.cd",
-                "李四",
-                "女",
-                "19491231",
-                "11010519491231002X",
-                "15987654321",
-                "北京市朝阳区建国路1号101室",
-            ),
-        ];
-        let (session_id, sheet_id) = setup_validate_sheet(&db, &rows);
-        let mapping = FieldColumnMapping {
-            username: Some("username".into()),
-            name: Some("name".into()),
-            sex: Some("sex".into()),
-            birth: Some("birth".into()),
-            idcard: Some("idcard".into()),
-            phone: Some("phone".into()),
-            address: Some("address".into()),
-        };
-        let res =
-            validate_rows_to_two_sheets_inner(&db, sheet_id, session_id, &mapping, &[]).unwrap();
-        assert_eq!(res.valid_sheet.row_count, 1);
-        assert_eq!(res.invalid_sheet.row_count, 1);
-        assert_eq!(res.invalid_reasons.len(), 1);
-        assert_eq!(res.invalid_reasons[0].field, "username");
-    }
-
-    /// 跨字段：idcard 推断男但 sex 列=女 → invalid（性别不一致）。
-    #[test]
-    fn validate_rows_to_two_sheets_cross_field_sex_mismatch() {
-        let (_dir, db) = setup_db();
-        // idcard 110105194912310038 → 第 17 位 3 奇 → 男；sex 列写「女」
-        let rows = [(
-            "admin",
-            "张三",
-            "女",
-            "19491231",
-            "110105194912310038",
-            "13412345678",
-            "北京市朝阳区建国路1号101室",
-        )];
-        let (session_id, sheet_id) = setup_validate_sheet(&db, &rows);
-        let mapping = FieldColumnMapping {
-            username: Some("username".into()),
-            name: Some("name".into()),
-            sex: Some("sex".into()),
-            birth: Some("birth".into()),
-            idcard: Some("idcard".into()),
-            phone: Some("phone".into()),
-            address: Some("address".into()),
-        };
-        let res =
-            validate_rows_to_two_sheets_inner(&db, sheet_id, session_id, &mapping, &[]).unwrap();
-        assert_eq!(res.invalid_sheet.row_count, 1);
-        assert!(res
-            .invalid_reasons
-            .iter()
-            .any(|r| r.field == "sex" && r.reason.contains("性别不一致")));
-    }
-
-    /// 跨字段：birth 与 idcard 出生日期码不一致 → invalid。
-    #[test]
-    fn validate_rows_to_two_sheets_cross_field_birth_mismatch() {
-        let (_dir, db) = setup_db();
-        // idcard 出生日期 19491231；birth 列写 20000101
-        let rows = [(
-            "admin",
-            "张三",
-            "男",
-            "20000101",
-            "110105194912310038",
-            "13412345678",
-            "北京市朝阳区建国路1号101室",
-        )];
-        let (session_id, sheet_id) = setup_validate_sheet(&db, &rows);
-        let mapping = FieldColumnMapping {
-            username: Some("username".into()),
-            name: Some("name".into()),
-            sex: Some("sex".into()),
-            birth: Some("birth".into()),
-            idcard: Some("idcard".into()),
-            phone: Some("phone".into()),
-            address: Some("address".into()),
-        };
-        let res =
-            validate_rows_to_two_sheets_inner(&db, sheet_id, session_id, &mapping, &[]).unwrap();
-        assert_eq!(res.invalid_sheet.row_count, 1);
-        assert!(res
-            .invalid_reasons
-            .iter()
-            .any(|r| r.field == "birth" && r.reason.contains("出生日期与身份证号不一致")));
-    }
-
-    /// 只映射 username+name（无 idcard）→ 无跨字段校验，按单字段分流。
-    #[test]
-    fn validate_rows_to_two_sheets_partial_mapping() {
-        let (_dir, db) = setup_db();
-        let rows = [
-            (
-                "admin",
-                "张三",
-                "男",
-                "19491231",
-                "110105194912310038",
-                "13412345678",
-                "北京市朝阳区建国路1号101室",
-            ),
-            (
-                "ab.cd",
-                "李四",
-                "女",
-                "19491231",
-                "11010519491231002X",
-                "15987654321",
-                "北京市朝阳区建国路1号101室",
-            ),
-        ];
-        let (session_id, sheet_id) = setup_validate_sheet(&db, &rows);
-        let mapping = FieldColumnMapping {
-            username: Some("username".into()),
-            name: Some("name".into()),
-            sex: None,
-            birth: None,
-            idcard: None,
-            phone: None,
-            address: None,
-        };
-        let res =
-            validate_rows_to_two_sheets_inner(&db, sheet_id, session_id, &mapping, &[]).unwrap();
-        // 行1 username=admin（有效）+ name=张三（有效）→ valid
-        assert_eq!(res.valid_sheet.row_count, 1);
-        // 行2 username=ab.cd（无效）→ invalid
-        assert_eq!(res.invalid_sheet.row_count, 1);
-        assert_eq!(res.invalid_reasons[0].field, "username");
-        // 无 idcard 映射 → 无跨字段原因
-        assert!(res
-            .invalid_reasons
-            .iter()
-            .all(|r| !r.reason.contains("身份证")));
-    }
-
-    /// phone 前缀白名单过滤：134 通过，159 被 filtered out。
-    #[test]
-    fn validate_rows_to_two_sheets_phone_prefix_filter() {
-        let (_dir, db) = setup_db();
-        let rows = [
-            (
-                "admin",
-                "张三",
-                "男",
-                "19491231",
-                "110105194912310038",
-                "13412345678",
-                "北京市朝阳区建国路1号101室",
-            ),
-            (
-                "lufe1jian",
-                "李四",
-                "女",
-                "19491231",
-                "11010519491231002X",
-                "15987654321",
-                "北京市朝阳区建国路1号101室",
-            ),
-        ];
-        let (session_id, sheet_id) = setup_validate_sheet(&db, &rows);
-        let mapping = FieldColumnMapping {
-            username: Some("username".into()),
-            name: Some("name".into()),
-            sex: Some("sex".into()),
-            birth: Some("birth".into()),
-            idcard: Some("idcard".into()),
-            phone: Some("phone".into()),
-            address: Some("address".into()),
-        };
-        // 白名单只允许 134 → 行2（159）phone 失败
-        let res = validate_rows_to_two_sheets_inner(
-            &db,
-            sheet_id,
-            session_id,
-            &mapping,
-            &["134".to_string()],
-        )
-        .unwrap();
-        assert_eq!(res.valid_sheet.row_count, 1);
-        assert_eq!(res.invalid_sheet.row_count, 1);
-        assert!(res.invalid_reasons.iter().any(|r| r.field == "phone"));
-    }
-
     // ---- T68：多规则行级校验 → 双 Tab 集成测试 ----
 
     /// 构造一个 7 列 sheet：username/name/sex/birth/idcard/phone/address。
@@ -2459,114 +1719,6 @@ mod tests {
             .invalid_reasons
             .iter()
             .all(|r| !r.reason.contains("身份证")));
-    }
-
-    // ---- T61：validate_column IPC 契约回归 ----
-    //
-    // 前端 ValidatePanel 原本读 `res.results`，但后端 `validate_column` 直接返回
-    // `Vec<RowValidation>`（裸数组），导致校验结果全部被忽略。本测试固化契约：
-    //   1. 返回类型是 `Vec<RowValidation>`，不是包了一层的对象；
-    //   2. row_idx 是 DB 绝对行号（数据行从 1 开始，与前端 `r.rowIdx - 1 - base`
-    //      换算一致）；
-    //   3. 空列 / 全通过 / 部分不通过分别有正确数量与 passed 标记。
-
-    /// 构造一个 sheet：1 列（col0=name），表头 + 给定数据行。返回 sheet_id。
-    fn setup_validate_column_sheet(db: &DbManager, values: &[&str]) -> i64 {
-        let session_id = db.create_session("vc-test", None, "csv", 0).unwrap();
-        let sheet_id = db.create_sheet(session_id, "vc", 0).unwrap();
-        let mut cells: Vec<Cell> = Vec::with_capacity(values.len() + 1);
-        cells.push(Cell {
-            sheet_id,
-            row_idx: 0,
-            col_idx: 0,
-            value: Some("name".into()),
-        });
-        for (i, v) in values.iter().enumerate() {
-            cells.push(Cell {
-                sheet_id,
-                row_idx: (i + 1) as u32,
-                col_idx: 0,
-                value: Some((*v).to_string()),
-            });
-        }
-        db.write_cells(sheet_id, &cells).unwrap();
-        sheet_id
-    }
-
-    /// 直接驱动 `validate_column` 的核心逻辑（无 Tauri State 注入），断言返回值是
-    /// `Vec<RowValidation>` 且 row_idx / passed 符合前端消费契约。
-    #[test]
-    fn validate_column_returns_vec_contract() {
-        let (_dir, db) = setup_db();
-        db.upsert_rule(&RuleRegistry::name_validate_rule()).unwrap();
-        // 行1=张三（2 字中文，通过）、行2=Zhang（非中文，不通过）、行3=诸葛亮（3 字中文，通过）。
-        let sheet_id = setup_validate_column_sheet(&db, &["张三", "Zhang", "诸葛亮"]);
-
-        // 复用 validate_column 的内部流程：读列 → RegexValidator::validate → 收集。
-        let col_idx = db
-            .find_col_idx(sheet_id, "name")
-            .unwrap()
-            .expect("name 列存在");
-        let rule = db.get_rule("name-validate").unwrap().expect("规则存在");
-        let rows = db.query_column_cells(sheet_id, col_idx).unwrap();
-        let validator = RegexValidator;
-        let mut results: Vec<RowValidation> = Vec::with_capacity(rows.len());
-        for (row_idx, value) in &rows {
-            let input = value.as_deref().unwrap_or("");
-            let vr = validator.validate(input, &rule).unwrap();
-            results.push(RowValidation {
-                row_idx: *row_idx,
-                passed: vr.passed,
-                message: vr.message,
-            });
-        }
-
-        // 契约 1：返回数组长度 = 数据行数（不含表头行）。
-        assert_eq!(results.len(), 3);
-        // 契约 2：row_idx 是 DB 绝对行号，数据行从 1 开始（前端 `rowIdx - 1 - base`）。
-        assert_eq!(results[0].row_idx, 1);
-        assert_eq!(results[1].row_idx, 2);
-        assert_eq!(results[2].row_idx, 3);
-        // 契约 3：passed 标记正确（张三 / 诸葛亮 通过，Zhang 不通过）。
-        assert!(results[0].passed);
-        assert!(!results[1].passed);
-        assert!(results[2].passed);
-
-        // 契约 4：序列化为 JSON 时是裸数组 `[...]`，不是 `{ "results": [...] }`。
-        // 前端 `Array.isArray(results)` 必须为 true，这是 T61 修复的根因。
-        let json = serde_json::to_string(&results).unwrap();
-        assert!(
-            json.starts_with('[') && json.ends_with(']'),
-            "validate_column 应序列化为裸数组，实际: {json}"
-        );
-        assert!(
-            !json.contains("\"results\""),
-            "validate_column 不应包含 results 包装字段，实际: {json}"
-        );
-        // camelCase：rowIdx（不是 row_idx）。
-        assert!(json.contains("\"rowIdx\""));
-        assert!(!json.contains("\"row_idx\""));
-    }
-
-    /// 空数据列 → 返回空数组（前端 `Array.isArray([])` 为 true，不会误高亮）。
-    #[test]
-    fn validate_column_empty_returns_empty_vec() {
-        let (_dir, db) = setup_db();
-        db.upsert_rule(&RuleRegistry::name_validate_rule()).unwrap();
-        let sheet_id = setup_validate_column_sheet(&db, &[]);
-
-        let col_idx = db
-            .find_col_idx(sheet_id, "name")
-            .unwrap()
-            .expect("name 列存在");
-        let rows = db.query_column_cells(sheet_id, col_idx).unwrap();
-        // query_column_cells 排除表头行，空数据 → 空。
-        assert!(rows.is_empty());
-        // 模拟 validate_column 的返回：空 Vec。
-        let results: Vec<RowValidation> = Vec::new();
-        let json = serde_json::to_string(&results).unwrap();
-        assert_eq!(json, "[]");
-        assert!(json.starts_with('['));
     }
 
     // ---- v1.1.4 续轮 T70：params_override + clean_birth 跨字段 ----

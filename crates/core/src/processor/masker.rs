@@ -274,20 +274,20 @@ fn apply_segment_part(part: &str, cfg: &SegmentMask, mask_char: char) -> String 
 mod tests {
     use super::*;
     use crate::processor::rules::{
-        bankcard_preset, birthdate_preset, idcard_preset, phone_preset, Rule, RuleKind,
-        RuleRegistry, SegmentTemplate, SimpleTemplate, TemplateParams,
+        bankcard_preset, birthdate_preset, idcard_preset, phone_preset, BuiltinRules, Rule,
+        RuleKind, SegmentTemplate, SimpleTemplate, TemplateParams,
     };
 
     /// 构造 simple-mask 规则 + 指定模板（T54：整段脱敏规则持 Simple 模板）。
     fn simple_mask_with_template(tpl: TemplateParams) -> Rule {
-        let mut r = RuleRegistry::simple_mask_rule();
+        let mut r = BuiltinRules::simple_mask_rule();
         r.template = Some(tpl);
         r
     }
 
     /// 构造 segment-mask 规则 + 指定模板（T54：分段脱敏规则持 Segment 模板）。
     fn segment_mask_with_template(tpl: TemplateParams) -> Rule {
-        let mut r = RuleRegistry::segment_mask_rule();
+        let mut r = BuiltinRules::segment_mask_rule();
         r.template = Some(tpl);
         r
     }
@@ -389,7 +389,7 @@ mod tests {
     fn name_mask_rule_keeps_surname() {
         // 姓名脱敏：≥3 字符保留首尾，中间 * 替换；2 字符保留首字符末位 *。
         let m = SimpleMasker;
-        let rule = crate::processor::rules::RuleRegistry::name_mask_rule();
+        let rule = crate::processor::rules::BuiltinRules::name_mask_rule();
         assert_eq!(m.mask("张三", Some(&rule)).unwrap().output, "张*");
         assert_eq!(m.mask("张三丰", Some(&rule)).unwrap().output, "张*丰");
         assert_eq!(m.mask("欧阳修", Some(&rule)).unwrap().output, "欧*修");
@@ -404,7 +404,7 @@ mod tests {
     fn template_empty_passthrough() {
         // T49：simple-mask 持空 Simple 模板 → 不脱敏（透传）。
         let m = SimpleMasker;
-        let rule = RuleRegistry::simple_mask_rule();
+        let rule = BuiltinRules::simple_mask_rule();
         assert_eq!(
             m.mask("110101199001011234", Some(&rule)).unwrap().output,
             "110101199001011234"
@@ -429,13 +429,15 @@ mod tests {
     }
 
     #[test]
-    fn template_idcard_short_passthrough() {
-        // 15 位身份证 → 不在 [18,18] guard 区间，原样返回
+    fn template_idcard_short_no_guard() {
+        // 15 位输入（非 18 位标准身份证）：无长度 guard，按 keep_prefix=6 +
+        // keep_suffix=4 + mask_min_len=8 正常脱敏。mid_len=5 < mask_min_len=8
+        // → 中间补齐到 8 个 *。
         let m = SimpleMasker;
         let rule = simple_mask_with_template(idcard_preset());
         assert_eq!(
             m.mask("110101900101123", Some(&rule)).unwrap().output,
-            "110101900101123"
+            "110101********1123"
         );
     }
 
@@ -451,13 +453,15 @@ mod tests {
     }
 
     #[test]
-    fn template_phone_short_passthrough() {
-        // 10 位手机号 → 不在 [11,11] guard 区间，原样返回
+    fn template_phone_short_no_guard() {
+        // 10 位手机号（非 11 位标准）：无长度 guard，按 keep_prefix=3 +
+        // keep_suffix=4 + mask_min_len=4 正常脱敏。mid_len=3 < mask_min_len=4
+        // → 中间补齐到 4 个 *。
         let m = SimpleMasker;
         let rule = simple_mask_with_template(phone_preset());
         assert_eq!(
             m.mask("1381234567", Some(&rule)).unwrap().output,
-            "1381234567"
+            "138****4567"
         );
     }
 
@@ -477,11 +481,12 @@ mod tests {
     }
 
     #[test]
-    fn template_birthdate_short_passthrough() {
-        // 非 10 字符 → 原样返回
+    fn template_birthdate_short_no_guard() {
+        // 非 10 字符（7 字符 "1990-01"）：无长度 guard，keep_prefix=8 ≥ n=7 →
+        // 保留段重叠 → 输出 mask_min_len=2 个 *。
         let m = SimpleMasker;
         let rule = simple_mask_with_template(birthdate_preset());
-        assert_eq!(m.mask("1990-01", Some(&rule)).unwrap().output, "1990-01");
+        assert_eq!(m.mask("1990-01", Some(&rule)).unwrap().output, "**");
     }
 
     #[test]
@@ -522,7 +527,7 @@ mod tests {
     fn template_mask_char_in_preset_used() {
         // 预设内 mask_char 优先于默认 *：idcard_preset().with_mask_char('#')
         let m = SimpleMasker;
-        let mut rule = RuleRegistry::simple_mask_rule();
+        let mut rule = BuiltinRules::simple_mask_rule();
         rule.template = Some(idcard_preset().with_mask_char('#'));
         assert_eq!(
             m.mask("110101199001011234", Some(&rule)).unwrap().output,
@@ -534,7 +539,7 @@ mod tests {
     fn name_mask_no_template_unchanged() {
         // name-mask 无 template → 仍走旧逻辑（保留首尾各 1），向后兼容
         let m = SimpleMasker;
-        let rule = crate::processor::rules::RuleRegistry::name_mask_rule();
+        let rule = crate::processor::rules::BuiltinRules::name_mask_rule();
         assert!(rule.template.is_none());
         assert_eq!(m.mask("张三丰", Some(&rule)).unwrap().output, "张*丰");
         assert_eq!(
@@ -740,7 +745,7 @@ mod tests {
     fn segment_replacement_overrides_mask_char() {
         // replacement=# 优先于 template.mask_char
         let m = SimpleMasker;
-        let mut rule = RuleRegistry::segment_mask_rule();
+        let mut rule = BuiltinRules::segment_mask_rule();
         rule.template = Some(TemplateParams::Segment(
             SegmentTemplate::new("@")
                 .with_segment(0, 1, 1, 1)
