@@ -284,6 +284,13 @@ impl DbManager {
             "UPDATE rules SET pattern = ?1 WHERE id = 'idcard-extract' AND pattern = ?2",
             params![r"\b[1-9]\d{16}[\dXx]\b", r"\b\d{17}[\dXx]\b"],
         )?;
+        // 修正 params 列的 validator 标签大小写：
+        // serde rename_all="camelCase" 曾将 IdCard 序列化为 "idCard"，
+        // 现 rename="idcard" 统一小写。老 DB 存的旧 JSON 需精确替换。
+        conn.execute(
+            "UPDATE rules SET params = ?1 WHERE id IN ('idcard-extract','idcard-validate') AND params = ?2",
+            params![r#"{"validator":"idcard"}"#, r#"{"validator":"idCard"}"#],
+        )?;
         Ok(())
     }
 

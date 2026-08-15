@@ -45,7 +45,9 @@ pub enum ExtractParams {
     /// 身份证号校验码严格校验（GB 11643-1999：前 17 位加权求和 mod 11 查表）。
     /// 性别（第 17 位奇=男/偶=女）由 `validate_extracted` 返回，性别联合校验
     /// （比对指定性别列）在 `extract_validate_to_new_sheet_inner` 中进行。
-    #[serde(rename = "idcard")]
+    /// alias = "idCard" 兼容旧 DB 中 camelCase 残留（rename_all=camelCase 产生），
+    /// 迁移后 DB 统一为小写 "idcard"。
+    #[serde(rename = "idcard", alias = "idCard")]
     IdCard,
     /// 用户名：纯字母数字（admin / lufe1jian / 91xxev）。
     ///

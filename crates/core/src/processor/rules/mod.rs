@@ -832,9 +832,10 @@ mod tests {
         assert!(serde_json::to_string(&ExtractParams::Ipv6)
             .unwrap()
             .contains("\"validator\":\"ipv6\""));
-        assert!(serde_json::to_string(&ExtractParams::IdCard)
-            .unwrap()
-            .contains("\"validator\":\"idcard\""));
+        assert_eq!(
+            serde_json::to_string(&ExtractParams::IdCard).unwrap(),
+            r#"{"validator":"idcard"}"#
+        );
         // v1.1.4 T67：4 个新变体 camelCase 标签
         assert!(serde_json::to_string(&ExtractParams::Username)
             .unwrap()
