@@ -45,7 +45,10 @@ pub use generic::is_valid_generic;
 pub use idcard::{idcard_gender, is_valid_idcard};
 pub use ip::{is_valid_ipv4, is_valid_ipv6};
 pub use luhn::luhn_check;
-pub use personal::{check_phone_prefix, is_valid_phone, is_valid_sex, is_valid_username};
+pub use personal::{
+    check_gender_consistency, check_phone_prefix, is_valid_phone, is_valid_sex,
+    is_valid_username, normalize_gender,
+};
 
 use crate::processor::rules::{ExtractParams, Rule};
 

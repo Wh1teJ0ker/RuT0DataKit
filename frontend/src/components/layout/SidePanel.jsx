@@ -16,7 +16,7 @@ import ValidatePanel from "../panels/ValidatePanel";
 import ExtractPanel from "../panels/ExtractPanel";
 import ColumnOpsPanel from "../panels/ColumnOpsPanel";
 import CryptoPanel from "../panels/CryptoPanel";
-import { useAppContext } from "../../state";
+import { useAppContext, ACTION } from "../../state";
 import { useBreakpoint } from "../../hooks/useBreakpoint";
 
 const { Sider } = Layout;
@@ -49,7 +49,7 @@ const CAPABILITY_ICONS = {
 // v1.1.0：`rules` 不在此列（改由 App.jsx 路由到主区 RulesPanel）。
 // v1.2.0 T99：折叠态下点击图标展开面板。
 export default function SidePanel({ activeCapability }) {
-  const { state, setSidePanelCollapsed, setSidePanelPinned, setActiveCapability } = useAppContext();
+  const { state, dispatch } = useAppContext();
   const { collapsed, pinned } = state.sidePanel;
   const { isCompact } = useBreakpoint();
   const PanelComp = activeCapability ? PANELS[activeCapability] : null;
@@ -57,7 +57,7 @@ export default function SidePanel({ activeCapability }) {
   // 窄窗口自动折叠（pinned 时跳过，保持展开）。
   useEffect(() => {
     if (isCompact && !collapsed && !pinned) {
-      setSidePanelCollapsed(true);
+      dispatch({ type: ACTION.SET_SIDE_PANEL_COLLAPSED, payload: true });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isCompact]);
@@ -88,7 +88,7 @@ export default function SidePanel({ activeCapability }) {
           <Button
             type="text"
             icon={<MenuUnfoldOutlined />}
-            onClick={() => setSidePanelCollapsed(false)}
+            onClick={() => dispatch({ type: ACTION.SET_SIDE_PANEL_COLLAPSED, payload: false })}
             style={{ width: 48, height: 48 }}
           />
           <div style={{ flex: 1 }} />
@@ -111,14 +111,14 @@ export default function SidePanel({ activeCapability }) {
                 size="small"
                 icon={pinned ? <PushpinFilled /> : <PushpinOutlined />}
                 style={{ color: pinned ? "#1677ff" : undefined }}
-                onClick={() => setSidePanelPinned(!pinned)}
+                onClick={() => dispatch({ type: ACTION.SET_SIDE_PANEL_PINNED, payload: !pinned })}
               />
             </Tooltip>
             <Button
               type="text"
               size="small"
               icon={<MenuFoldOutlined />}
-              onClick={() => setSidePanelCollapsed(true)}
+              onClick={() => dispatch({ type: ACTION.SET_SIDE_PANEL_COLLAPSED, payload: true })}
             />
           </div>
           <div style={{ flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden", padding: 4 }}>

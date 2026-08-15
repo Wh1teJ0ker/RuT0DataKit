@@ -1,4 +1,4 @@
-// v1.2.0：前端内联校验器 — 镜像后端 func_validator.rs 的程序化校验逻辑。
+// v1.2.0：前端内联校验器 — 镜像后端 validators/ 的程序化校验逻辑。
 // 用于 RulesPanel 内联测试，不写 DB，纯前端预览。
 // 每个函数返回 { passed: boolean, message: string, note?: string }。
 

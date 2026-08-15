@@ -2,7 +2,7 @@
 //!
 //! T91 从 `db/mod.rs` 拆出；方法签名 / SQL / 测试逻辑保持不变。
 
-use super::{now_rfc3339, Cell, DbManager, DbError, OperationRow, UndoableOpRow};
+use super::{map_row_to_cell, now_rfc3339, Cell, DbManager, DbError, OperationRow, UndoableOpRow};
 use regex::Regex;
 use rusqlite::params;
 
@@ -30,7 +30,7 @@ impl DbManager {
         before_snapshot_json: Option<&str>,
         result_json: &str,
     ) -> Result<i64, DbError> {
-        let conn = self.conn.lock().expect("db mutex poisoned");
+        let conn = self.conn();
         let now = now_rfc3339();
         conn.execute(
             "INSERT INTO operations (sheet_id, kind, params_json, before_snapshot_json, result_snapshot_json, created_at)
@@ -42,7 +42,7 @@ impl DbManager {
 
     /// 按 id 查询单条 operation（撤销/重做用）。不存在返回 `Ok(None)`。
     pub fn query_operation_by_id(&self, op_id: i64) -> Result<Option<OperationRow>, DbError> {
-        let conn = self.conn.lock().expect("db mutex poisoned");
+        let conn = self.conn();
         let row = conn
             .query_row(
                 "SELECT id, sheet_id, kind, params_json, before_snapshot_json,
@@ -116,18 +116,10 @@ impl DbManager {
         } else {
             None
         };
-        let mut conn = self.conn.lock().expect("db mutex poisoned");
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         // 抓 before 快照（限定列 / 全表，排除表头 row_idx=0）。
         let before: Vec<Cell> = {
-            let map_cell = |r: &rusqlite::Row<'_>| -> rusqlite::Result<Cell> {
-                Ok(Cell {
-                    sheet_id: r.get::<_, i64>(0)?,
-                    row_idx: r.get::<_, i64>(1)? as u32,
-                    col_idx: r.get::<_, i64>(2)? as u32,
-                    value: r.get::<_, Option<String>>(3)?,
-                })
-            };
             let mut out = Vec::new();
             if let Some(c) = col_filter {
                 let mut stmt = tx.prepare(
@@ -135,7 +127,7 @@ impl DbManager {
                      WHERE sheet_id = ?1 AND col_idx = ?2 AND row_idx > 0
                      ORDER BY row_idx ASC, col_idx ASC",
                 )?;
-                let rows = stmt.query_map(params![sheet_id, c as i64], map_cell)?;
+                let rows = stmt.query_map(params![sheet_id, c as i64], map_row_to_cell)?;
                 for r in rows {
                     out.push(r?);
                 }
@@ -145,7 +137,7 @@ impl DbManager {
                      WHERE sheet_id = ?1 AND row_idx > 0
                      ORDER BY row_idx ASC, col_idx ASC",
                 )?;
-                let rows = stmt.query_map(params![sheet_id], map_cell)?;
+                let rows = stmt.query_map(params![sheet_id], map_row_to_cell)?;
                 for r in rows {
                     out.push(r?);
                 }
@@ -217,25 +209,17 @@ impl DbManager {
     where
         F: Fn(&str) -> Option<String>,
     {
-        let mut conn = self.conn.lock().expect("db mutex poisoned");
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         // 抓 before 快照（限定列，排除表头 row_idx=0）。
         let before: Vec<Cell> = {
-            let map_cell = |r: &rusqlite::Row<'_>| -> rusqlite::Result<Cell> {
-                Ok(Cell {
-                    sheet_id: r.get::<_, i64>(0)?,
-                    row_idx: r.get::<_, i64>(1)? as u32,
-                    col_idx: r.get::<_, i64>(2)? as u32,
-                    value: r.get::<_, Option<String>>(3)?,
-                })
-            };
             let mut out = Vec::new();
             let mut stmt = tx.prepare(
                 "SELECT sheet_id, row_idx, col_idx, value FROM cells
                  WHERE sheet_id = ?1 AND col_idx = ?2 AND row_idx > 0
                  ORDER BY row_idx ASC",
             )?;
-            let rows = stmt.query_map(params![sheet_id, col_idx as i64], map_cell)?;
+            let rows = stmt.query_map(params![sheet_id, col_idx as i64], map_row_to_cell)?;
             for r in rows {
                 out.push(r?);
             }
@@ -296,7 +280,7 @@ impl DbManager {
         sheet_id: i64,
         limit: u32,
     ) -> Result<Vec<UndoableOpRow>, DbError> {
-        let conn = self.conn.lock().expect("db mutex poisoned");
+        let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, kind, created_at FROM operations
              WHERE sheet_id = ?1 AND kind IN ('mask', 'replace_in_column', 'replace_all', 'base64_column', 'hash_column', 'transform_column')
@@ -320,7 +304,6 @@ impl DbManager {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::db::test_support;
 
     #[test]

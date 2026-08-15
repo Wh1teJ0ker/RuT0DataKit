@@ -20,7 +20,7 @@ mod sheets;
 pub use error::DbError;
 
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 use ruT0_data_kit_core::processor::rules::{
     ExtractParams, Rule, RuleKind, TemplateParams,
@@ -174,6 +174,19 @@ pub(super) fn escape_like(keyword: &str) -> String {
     out
 }
 
+/// 把 DB 行（sheet_id / row_idx / col_idx / value）映射为 [`Cell`]。
+///
+/// 供 `cells` / `search` / `operations` 子模块的 `query_map` 闭包复用，
+/// 消除重复的 `|r| Ok(Cell { ... })` 闭包。
+pub(super) fn map_row_to_cell(r: &rusqlite::Row<'_>) -> rusqlite::Result<Cell> {
+    Ok(Cell {
+        sheet_id: r.get::<_, i64>(0)?,
+        row_idx: r.get::<_, i64>(1)? as u32,
+        col_idx: r.get::<_, i64>(2)? as u32,
+        value: r.get::<_, Option<String>>(3)?,
+    })
+}
+
 /// SQLite 连接管理器。
 ///
 /// 持有 `std::sync::Mutex<Connection>` 以满足 Tauri State 的
@@ -189,6 +202,14 @@ pub struct DbManager {
     reason = "v1.1+ IPC 将接入（list_sessions/get_session 等）；单测已覆盖"
 )]
 impl DbManager {
+    /// 获取 DB 连接的 MutexGuard（统一 `expect("db mutex poisoned")`）。
+    ///
+    /// 供各子模块的 `self.conn()` 调用，消除重复的
+    /// `self.conn.lock().expect("db mutex poisoned")` 语句。
+    pub(super) fn conn(&self) -> MutexGuard<'_, Connection> {
+        self.conn.lock().expect("db mutex poisoned")
+    }
+
     /// 在 `app_config_dir` 下打开（或创建）`ruT0datakit.db` 并执行初始化迁移。
     pub fn new(app_config_dir: &Path) -> Result<Self, DbError> {
         std::fs::create_dir_all(app_config_dir)?;
@@ -202,7 +223,7 @@ impl DbManager {
 
     /// 读键值设置。
     pub fn get_setting(&self, key: &str) -> Result<Option<String>, DbError> {
-        let conn = self.conn.lock().expect("db mutex poisoned");
+        let conn = self.conn();
         let value: Option<String> = conn
             .query_row(
                 "SELECT value FROM app_settings WHERE key = ?1",
@@ -216,7 +237,7 @@ impl DbManager {
 
     /// 写键值设置（upsert）。
     pub fn set_setting(&self, key: &str, value: &str) -> Result<(), DbError> {
-        let conn = self.conn.lock().expect("db mutex poisoned");
+        let conn = self.conn();
         conn.execute(
             "INSERT INTO app_settings (key, value) VALUES (?1, ?2)
              ON CONFLICT(key) DO UPDATE SET value=excluded.value",

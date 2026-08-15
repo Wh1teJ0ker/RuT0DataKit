@@ -1,4 +1,4 @@
-// 前端单一真相源：版本号 + 开发状态文案。
+// 前端单一真相源：版本号 + 开发状态文案 + 跨组件共享常量。
 //
 // 版本号必须与以下位置保持一致（Tauri / Vite 不支持跨文件模板，需手动同步）：
 //   - Cargo.toml                  workspace.package.version          （Rust crates 真相源）
@@ -15,3 +15,14 @@ export const DEV_STATUS = "开发中";
  * 各消费方一律 `import { PAGE_SIZE } from "../constants"`，不在本地重复声明。
  */
 export const PAGE_SIZE = 50;
+
+/**
+ * 大单元格字节阈值：超过此值的单元格跳过主线程同步正则 / TextEncoder.encode，
+ * 防止 8.5MB 级大文本冻结 UI。DataTable 高亮与 ExtractPanel 提取共用同一阈值。
+ */
+export const CELL_SIZE_LIMIT = 50000;
+
+/**
+ * 脱敏「先校验再脱敏」模式下，未通过行的默认占位文本。
+ */
+export const INVALID_TEXT = "INVALID";

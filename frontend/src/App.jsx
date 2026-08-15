@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect } from "react";
 import { Layout } from "antd";
 import TopToolbar from "./components/layout/TopToolbar";
 import SidePanel from "./components/layout/SidePanel";
@@ -9,6 +9,8 @@ import RulesPanel from "./components/panels/RulesPanel";
 import { AppProvider, useAppContext, ACTION } from "./state";
 import { getSheetData, loadPageSize } from "./tauri";
 import { PAGE_SIZE } from "./constants";
+import { useStaleGuard } from "./hooks/useStaleGuard";
+import { useActiveSheet } from "./hooks/useActiveSheet";
 
 const { Header, Content } = Layout;
 
@@ -23,8 +25,9 @@ const { Header, Content } = Layout;
 // 不再走 260px SidePanel（左侧列表 + 右侧详情两栏布局）。
 // v1.1.2：启动时加载全局每页行数（settings.json 持久化），dispatch SET_PAGE_SIZE。
 function AppShell() {
-  const { state, dispatch, setView, setAiPanelVisible, setPage } =
-    useAppContext();
+  const { state, dispatch } = useAppContext();
+  const { run, isStale } = useStaleGuard();
+  const { sheet: activeSheet } = useActiveSheet();
 
   // v1.1.2：启动时加载全局每页行数。
   useEffect(() => {
@@ -40,76 +43,57 @@ function AppShell() {
     })();
   }, [dispatch]);
 
-  // T64：sheetId → 单调递增 generation token。每次发起新请求前自增；
-  // 异步响应返回时若 token 不等于最新值，说明用户已翻页/切换 Sheet，丢弃响应。
-  const pageReqGenRef = useRef({});
-  const nextGen = useCallback((sheetId) => {
-    const m = pageReqGenRef.current;
-    const next = (m[sheetId] ?? 0) + 1;
-    m[sheetId] = next;
-    return next;
-  }, []);
-  const isStale = useCallback((sheetId, gen) => {
-    return pageReqGenRef.current[sheetId] !== gen;
-  }, []);
-
   // 导入成功后：dispatch IMPORT_SUCCESS 填充 Sheet，并拉取首页数据。
   // v1.1.2：首页 pageSize 用全局 state.pageSize。
-  // T64：导入为新 Sheet，理论上无竞态；仍用 generation token 保护一致。
+  // useStaleGuard：导入为新 Sheet，理论上无竞态；仍用 generation token 保护一致。
   const handleImport = useCallback(
     async (payload) => {
       dispatch({ type: ACTION.IMPORT_SUCCESS, payload });
-      const gen = nextGen(payload.sheetId);
+      const gen = run();
       try {
         const data = await getSheetData(payload.sheetId, 1, state.pageSize);
-        if (isStale(payload.sheetId, gen)) return;
+        if (isStale(gen)) return;
         dispatch({
           type: ACTION.SET_SHEET_DATA,
           payload: { ...data, sheetId: payload.sheetId },
         });
       } catch (e) {
-        if (isStale(payload.sheetId, gen)) return;
+        if (isStale(gen)) return;
         // 首页拉取失败：保留 Sheet 占位，由用户翻页重试。
         // eslint-disable-next-line no-console
         console.error("getSheetData page 1 failed:", e);
       }
     },
-    [dispatch, state.pageSize, nextGen, isStale]
+    [dispatch, state.pageSize, run, isStale]
   );
 
   // 翻页时按需拉取对应页数据。
-  // T64：用户快速连续翻页时，旧响应可能晚于新响应返回，导致 UI 显示
+  // useStaleGuard：用户快速连续翻页时，旧响应可能晚于新响应返回，导致 UI 显示
   // 错误页数据。用 generation token 隔离：发起前自增，响应返回时若 token
   // 已变（用户又翻页了），静默丢弃，不 dispatch SET_SHEET_DATA。
   const handleSetPage = useCallback(
     async (page) => {
-      const sheet = state.sheets.find((s) => s.id === state.activeSheetId);
-      if (!sheet) return;
-      setPage(page);
-      const gen = nextGen(sheet.id);
+      if (!activeSheet) return;
+      dispatch({ type: ACTION.SET_PAGE, payload: page });
+      const gen = run();
       try {
         const data = await getSheetData(
-          sheet.id,
+          activeSheet.id,
           page,
-          sheet.pageSize || PAGE_SIZE
+          activeSheet.pageSize || PAGE_SIZE
         );
-        if (isStale(sheet.id, gen)) return;
+        if (isStale(gen)) return;
         dispatch({
           type: ACTION.SET_SHEET_DATA,
-          payload: { ...data, sheetId: sheet.id },
+          payload: { ...data, sheetId: activeSheet.id },
         });
       } catch (e) {
-        if (isStale(sheet.id, gen)) return;
+        if (isStale(gen)) return;
         // eslint-disable-next-line no-console
         console.error("getSheetData page failed:", e);
       }
     },
-    [state.sheets, state.activeSheetId, dispatch, setPage, nextGen, isStale]
-  );
-
-  // 当前激活的 Sheet（导出按钮据此判断可用性）。
-  const activeSheet = state.sheets.find(
-    (s) => s.id === state.activeSheetId
+    [activeSheet, dispatch, run, isStale]
   );
 
   return (
@@ -127,7 +111,7 @@ function AppShell() {
       </Header>
       {state.currentView === "settings" ? (
         <Content style={{ background: "#fff", overflow: "auto" }}>
-          <SettingsView onBack={() => setView("workbench")} />
+          <SettingsView onBack={() => dispatch({ type: ACTION.SET_VIEW, payload: "workbench" })} />
         </Content>
       ) : state.activeCapability === "rules" ? (
         <Content style={{ background: "#fff", overflow: "hidden" }}>

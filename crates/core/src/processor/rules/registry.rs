@@ -45,35 +45,9 @@ impl RuleRegistry {
     /// `with_defaults()` 共 18 条。
     pub fn with_defaults() -> Self {
         let mut reg = Self::new();
-        // 3 条姓名规则
-        reg.register(BuiltinRules::name_validate_rule());
-        reg.register(BuiltinRules::name_mask_rule());
-        reg.register(BuiltinRules::name_extract_rule());
-        // v1.1.3 T54：整段脱敏 + 分段脱敏拆为两条独立规则（各持空模板）
-        reg.register(BuiltinRules::simple_mask_rule());
-        reg.register(BuiltinRules::segment_mask_rule());
-        // v1.1.3 T55：3 条提取规则（手机号 / 银行卡 / IP），各持函数式校验参数
-        reg.register(BuiltinRules::phone_extract_rule());
-        reg.register(BuiltinRules::bankcard_extract_rule());
-        // v1.1.3 T55b：原 ip-extract 拆为 ipv4 / ipv6 两条独立规则
-        reg.register(BuiltinRules::ip4_extract_rule());
-        reg.register(BuiltinRules::ip6_extract_rule());
-        // v1.1.3 T55c：身份证号提取 + 校验码严格校验
-        reg.register(BuiltinRules::idcard_extract_rule());
-        // v1.1.4 T67：6 条函数式校验规则（kind=Validate，带 params 走
-        // validate_extracted 分发）。
-        reg.register(BuiltinRules::username_validate_rule());
-        reg.register(BuiltinRules::sex_validate_rule());
-        reg.register(BuiltinRules::birth_validate_rule());
-        reg.register(BuiltinRules::idcard_validate_rule());
-        reg.register(BuiltinRules::phone_validate_rule());
-        reg.register(BuiltinRules::address_validate_rule());
-        // v1.1.4 续轮 T70：通用校验规则（字符类白名单 + 长度范围）。
-        // `with_defaults()` 共 17 条。
-        reg.register(BuiltinRules::generic_validate_rule());
-        // v1.1.5 T81：邮箱校验规则（kind=Validate，带 params 走
-        // validate_extracted 分发）。`with_defaults()` 共 18 条。
-        reg.register(BuiltinRules::email_validate_rule());
+        for rule in BuiltinRules::all() {
+            reg.register(rule.clone());
+        }
         reg
     }
 
@@ -119,15 +93,7 @@ mod tests {
     use super::*;
     use crate::processor::rules::extract_params::ExtractParams;
     use crate::processor::rules::rule::RuleKind;
-    use crate::processor::rules::template::{SegmentMask, SegmentTemplate, SimpleTemplate, TemplateParams};
-
-    /// 测试辅助：断言模板是 Simple 变体并返回内部 `&SimpleTemplate`。
-    fn expect_simple(tpl: &TemplateParams) -> &SimpleTemplate {
-        match tpl {
-            TemplateParams::Simple(s) => s,
-            TemplateParams::Segment(_) => panic!("expected Simple, got Segment"),
-        }
-    }
+    use crate::processor::rules::template::TemplateParams;
 
     #[test]
     fn with_defaults_loads_ten_rules() {
@@ -156,7 +122,7 @@ mod tests {
 
     #[test]
     fn name_validate_rule_pattern_is_chinese_range() {
-        let r = BuiltinRules::name_validate_rule();
+        let r = BuiltinRules::get("name-validate").unwrap();
         assert_eq!(r.id, "name-validate");
         assert_eq!(r.kind, RuleKind::Validate);
         assert_eq!(r.field.as_deref(), Some("name"));
@@ -169,7 +135,7 @@ mod tests {
 
     #[test]
     fn name_mask_rule_keeps_first_char_semantic() {
-        let r = BuiltinRules::name_mask_rule();
+        let r = BuiltinRules::get("name-mask").unwrap();
         assert_eq!(r.id, "name-mask");
         assert_eq!(r.kind, RuleKind::Mask);
         assert_eq!(r.field.as_deref(), Some("name"));
@@ -182,7 +148,7 @@ mod tests {
 
     #[test]
     fn name_extract_rule_has_chinese_pattern() {
-        let r = BuiltinRules::name_extract_rule();
+        let r = BuiltinRules::get("name-extract").unwrap();
         assert_eq!(r.id, "name-extract");
         assert_eq!(r.kind, RuleKind::Extract);
         assert_eq!(r.field.as_deref(), Some("name"));
@@ -193,7 +159,7 @@ mod tests {
 
     #[test]
     fn simple_mask_rule_has_empty_template() {
-        let r = BuiltinRules::simple_mask_rule();
+        let r = BuiltinRules::get("simple-mask").unwrap();
         assert_eq!(r.id, "simple-mask");
         assert_eq!(r.kind, RuleKind::Mask);
         // 持空 Simple 模板 → is_empty()==true
@@ -205,7 +171,7 @@ mod tests {
 
     #[test]
     fn segment_mask_rule_has_empty_template() {
-        let r = BuiltinRules::segment_mask_rule();
+        let r = BuiltinRules::get("segment-mask").unwrap();
         assert_eq!(r.id, "segment-mask");
         assert_eq!(r.kind, RuleKind::Mask);
         // 持空 Segment 模板 → is_empty()==true
@@ -217,7 +183,7 @@ mod tests {
 
     #[test]
     fn phone_extract_rule_has_phone_prefix_params() {
-        let r = BuiltinRules::phone_extract_rule();
+        let r = BuiltinRules::get("phone-extract").unwrap();
         assert_eq!(r.id, "phone-extract");
         assert_eq!(r.kind, RuleKind::Extract);
         assert!(r.pattern.is_some());
@@ -233,7 +199,7 @@ mod tests {
 
     #[test]
     fn bankcard_extract_rule_has_luhn_params() {
-        let r = BuiltinRules::bankcard_extract_rule();
+        let r = BuiltinRules::get("bankcard-extract").unwrap();
         assert_eq!(r.id, "bankcard-extract");
         assert_eq!(r.kind, RuleKind::Extract);
         assert!(r.pattern.is_some());
@@ -247,7 +213,7 @@ mod tests {
 
     #[test]
     fn ip4_extract_rule_has_ipv4_params() {
-        let r = BuiltinRules::ip4_extract_rule();
+        let r = BuiltinRules::get("ip4-extract").unwrap();
         assert_eq!(r.id, "ip4-extract");
         assert_eq!(r.kind, RuleKind::Extract);
         assert!(r.pattern.is_some());
@@ -258,7 +224,7 @@ mod tests {
 
     #[test]
     fn ip6_extract_rule_has_ipv6_params() {
-        let r = BuiltinRules::ip6_extract_rule();
+        let r = BuiltinRules::get("ip6-extract").unwrap();
         assert_eq!(r.id, "ip6-extract");
         assert_eq!(r.kind, RuleKind::Extract);
         assert!(r.pattern.is_some());
@@ -269,7 +235,7 @@ mod tests {
 
     #[test]
     fn idcard_extract_rule_has_idcard_params() {
-        let r = BuiltinRules::idcard_extract_rule();
+        let r = BuiltinRules::get("idcard-extract").unwrap();
         assert_eq!(r.id, "idcard-extract");
         assert_eq!(r.kind, RuleKind::Extract);
         assert_eq!(r.pattern.as_deref(), Some(r"\b[1-9]\d{16}[\dXx]\b"));
@@ -281,7 +247,7 @@ mod tests {
     #[test]
     fn generic_validate_rule_default_params() {
         // v1.1.4 续轮 T70：generic-validate 默认参数
-        let r = BuiltinRules::generic_validate_rule();
+        let r = BuiltinRules::get("generic-validate").unwrap();
         assert_eq!(r.id, "generic-validate");
         assert_eq!(r.kind, RuleKind::Validate);
         assert!(r.pattern.is_none());
@@ -366,7 +332,7 @@ mod tests {
     #[test]
     fn register_overwrites_same_id() {
         let mut reg = RuleRegistry::with_defaults();
-        let mut r = BuiltinRules::name_validate_rule();
+        let mut r = BuiltinRules::get("name-validate").unwrap();
         r.description = "updated".into();
         reg.register(r);
         assert_eq!(reg.list().len(), 18);
@@ -376,7 +342,7 @@ mod tests {
     #[test]
     fn rule_params_field_serde_skip_when_none() {
         // name-mask 无 params → JSON 不输出 params 字段（向后兼容）
-        let r = BuiltinRules::name_mask_rule();
+        let r = BuiltinRules::get("name-mask").unwrap();
         let json = serde_json::to_string(&r).unwrap();
         assert!(!json.contains("params"));
     }
@@ -384,7 +350,7 @@ mod tests {
     #[test]
     fn rule_params_field_serde_present_when_some() {
         // phone-extract 有 params → JSON 输出 params 字段
-        let r = BuiltinRules::phone_extract_rule();
+        let r = BuiltinRules::get("phone-extract").unwrap();
         let json = serde_json::to_string(&r).unwrap();
         assert!(json.contains("params"));
     }
@@ -401,7 +367,7 @@ mod tests {
     #[test]
     fn rule_template_field_serde_skip_when_none() {
         // name-mask 无 template → JSON 不输出 template 字段（向后兼容 v1.1.2 前端）
-        let r = BuiltinRules::name_mask_rule();
+        let r = BuiltinRules::get("name-mask").unwrap();
         let json = serde_json::to_string(&r).unwrap();
         assert!(!json.contains("template"));
     }
@@ -409,7 +375,7 @@ mod tests {
     #[test]
     fn rule_template_field_serde_present_when_some() {
         // simple-mask 有 template（空 Simple 模板）→ JSON 输出 template 字段
-        let r = BuiltinRules::simple_mask_rule();
+        let r = BuiltinRules::get("simple-mask").unwrap();
         let json = serde_json::to_string(&r).unwrap();
         assert!(json.contains("template"));
     }

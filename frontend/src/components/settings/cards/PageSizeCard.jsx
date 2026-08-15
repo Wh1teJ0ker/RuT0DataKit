@@ -2,6 +2,7 @@ import { useState, useCallback } from "react";
 import { Button, Card, Form, Select, Space, Typography, message } from "antd";
 import { useAppState, ACTION } from "../../../state";
 import { loadPageSize, savePageSize, getSheetData } from "../../../tauri";
+import { useActiveSheet } from "../../../hooks/useActiveSheet";
 import { PAGE_SIZE } from "../../../constants";
 
 const { Text } = Typography;
@@ -19,6 +20,7 @@ const PAGE_SIZE_OPTIONS = [20, 50, 100, 200];
 
 export default function PageSizeCard() {
   const { state, dispatch } = useAppState();
+  const { sheet } = useActiveSheet();
   const [saving, setSaving] = useState(false);
   const [form] = Form.useForm();
 
@@ -33,7 +35,6 @@ export default function PageSizeCard() {
       await savePageSize(value);
       dispatch({ type: ACTION.SET_PAGE_SIZE, payload: value });
       // 刷新当前激活 Sheet 首页数据（reducer 已把 page 重置为 1）。
-      const sheet = state.sheets.find((s) => s.id === state.activeSheetId);
       if (sheet && sheet.sessionId != null) {
         try {
           const data = await getSheetData(sheet.id, 1, value);
@@ -53,7 +54,7 @@ export default function PageSizeCard() {
     } finally {
       setSaving(false);
     }
-  }, [form, currentValue, dispatch, state.sheets, state.activeSheetId]);
+  }, [form, currentValue, dispatch, sheet]);
 
   return (
     <Card title="每页行数" size="small">

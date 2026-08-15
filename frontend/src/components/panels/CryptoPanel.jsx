@@ -3,6 +3,7 @@ import { Alert, Button, Form, Radio, Select, Typography, message } from "antd";
 import { useAppContext } from "../../state";
 import { base64Column, hashColumn } from "../../tauri";
 import { useSheetOps } from "../../hooks/useSheetOps";
+import { useActiveSheet } from "../../hooks/useActiveSheet";
 import ColumnSelect from "../shared/ColumnSelect";
 
 const { Title } = Typography;
@@ -17,15 +18,9 @@ const { Title } = Typography;
 // v1.2.0 T94：op-then-refresh 样板收敛到 useSheetOps.refreshActiveSheet，
 // 列 Select 收敛到 ColumnSelect。
 export default function CryptoPanel() {
-  const { state, dispatch } = useAppContext();
-  const { refreshActiveSheet } = useSheetOps(dispatch, null);
-  const [form] = Form.useForm();
-  const [running, setRunning] = useState(false);
-  // v1.1.5 T83: 哈希输出大小写（Lower=小写 / Upper=大写）
-  const [hashCase, setHashCase] = useState("lower");
-
-  const sheet = state.sheets.find((s) => s.id === state.activeSheetId);
-  const headers = sheet?.headers || [];
+  const { dispatch } = useAppContext();
+  const { refreshActiveSheet } = useSheetOps(dispatch);
+  const { sheet, headers } = useActiveSheet();
 
   async function handleExecute() {
     if (!sheet) {

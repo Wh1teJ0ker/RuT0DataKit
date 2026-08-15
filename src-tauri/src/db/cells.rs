@@ -2,7 +2,7 @@
 //!
 //! T91 从 `db/mod.rs` 拆出；方法签名 / SQL / 测试逻辑保持不变。
 
-use super::{Cell, DbManager, DbError};
+use super::{map_row_to_cell, Cell, DbManager, DbError};
 use rusqlite::{params, params_from_iter, types::Value as SqlValue};
 
 impl DbManager {
@@ -25,7 +25,7 @@ impl DbManager {
     ) -> Result<Vec<Cell>, DbError> {
         let offset = (page.saturating_sub(1).saturating_mul(page_size)) as i64;
         let limit = page_size as i64;
-        let conn = self.conn.lock().expect("db mutex poisoned");
+        let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT sheet_id, row_idx, col_idx, value FROM cells
              WHERE sheet_id = ?1 AND row_idx > 0 AND row_idx IN (
@@ -36,14 +36,7 @@ impl DbManager {
              )
              ORDER BY row_idx ASC, col_idx ASC",
         )?;
-        let rows = stmt.query_map(params![sheet_id, limit, offset], |r| {
-            Ok(Cell {
-                sheet_id: r.get::<_, i64>(0)?,
-                row_idx: r.get::<_, i64>(1)? as u32,
-                col_idx: r.get::<_, i64>(2)? as u32,
-                value: r.get::<_, Option<String>>(3)?,
-            })
-        })?;
+        let rows = stmt.query_map(params![sheet_id, limit, offset], map_row_to_cell)?;
         let mut out = Vec::new();
         for row in rows {
             out.push(row?);
@@ -53,7 +46,7 @@ impl DbManager {
 
     /// 事务批量写 `cells`（`sheet_id` 取参数，忽略 `Cell.sheet_id` 字段）。
     pub fn write_cells(&self, sheet_id: i64, cells: &[Cell]) -> Result<(), DbError> {
-        let mut conn = self.conn.lock().expect("db mutex poisoned");
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
         {
             let mut stmt = tx.prepare(
@@ -79,7 +72,7 @@ impl DbManager {
     /// T62：与 `query_cells` 分页语义统一——表头行不计入 total，分页 total
     /// 就是数据行数。表头请用 `query_row_cells(sheet_id, 0)` 单独读取。
     pub fn count_rows(&self, sheet_id: i64) -> Result<u32, DbError> {
-        let conn = self.conn.lock().expect("db mutex poisoned");
+        let conn = self.conn();
         let count: i64 = conn.query_row(
             "SELECT COUNT(DISTINCT row_idx) FROM cells WHERE sheet_id = ?1 AND row_idx > 0",
             params![sheet_id],
@@ -91,7 +84,7 @@ impl DbManager {
     /// 按 `sheet_id` 查 sheet 名（T57：用于双 Tab 命名 `{name}_校验通过`）。
     /// sheet 不存在返回 `Ok(None)`。
     pub fn get_sheet_name(&self, sheet_id: i64) -> Result<Option<String>, DbError> {
-        let conn = self.conn.lock().expect("db mutex poisoned");
+        let conn = self.conn();
         let name: Option<String> = conn
             .query_row(
                 "SELECT name FROM sheets WHERE id = ?1",
@@ -109,7 +102,7 @@ impl DbManager {
         sheet_id: i64,
         col_idx: u32,
     ) -> Result<Vec<(u32, Option<String>)>, DbError> {
-        let conn = self.conn.lock().expect("db mutex poisoned");
+        let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT row_idx, value FROM cells
              WHERE sheet_id = ?1 AND col_idx = ?2 AND row_idx > 0
@@ -128,7 +121,7 @@ impl DbManager {
     /// 按表头名查找 `col_idx`（查 `row_idx=0` 的 cell value）。
     /// 不存在返回 `Ok(None)`。
     pub fn find_col_idx(&self, sheet_id: i64, header_name: &str) -> Result<Option<u32>, DbError> {
-        let conn = self.conn.lock().expect("db mutex poisoned");
+        let conn = self.conn();
         let col_idx: Option<i64> = conn
             .query_row(
                 "SELECT col_idx FROM cells
@@ -142,7 +135,7 @@ impl DbManager {
 
     /// 取某 sheet 的列数（`row_idx=0` 表头行的 cell 数）。供搜索结果行级展开对齐用。
     pub fn count_columns(&self, sheet_id: i64) -> Result<u32, DbError> {
-        let conn = self.conn.lock().expect("db mutex poisoned");
+        let conn = self.conn();
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM cells WHERE sheet_id = ?1 AND row_idx = 0",
             params![sheet_id],
@@ -153,20 +146,13 @@ impl DbManager {
 
     /// 取某行所有列的 cells（按 `col_idx` 升序）。供搜索结果行级展开用。
     pub fn query_row_cells(&self, sheet_id: i64, row_idx: u32) -> Result<Vec<Cell>, DbError> {
-        let conn = self.conn.lock().expect("db mutex poisoned");
+        let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT sheet_id, row_idx, col_idx, value FROM cells
              WHERE sheet_id = ?1 AND row_idx = ?2
              ORDER BY col_idx ASC",
         )?;
-        let rows = stmt.query_map(params![sheet_id, row_idx as i64], |r| {
-            Ok(Cell {
-                sheet_id: r.get::<_, i64>(0)?,
-                row_idx: r.get::<_, i64>(1)? as u32,
-                col_idx: r.get::<_, i64>(2)? as u32,
-                value: r.get::<_, Option<String>>(3)?,
-            })
-        })?;
+        let rows = stmt.query_map(params![sheet_id, row_idx as i64], map_row_to_cell)?;
         let mut out = Vec::new();
         for row in rows {
             out.push(row?);
@@ -188,7 +174,7 @@ impl DbManager {
         if row_idxs.is_empty() {
             return Ok(Vec::new());
         }
-        let conn = self.conn.lock().expect("db mutex poisoned");
+        let conn = self.conn();
         let mut out: Vec<Cell> = Vec::new();
         for chunk in row_idxs.chunks(500) {
             // 构造 IN 子句占位符：?, ?, ?
@@ -206,14 +192,7 @@ impl DbManager {
                 bind_args.push(SqlValue::Integer(r as i64));
             }
             let mut stmt = conn.prepare(&sql)?;
-            let mapped = stmt.query_map(params_from_iter(bind_args.iter()), |r| {
-                Ok(Cell {
-                    sheet_id: r.get::<_, i64>(0)?,
-                    row_idx: r.get::<_, i64>(1)? as u32,
-                    col_idx: r.get::<_, i64>(2)? as u32,
-                    value: r.get::<_, Option<String>>(3)?,
-                })
-            })?;
+            let mapped = stmt.query_map(params_from_iter(bind_args.iter()), map_row_to_cell)?;
             for row in mapped {
                 out.push(row?);
             }

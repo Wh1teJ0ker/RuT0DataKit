@@ -1,191 +1,28 @@
 // AppContext：Context + Provider + useAppContext hook（T13 引入）。
-// 替代原 useAppState hook，让深层组件直接消费 state / dispatch / dispatcher，
-// 消除 prop drilling。Provider value 用 useMemo 包裹，依赖稳定，避免整树重渲染。
-import { createContext, useContext, useMemo, useReducer, useCallback } from "react";
+// 替代原 useAppState hook，让深层组件直接消费 state / dispatch / ACTION，
+// 消除 prop drilling。
+//
+// v1.2.1 第三轮精简：原 24 个 useCallback dispatch forwarder 全部移除——
+// dispatch 来自 useReducer 本身已稳定，各 forwarder 仅 `(payload) =>
+// dispatch({type, payload})` 且 deps=[] 无额外 memo 价值。组件直接
+// `dispatch({ type: ACTION.SET_VIEW, payload })` 即可。同时删除巨型 useMemo
+// 依赖数组（原 26 项）。dead 导出 applySearchHits 也一并删除（无调用方）。
+import { createContext, useContext, useMemo, useReducer } from "react";
 import { ACTION, initialState } from "./constants";
 import { reducer } from "./reducer";
 
-// Context 值：{ state, dispatch, ...20 个 dispatcher（v1.1.2 新增 setPageSize） }
 export const AppContext = createContext(null);
 
 export function AppProvider({ children }) {
   const [state, dispatch] = useReducer(reducer, initialState);
 
-  // ---- T2 ----
-  const setView = useCallback(
-    (view) => dispatch({ type: ACTION.SET_VIEW, payload: view }),
-    []
-  );
-  const setActiveCapability = useCallback(
-    (capability) =>
-      dispatch({ type: ACTION.SET_ACTIVE_CAPABILITY, payload: capability }),
-    []
-  );
-  const setAiPanelVisible = useCallback(
-    (visible) => dispatch({ type: ACTION.SET_AI_PANEL_VISIBLE, payload: visible }),
-    []
-  );
-  // v1.2.0：固定 AI 面板（pinned 时窄屏不自动折叠）
-  const setAiPanelPinned = useCallback(
-    (pinned) => dispatch({ type: ACTION.SET_AI_PANEL_PINNED, payload: pinned }),
-    []
-  );
-  // v1.2.0 T99：左侧能力面板折叠态
-  const setSidePanelCollapsed = useCallback(
-    (collapsed) => dispatch({ type: ACTION.SET_SIDE_PANEL_COLLAPSED, payload: collapsed }),
-    []
-  );
-  // v1.2.0：固定左侧能力面板（pinned 时窄屏不自动折叠）
-  const setSidePanelPinned = useCallback(
-    (pinned) => dispatch({ type: ACTION.SET_SIDE_PANEL_PINNED, payload: pinned }),
-    []
-  );
-
-  // ---- T3 ----
-  const addSheet = useCallback(
-    (payload = {}) => dispatch({ type: ACTION.ADD_SHEET, payload }),
-    []
-  );
-  const closeSheet = useCallback(
-    (id) => dispatch({ type: ACTION.CLOSE_SHEET, payload: id }),
-    []
-  );
-  const setActiveSheet = useCallback(
-    (id) => dispatch({ type: ACTION.SET_ACTIVE_SHEET, payload: id }),
-    []
-  );
-  const renameSheet = useCallback(
-    (payload) => dispatch({ type: ACTION.RENAME_SHEET, payload }),
-    []
-  );
-  const setSelection = useCallback(
-    (payload) => dispatch({ type: ACTION.SET_SELECTION, payload }),
-    []
-  );
-  const reorderColumns = useCallback(
-    (columnOrder) => dispatch({ type: ACTION.REORDER_COLUMNS, payload: columnOrder }),
-    []
-  );
-  const setColumnVisibility = useCallback(
-    (payload) => dispatch({ type: ACTION.SET_COLUMN_VISIBILITY, payload }),
-    []
-  );
-  const setPage = useCallback(
-    (page) => dispatch({ type: ACTION.SET_PAGE, payload: page }),
-    []
-  );
-
-  // ---- T5（导入流）----
-  const importSuccess = useCallback(
-    (payload) => dispatch({ type: ACTION.IMPORT_SUCCESS, payload }),
-    []
-  );
-  const setSheetData = useCallback(
-    (payload) => dispatch({ type: ACTION.SET_SHEET_DATA, payload }),
-    []
-  );
-
-  // ---- v1.1.0 行状态高亮（脱敏/校验/提取）----
-  const applyRowStatuses = useCallback(
-    (payload) => dispatch({ type: ACTION.APPLY_ROW_STATUSES, payload }),
-    []
-  );
-
-  // ---- v1.1.1 撤销 / 搜索 / 列操作 ----
-  const setSearchState = useCallback(
-    (payload) => dispatch({ type: ACTION.SET_SEARCH_STATE, payload }),
-    []
-  );
-  const applySearchHits = useCallback(
-    (payload) => dispatch({ type: ACTION.APPLY_SEARCH_HITS, payload }),
-    []
-  );
-  const applySearchRows = useCallback(
-    (payload) => dispatch({ type: ACTION.APPLY_SEARCH_ROWS, payload }),
-    []
-  );
-  const clearSearch = useCallback(
-    () => dispatch({ type: ACTION.CLEAR_SEARCH }),
-    []
-  );
-  const addSheetFromParse = useCallback(
-    (payload) => dispatch({ type: ACTION.ADD_SHEET_FROM_PARSE, payload }),
-    []
-  );
-  const setUndoStack = useCallback(
-    (payload) => dispatch({ type: ACTION.SET_UNDO_STACK, payload }),
-    []
-  );
-
-  // ---- v1.1.2 全局每页行数 ----
-  const setPageSize = useCallback(
-    (pageSize) => dispatch({ type: ACTION.SET_PAGE_SIZE, payload: pageSize }),
-    []
-  );
-
-  const value = useMemo(
-    () => ({
-      state,
-      dispatch,
-      setView,
-      setActiveCapability,
-      setAiPanelVisible,
-      setAiPanelPinned,
-      setSidePanelCollapsed,
-      setSidePanelPinned,
-      addSheet,
-      closeSheet,
-      setActiveSheet,
-      renameSheet,
-      setSelection,
-      reorderColumns,
-      setColumnVisibility,
-      setPage,
-      importSuccess,
-      setSheetData,
-      applyRowStatuses,
-      setSearchState,
-      applySearchHits,
-      applySearchRows,
-      clearSearch,
-      addSheetFromParse,
-      setUndoStack,
-      setPageSize,
-    }),
-    [
-      state,
-      dispatch,
-      setView,
-      setActiveCapability,
-      setAiPanelVisible,
-      setAiPanelPinned,
-      setSidePanelCollapsed,
-      setSidePanelPinned,
-      addSheet,
-      closeSheet,
-      setActiveSheet,
-      renameSheet,
-      setSelection,
-      reorderColumns,
-      setColumnVisibility,
-      setPage,
-      importSuccess,
-      setSheetData,
-      applyRowStatuses,
-      setSearchState,
-      applySearchHits,
-      applySearchRows,
-      clearSearch,
-      addSheetFromParse,
-      setUndoStack,
-      setPageSize,
-    ]
-  );
+  const value = useMemo(() => ({ state, dispatch }), [state, dispatch]);
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }
 
 // 供深层组件消费。必须在组件顶层调用（Rules of Hooks）。
+// 返回 { state, dispatch, ACTION }：组件用 `dispatch({ type: ACTION.X, payload })` 发 action。
 export function useAppContext() {
   const ctx = useContext(AppContext);
   if (!ctx) {

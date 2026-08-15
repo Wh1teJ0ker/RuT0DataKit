@@ -55,10 +55,8 @@ export {
 } from "./undo";
 
 export {
-  searchCells,
   searchRows,
   replaceAll,
-  replaceInColumn,
 } from "./search";
 
 export {

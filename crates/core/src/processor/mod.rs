@@ -6,7 +6,7 @@
 //!
 //! 规则持久化到 DB（`rules` 表），启动时若 DB 无规则则 seed 三条内置规则。
 //!
-//! v1.1.3 T55：新增 `func_validator` 模块（函数式校验器：Luhn / IPv4 / IPv6 /
+//! v1.1.3 T55：新增函数式校验器（Luhn / IPv4 / IPv6 /
 //! 手机号前缀），供提取规则的 `validate_extracted` 严格兜底。T55b 拆分
 //! `ip-extract` 为 `ip4-extract` + `ip6-extract` 两条独立规则（删除 `IpFamily`）。
 //! T55c 新增 `idcard-extract` 规则：18 位身份证号召回 `\b[1-9]\d{16}[\dXx]\b`（首位非零），
@@ -15,7 +15,7 @@
 //! `extract_validate_to_new_sheet_inner` 中进行——性别列是提取时参数而非规则
 //! 配置，不同 sheet 列名不同，不落 DB。
 //!
-//! v1.2.1：`func_validator` 模块重命名为 `validators`，按域拆分为 7 个子模块
+//! v1.2.1：函数式校验器重命名为 `validators`，按域拆分为 8 个子模块
 //! （luhn / ip / idcard / personal / datetime / address / email / generic），
 //! 原 `rules/mod.rs` 拆为 `rule.rs` / `registry.rs` / `builtins.rs`。
 //!

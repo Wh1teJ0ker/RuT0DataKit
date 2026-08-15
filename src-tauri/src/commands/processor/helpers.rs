@@ -5,9 +5,10 @@
 
 use ruT0_data_kit_core::processor::rules::ExtractParams;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 use crate::commands::columns::ParseResult;
-use crate::db::Cell;
+use crate::db::{Cell, DbManager};
 
 // ---------------------------------------------------------------------------
 // 脱敏结果
@@ -240,4 +241,27 @@ pub fn write_sheet(
         db.write_cells(sheet_id, &cells).map_err(|e| e.to_string())?;
     }
     Ok(rows.len() as u32)
+}
+
+/// 记录列级操作日志（统一 `log_operation_with_snapshot` ceremony）。
+///
+/// `kind` 为操作类型（`replace_in_column` / `base64_column` / `hash_column` /
+/// `transform_column` / `mask` / `replace_all`），`column` 为列名/列号，
+/// `payload` 为操作参数 JSON（`column`/`from`/`to`/`mode` 等），`before`/`after`
+/// 为撤销快照。返回日志 id。
+pub fn log_column_op(
+    db: &DbManager,
+    sheet_id: i64,
+    kind: &str,
+    column: &str,
+    payload: serde_json::Value,
+    before: Option<&str>,
+    after: &str,
+) -> Result<i64, String> {
+    let mut payload = payload;
+    if let Some(obj) = payload.as_object_mut() {
+        obj.insert("column".into(), json!(column));
+    }
+    db.log_operation_with_snapshot(Some(sheet_id), kind, &payload.to_string(), before, after)
+        .map_err(|e| e.to_string())
 }

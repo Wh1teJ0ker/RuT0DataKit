@@ -13,7 +13,8 @@ use std::collections::HashMap;
 
 use ruT0_data_kit_core::processor::rules::ExtractParams;
 use ruT0_data_kit_core::processor::validators::{
-    clean_birth, idcard_gender, is_valid_birth, validate_extracted, validate_extracted_with_params,
+    check_gender_consistency, clean_birth, is_valid_birth, validate_extracted,
+    validate_extracted_with_params,
 };
 
 use crate::commands::columns::ParseResult;
@@ -26,19 +27,6 @@ use crate::db::{Cell, DbManager};
 // ---------------------------------------------------------------------------
 // 提取 + 函数式校验 → 新 Tab（v1.1.3 T55）
 // ---------------------------------------------------------------------------
-
-/// 性别值归一化（T55c）。去空格 + 小写后匹配：
-/// - "男"/"male"/"m"/"1" → '男'
-/// - "女"/"female"/"f"/"2" → '女'
-/// - 其他 → None（不可识别，跳过比对）
-fn normalize_gender(s: &str) -> Option<char> {
-    let t = s.trim().to_lowercase();
-    match t.as_str() {
-        "男" | "male" | "m" | "1" => Some('男'),
-        "女" | "female" | "f" | "2" => Some('女'),
-        _ => None,
-    }
-}
 
 /// 提取 + 校验核心逻辑（接受 `&DbManager`，便于单测直接调用）。
 ///
@@ -191,16 +179,10 @@ pub fn extract_validate_to_new_sheet_inner(
                 validate_extracted(rule, candidate)
             };
             if is_idcard && valid {
-                if let Some(inferred) = idcard_gender(candidate) {
-                    if let Some(col_val) = gender_map.get(&row_idx) {
-                        if let Some(norm) = normalize_gender(col_val) {
-                            if norm != inferred {
-                                valid = false;
-                                note = format!(
-                                    "性别不一致: 身份证推断{inferred}，性别列{col_val}"
-                                );
-                            }
-                        }
+                if let Some(col_val) = gender_map.get(&row_idx) {
+                    if let Some(msg) = check_gender_consistency(candidate, col_val) {
+                        valid = false;
+                        note = msg;
                     }
                 }
             }
@@ -349,7 +331,7 @@ pub fn extract_validate_to_new_sheet(
 ///
 /// 身份证跨字段联合校验（仅当 idcard-validate 规则带 `crossField` 配置 +
 /// idcard 本身校验通过）：
-/// - 比对性别：[`normalize_gender`](Self::normalize_gender)(sex_col_val) vs [`idcard_gender`](ruT0_data_kit_core::processor::validators::idcard_gender)
+/// - 比对性别：[`check_gender_consistency`](ruT0_data_kit_core::processor::validators::check_gender_consistency)
 /// - 比对出生日期：`idcard_val[6..14] == birth_col_val`（且 birth 是 8 位数字）
 ///
 /// 整行分流：任一规则失败 → 整行入 invalid + 收集 [`RowInvalidReason`]；
@@ -483,17 +465,8 @@ pub fn validate_multi_rules_to_two_sheets_inner(
                             .cloned()
                             .flatten()
                             .unwrap_or_default();
-                        if let Some(norm) = normalize_gender(&sex_val) {
-                            if let Some(inferred) = idcard_gender(&idcard_val) {
-                                if norm != inferred {
-                                    row_invalid_reasons.push((
-                                        sex_col.clone(),
-                                        format!(
-                                            "性别不一致: 身份证推断{inferred}，性别列{sex_val}"
-                                        ),
-                                    ));
-                                }
-                            }
+                        if let Some(msg) = check_gender_consistency(&idcard_val, &sex_val) {
+                            row_invalid_reasons.push((sex_col.clone(), msg));
                         }
                     }
                 }
@@ -622,7 +595,7 @@ mod tests {
         CrossFieldConfig, MultiRuleValidation,
     };
     use crate::db::{Cell, DbManager};
-    use ruT0_data_kit_core::processor::rules::{ExtractParams, RuleRegistry};
+    use ruT0_data_kit_core::processor::rules::ExtractParams;
 
     /// 构造一个 tempdir + 空 DbManager。返回 TempDir 以保活（TempDir drop 会
     /// 删除目录与 db 文件，必须跨测试函数持有）。

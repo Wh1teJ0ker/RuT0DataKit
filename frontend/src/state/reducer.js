@@ -3,13 +3,14 @@
 // 注：initialState 仅由 AppContext.js 用于 useReducer 初始化；这里不引入
 // 以免无引用 import 报 ESLint no-unused-vars。本文件只导出 reducer / patchActiveSheet。
 import { ACTION } from "./constants";
+import { PAGE_SIZE } from "../constants";
 import {
   createEmptySheet,
   createSheetFromImport,
   createSheetFromParse,
   defaultSheetName,
 } from "./factory";
-import { toRowObjects } from "../tauri";
+import { toRowObjects } from "../utils/rows";
 
 export function patchActiveSheet(state, patch) {
   if (!state.activeSheetId) return state;
@@ -222,40 +223,6 @@ export function reducer(state, action) {
         ...state,
         searchState: { ...state.searchState, ...action.payload },
       };
-    case ACTION.APPLY_SEARCH_HITS: {
-      // payload = { sheetId, hits: Array<{ rowIdx, colIdx, value, matches: Array<{start, end}> }> }
-      // 把后端 rowIdx（DB 绝对行号，row_idx=0 是表头行，数据从 1 开始）转成当前页行 key：
-      //   pageBase = (sheet.page - 1) * sheet.pageSize
-      //   pageInnerIdx = rowIdx - 1 - pageBase（减 1 跳过表头行）
-      //   rowKey = `${sheetId}-${sheet.page}-${pageInnerIdx}`
-      // 越界（不在当前页 / 列号超长）跳过该 hit。
-      //
-      // v1.1.1 hotfix：每次先清空 searchHits（不再 spread 旧值），避免「第一次搜索的高亮
-      // 在第二次搜索后仍显示」的 stale highlight bug。
-      const { sheetId, hits } = action.payload;
-      return {
-        ...state,
-        sheets: state.sheets.map((s) => {
-          if (s.id !== sheetId) return s;
-          const pageBase = (s.page - 1) * s.pageSize;
-          const pageLen = Array.isArray(s.rows) ? s.rows.length : 0;
-          const searchHits = {}; // 先清空，再写入本次命中
-          for (const hit of hits || []) {
-            const pageInnerIdx = hit.rowIdx - 1 - pageBase;
-            if (pageInnerIdx < 0 || pageInnerIdx >= pageLen) continue; // 不在当前页
-            const colHeader = s.headers[hit.colIdx];
-            if (colHeader === undefined) continue; // 列号越界
-            const rowKey = `${sheetId}-${s.page}-${pageInnerIdx}`;
-            if (!searchHits[rowKey]) searchHits[rowKey] = {};
-            searchHits[rowKey][colHeader] = (hit.matches || []).map((m) => [
-              m.start,
-              m.end,
-            ]);
-          }
-          return { ...s, searchHits };
-        }),
-      };
-    }
     case ACTION.APPLY_SEARCH_ROWS: {
       // v1.1.1 hotfix 行级搜索：payload = { sheetId, rows: SearchRowsPage }
       //   rows: { rows: Array<{ rowIdx, cells: Array<Option<String>>, hits: Array<{colIdx, value, matches}> }>,
@@ -272,13 +239,13 @@ export function reducer(state, action) {
           const total = page?.total ?? 0;
           const pageNum = page?.page ?? 1;
           // 转 antd 行对象：key = `${sheetId}-${pageNum}-${i}`，i 为页内 0-based 下标。
-          const searchRows = list.map((r, i) => {
-            const obj = { key: `${sheetId}-${pageNum}-${i}` };
-            s.headers.forEach((h, ci) => {
-              obj[h] = r.cells?.[ci] ?? null;
-            });
-            return obj;
-          });
+          const searchRows = toRowObjects(
+            list.map((r) => r.cells || []),
+            s.headers,
+            sheetId,
+            pageNum,
+            s.pageSize || PAGE_SIZE
+          );
           // 同步 searchHits：行 key → colHeader → [[start, end], ...]
           const searchHits = {};
           list.forEach((r, i) => {

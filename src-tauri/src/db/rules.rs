@@ -20,10 +20,22 @@ use rusqlite::params;
 impl DbManager {
     // ---- Rule CRUD（v1.1.0）----
 
+    /// 检查某 id 的规则是否存在（用于 update_* 方法的命中判断）。
+    ///
+    /// 调用方已持有 `self.conn()` 的 guard，传入 `&Connection` 避免重复加锁死锁。
+    fn rule_exists(conn: &rusqlite::Connection, id: &str) -> Result<bool, DbError> {
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM rules WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
     /// upsert 一条规则（按 id 冲突覆盖）。
     /// `template` 列存 `TemplateParams` JSON（None → NULL）。
     pub fn upsert_rule(&self, rule: &Rule) -> Result<(), DbError> {
-        let conn = self.conn.lock().expect("db mutex poisoned");
+        let conn = self.conn();
         let template_json: Option<String> = rule
             .template
             .as_ref()
@@ -63,7 +75,7 @@ impl DbManager {
 
     /// 列出全部规则（按 name 升序，Unicode 码点排序）。
     pub fn list_rules(&self) -> Result<Vec<Rule>, DbError> {
-        let conn = self.conn.lock().expect("db mutex poisoned");
+        let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, name, kind, field, pattern, replacement, template, enabled, description, params
              FROM rules
@@ -79,7 +91,7 @@ impl DbManager {
 
     /// 按 id 查找规则。
     pub fn get_rule(&self, id: &str) -> Result<Option<Rule>, DbError> {
-        let conn = self.conn.lock().expect("db mutex poisoned");
+        let conn = self.conn();
         let rule = conn
             .query_row(
                 "SELECT id, name, kind, field, pattern, replacement, template, enabled, description, params
@@ -94,7 +106,7 @@ impl DbManager {
 
     /// 切换规则启用状态。不存在返回 `Ok(false)`。
     pub fn set_rule_enabled(&self, id: &str, enabled: bool) -> Result<bool, DbError> {
-        let conn = self.conn.lock().expect("db mutex poisoned");
+        let conn = self.conn();
         let affected = conn.execute(
             "UPDATE rules SET enabled = ?1 WHERE id = ?2",
             params![enabled as i64, id],
@@ -104,7 +116,7 @@ impl DbManager {
 
     /// 统计规则数。
     pub fn count_rules(&self) -> Result<i64, DbError> {
-        let conn = self.conn.lock().expect("db mutex poisoned");
+        let conn = self.conn();
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM rules", [], |r| r.get(0))?;
         Ok(count)
     }
@@ -117,7 +129,7 @@ impl DbManager {
         pattern: Option<&str>,
         replacement: Option<&str>,
     ) -> Result<bool, DbError> {
-        let conn = self.conn.lock().expect("db mutex poisoned");
+        let conn = self.conn();
         let mut touched = false;
         if let Some(p) = pattern {
             let n = conn.execute(
@@ -135,12 +147,7 @@ impl DbManager {
         }
         if !touched {
             // 无字段要更新 → 仅返回存在性。
-            let count: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM rules WHERE id = ?1",
-                params![id],
-                |r| r.get(0),
-            )?;
-            return Ok(count > 0);
+            return Self::rule_exists(&conn, id);
         }
         Ok(touched)
     }
@@ -154,7 +161,7 @@ impl DbManager {
         id: &str,
         template: Option<&TemplateParams>,
     ) -> Result<bool, DbError> {
-        let conn = self.conn.lock().expect("db mutex poisoned");
+        let conn = self.conn();
         let template_json: Option<String> =
             template.map(|t| serde_json::to_string(t).unwrap_or_default());
         let n = conn.execute(
@@ -165,12 +172,7 @@ impl DbManager {
             Ok(true)
         } else {
             // 未命中 → 仅返回存在性。
-            let count: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM rules WHERE id = ?1",
-                params![id],
-                |r| r.get(0),
-            )?;
-            Ok(count > 0)
+            Self::rule_exists(&conn, id)
         }
     }
 
@@ -188,7 +190,7 @@ impl DbManager {
         pattern: Option<&str>,
         params: Option<&ExtractParams>,
     ) -> Result<bool, DbError> {
-        let conn = self.conn.lock().expect("db mutex poisoned");
+        let conn = self.conn();
         let mut touched = false;
         if let Some(p) = pattern {
             let n = conn.execute(
@@ -208,12 +210,7 @@ impl DbManager {
         }
         if !touched {
             // 未命中 → 仅返回存在性。
-            let count: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM rules WHERE id = ?1",
-                params![id],
-                |r| r.get(0),
-            )?;
-            return Ok(count > 0);
+            return Self::rule_exists(&conn, id);
         }
         Ok(touched)
     }
@@ -267,7 +264,7 @@ impl DbManager {
     /// 本方法用 `WHERE pattern = ?` 精确匹配旧值后替换，不影响用户自定义的
     /// 其他正则（若用户已手动改过，不会被覆盖）。幂等：已是新正则则匹配 0 行。
     fn migrate_phone_extract_pattern(&self) -> Result<(), DbError> {
-        let conn = self.conn.lock().expect("db mutex poisoned");
+        let conn = self.conn();
         conn.execute(
             "UPDATE rules SET pattern = ?1 WHERE id = 'phone-extract' AND pattern = ?2",
             params![r"\b[1-9]\d{10}\b", r"\b1\d{10}\b"],
@@ -279,7 +276,7 @@ impl DbManager {
     /// （首位非零，排除前导零的无效身份证号）。与 `migrate_phone_extract_pattern`
     /// 同理：用 `WHERE pattern = ?` 精确匹配旧值，不影响用户自定义正则。幂等。
     fn migrate_idcard_extract_pattern(&self) -> Result<(), DbError> {
-        let conn = self.conn.lock().expect("db mutex poisoned");
+        let conn = self.conn();
         conn.execute(
             "UPDATE rules SET pattern = ?1 WHERE id = 'idcard-extract' AND pattern = ?2",
             params![r"\b[1-9]\d{16}[\dXx]\b", r"\b\d{17}[\dXx]\b"],
@@ -305,7 +302,7 @@ impl DbManager {
     /// 本方法在 `seed_builtin_rules` 末尾调用，从用户 DB 中删除这些遗留 id
     /// （幂等：id 不存在时 DELETE 影响 0 行，不报错）。
     fn cleanup_deprecated_rules(&self) -> Result<(), DbError> {
-        let conn = self.conn.lock().expect("db mutex poisoned");
+        let conn = self.conn();
         for id in &[
             "idcard-mask",
             "phone-mask",
@@ -329,7 +326,7 @@ mod tests {
     fn rule_crud_upsert_list_get() {
         let (_dir, mgr) = test_support::open();
         assert_eq!(mgr.count_rules().unwrap(), 0);
-        let r = BuiltinRules::name_validate_rule();
+        let r = BuiltinRules::get("name-validate").unwrap();
         mgr.upsert_rule(&r).unwrap();
         assert_eq!(mgr.count_rules().unwrap(), 1);
         // list
@@ -347,7 +344,7 @@ mod tests {
     #[test]
     fn rule_crud_upsert_overwrites_same_id() {
         let (_dir, mgr) = test_support::open();
-        let mut r = BuiltinRules::name_validate_rule();
+        let mut r = BuiltinRules::get("name-validate").unwrap();
         mgr.upsert_rule(&r).unwrap();
         // 修改 pattern 后再 upsert → 覆盖
         r.pattern = Some(r"^[\u4e00-\u9fa5]{2,8}$".into());
@@ -360,7 +357,7 @@ mod tests {
     #[test]
     fn rule_crud_toggle_enabled() {
         let (_dir, mgr) = test_support::open();
-        mgr.upsert_rule(&BuiltinRules::name_validate_rule())
+        mgr.upsert_rule(&BuiltinRules::get("name-validate").unwrap())
             .unwrap();
         assert!(mgr.get_rule("name-validate").unwrap().unwrap().enabled);
         assert!(mgr.set_rule_enabled("name-validate", false).unwrap());
@@ -371,7 +368,7 @@ mod tests {
     #[test]
     fn rule_crud_update_params() {
         let (_dir, mgr) = test_support::open();
-        mgr.upsert_rule(&BuiltinRules::name_validate_rule())
+        mgr.upsert_rule(&BuiltinRules::get("name-validate").unwrap())
             .unwrap();
         // 更新 pattern
         assert!(mgr
@@ -380,7 +377,7 @@ mod tests {
         let got = mgr.get_rule("name-validate").unwrap().unwrap();
         assert_eq!(got.pattern.as_deref(), Some(r"^[\u4e00-\u9fa5]{2,8}$"));
         // 更新 replacement（mask 规则）
-        mgr.upsert_rule(&BuiltinRules::name_mask_rule()).unwrap();
+        mgr.upsert_rule(&BuiltinRules::get("name-mask").unwrap()).unwrap();
         assert!(mgr
             .update_rule_params("name-mask", None, Some("***"))
             .unwrap());
@@ -433,10 +430,10 @@ mod tests {
         // idcard-extract），且已存在规则参数不丢。
         let (_dir, mgr) = test_support::open();
         // 模拟 v1.1.2 老 DB：只 seed 3 条 name 规则。
-        mgr.upsert_rule(&BuiltinRules::name_validate_rule())
+        mgr.upsert_rule(&BuiltinRules::get("name-validate").unwrap())
             .unwrap();
-        mgr.upsert_rule(&BuiltinRules::name_mask_rule()).unwrap();
-        mgr.upsert_rule(&BuiltinRules::name_extract_rule()).unwrap();
+        mgr.upsert_rule(&BuiltinRules::get("name-mask").unwrap()).unwrap();
+        mgr.upsert_rule(&BuiltinRules::get("name-extract").unwrap()).unwrap();
         assert_eq!(mgr.count_rules().unwrap(), 3);
         // 用户修改 name-validate pattern
         mgr.update_rule_params("name-validate", Some(r"^[\u4e00-\u9fa5]{2,8}$"), None)

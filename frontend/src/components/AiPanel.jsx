@@ -9,7 +9,7 @@ import {
 } from "@ant-design/icons";
 
 import { DEV_STATUS } from "../constants";
-import { useAppContext } from "../state";
+import { useAppContext, ACTION } from "../state";
 import { useBreakpoint } from "../hooks/useBreakpoint";
 
 const { Sider } = Layout;
@@ -18,16 +18,16 @@ const { Sider } = Layout;
 // 设置入口已迁移到 TopToolbar 右端（T40）。
 // v1.2.0：窄窗口（isCompact）时自动折叠，镜像 SidePanel 模式。
 export default function AiPanel() {
-  const { state, setAiPanelVisible, setAiPanelPinned } = useAppContext();
+  const { state, dispatch } = useAppContext();
   const { visible, pinned } = state.aiPanel;
   const { isCompact } = useBreakpoint();
 
   // 窄窗口自动折叠 AI 面板，避免挤占 Workbench（pinned 时跳过）。
   useEffect(() => {
     if (isCompact && visible && !pinned) {
-      setAiPanelVisible(false);
+      dispatch({ type: ACTION.SET_AI_PANEL_VISIBLE, payload: false });
     }
-  }, [isCompact, visible, pinned, setAiPanelVisible]);
+  }, [isCompact, visible, pinned, dispatch]);
   return (
     <Sider
       width={300}
@@ -53,7 +53,7 @@ export default function AiPanel() {
           <Button
             type="text"
             icon={<MenuUnfoldOutlined />}
-            onClick={() => setAiPanelVisible(true)}
+            onClick={() => dispatch({ type: ACTION.SET_AI_PANEL_VISIBLE, payload: true })}
             style={{ width: 48, height: 48 }}
           />
           <div style={{ flex: 1 }} />
@@ -85,14 +85,14 @@ export default function AiPanel() {
                   size="small"
                   icon={pinned ? <PushpinFilled /> : <PushpinOutlined />}
                   style={{ color: pinned ? "#1677ff" : undefined }}
-                  onClick={() => setAiPanelPinned(!pinned)}
+                  onClick={() => dispatch({ type: ACTION.SET_AI_PANEL_PINNED, payload: !pinned })}
                 />
               </Tooltip>
               <Button
                 type="text"
                 size="small"
                 icon={<MenuFoldOutlined />}
-                onClick={() => setAiPanelVisible(false)}
+                onClick={() => dispatch({ type: ACTION.SET_AI_PANEL_VISIBLE, payload: false })}
               />
             </div>
           </div>

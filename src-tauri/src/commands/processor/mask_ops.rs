@@ -9,7 +9,7 @@
 use ruT0_data_kit_core::processor::rules::{ExtractParams, TemplateParams};
 use ruT0_data_kit_core::processor::Masker;
 
-use crate::commands::processor::helpers::{validate_single, MaskResult};
+use crate::commands::processor::helpers::{log_column_op, validate_single, MaskResult};
 use crate::db::Cell;
 
 // ---------------------------------------------------------------------------
@@ -184,9 +184,8 @@ pub fn mask_column(
     // after 快照：脱敏后的 cells（仅被修改列）。
     let after_json = serde_json::to_string(&cells).map_err(|e| e.to_string())?;
     // T84：validate_rule_id 为 Some 时追加校验参数字段，便于撤销 / 重做 / 审计还原。
-    let params_json = if validate_rule_id.is_some() {
+    let payload = if validate_rule_id.is_some() {
         serde_json::json!({
-            "column": column,
             "ruleId": rule_id,
             "replacement": replacement,
             "template": template,
@@ -196,25 +195,23 @@ pub fn mask_column(
             "paramsOverride": params_override,
             "phonePrefixes": phone_prefixes
         })
-        .to_string()
     } else {
         serde_json::json!({
-            "column": column,
             "ruleId": rule_id,
             "replacement": replacement,
             "template": template,
             "affected": affected
         })
-        .to_string()
     };
-    db.log_operation_with_snapshot(
-        Some(sheet_id),
+    log_column_op(
+        &db,
+        sheet_id,
         "mask",
-        &params_json,
+        &column,
+        payload,
         Some(&before_json),
         &after_json,
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
 
     Ok(MaskResult { affected })
 }

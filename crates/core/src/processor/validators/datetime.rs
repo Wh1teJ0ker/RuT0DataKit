@@ -1,5 +1,29 @@
 //! 出生日期校验（清理分隔符 + 多格式支持）。
 
+use std::sync::OnceLock;
+
+use regex::Regex;
+
+/// 缓存的日期格式正则集，避免每次调用 `is_valid_birth_format` 都重新编译。
+struct BirthFormatRegexes {
+    yyyymmdd: Regex,
+    yyyy_mm_dd: Regex,
+    yyyy_sl_dd: Regex,
+    yyyy_dot_dd: Regex,
+}
+
+impl BirthFormatRegexes {
+    fn get() -> &'static Self {
+        static REGEXES: OnceLock<BirthFormatRegexes> = OnceLock::new();
+        REGEXES.get_or_init(|| BirthFormatRegexes {
+            yyyymmdd: Regex::new(r"^\d{8}$").unwrap(),
+            yyyy_mm_dd: Regex::new(r"^(\d{4})-(\d{2})-(\d{2})$").unwrap(),
+            yyyy_sl_dd: Regex::new(r"^(\d{4})/(\d{2})/(\d{2})$").unwrap(),
+            yyyy_dot_dd: Regex::new(r"^(\d{4})\.(\d{2})\.(\d{2})$").unwrap(),
+        })
+    }
+}
+
 /// 清理出生日期字符串：过滤掉所有非 ASCII 数字字符。
 ///
 /// 用于支持多种分隔符格式："2003-12-23" → "20031223"，
@@ -79,38 +103,31 @@ pub fn is_valid_birth(s: &str) -> bool {
 /// assert!(!is_valid_birth_format("20031323", "yyyymmdd")); // 月 13
 /// ```
 pub fn is_valid_birth_format(s: &str, format: &str) -> bool {
-    // 先按格式正则匹配提取 8 位 yyyymmdd，再复用 is_valid_birth 的日期校验
+    // 先按格式正则匹配提取 8 位 yyyymmdd，再复用 is_valid_birth 的日期校验。
+    // 正则缓存于 OnceLock，避免每次调用重新编译。
+    let re = BirthFormatRegexes::get();
     let digits: String = match format {
         "yyyymmdd" => {
-            if !regex::Regex::new(r"^\d{8}$").unwrap().is_match(s) {
+            if !re.yyyymmdd.is_match(s) {
                 return false;
             }
             s.to_string()
         }
-        "yyyy-mm-dd" => {
-            let re = regex::Regex::new(r"^(\d{4})-(\d{2})-(\d{2})$").unwrap();
-            match re.captures(s) {
-                Some(c) => format!("{}{}{}", &c[1], &c[2], &c[3]),
-                None => return false,
-            }
-        }
-        "yyyy/mm/dd" => {
-            let re = regex::Regex::new(r"^(\d{4})/(\d{2})/(\d{2})$").unwrap();
-            match re.captures(s) {
-                Some(c) => format!("{}{}{}", &c[1], &c[2], &c[3]),
-                None => return false,
-            }
-        }
-        "yyyy.mm.dd" => {
-            let re = regex::Regex::new(r"^(\d{4})\.(\d{2})\.(\d{2})$").unwrap();
-            match re.captures(s) {
-                Some(c) => format!("{}{}{}", &c[1], &c[2], &c[3]),
-                None => return false,
-            }
-        }
+        "yyyy-mm-dd" => match re.yyyy_mm_dd.captures(s) {
+            Some(c) => format!("{}{}{}", &c[1], &c[2], &c[3]),
+            None => return false,
+        },
+        "yyyy/mm/dd" => match re.yyyy_sl_dd.captures(s) {
+            Some(c) => format!("{}{}{}", &c[1], &c[2], &c[3]),
+            None => return false,
+        },
+        "yyyy.mm.dd" => match re.yyyy_dot_dd.captures(s) {
+            Some(c) => format!("{}{}{}", &c[1], &c[2], &c[3]),
+            None => return false,
+        },
         _ => return false,
     };
-    // 复用 is_valid_birth 的日期范围校验（clean_birth 会清理分隔符，这里 digits 已是纯数字）
+    // 复用 is_valid_birth 的日期范围校验（digits 已是纯数字）
     is_valid_birth(&digits)
 }
 

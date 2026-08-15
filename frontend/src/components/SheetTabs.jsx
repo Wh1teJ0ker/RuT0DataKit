@@ -1,7 +1,7 @@
 import { useState, useMemo } from "react";
 import { Tabs, Input } from "antd";
 import { PlusOutlined } from "@ant-design/icons";
-import { useAppContext } from "../state";
+import { useAppContext, ACTION } from "../state";
 
 // Sheet/Tab 多页组件。
 // - 新建：+ 按钮 → 产生新 Sheet（dispatch ADD_SHEET）
@@ -12,8 +12,7 @@ import { useAppContext } from "../state";
 // sheets / activeSheetId / dispatcher 经 useAppContext 取，消除 prop drilling。
 // 真实导入流由 importFile → getSheetData 填充（reducer SET_SHEET_DATA）。
 export default function SheetTabs() {
-  const { state, addSheet, setActiveSheet, closeSheet, renameSheet } =
-    useAppContext();
+  const { state, dispatch } = useAppContext();
   const { sheets, activeSheetId } = state;
 
   // 正在编辑的 Tab：{ id, value }
@@ -64,7 +63,7 @@ export default function SheetTabs() {
     const next = (value || "").trim();
     setEditing(null);
     if (next && next !== fallback) {
-      renameSheet({ id, name: next });
+      dispatch({ type: ACTION.RENAME_SHEET, payload: { id, name: next } });
     }
   }
 
@@ -73,10 +72,11 @@ export default function SheetTabs() {
       type="editable-card"
       activeKey={activeSheetId || undefined}
       items={items}
-      onChange={(key) => setActiveSheet(key)}
+      onChange={(key) => dispatch({ type: ACTION.SET_ACTIVE_SHEET, payload: key })}
       onEdit={(targetKey, action) => {
-        if (action === "add") addSheet();
-        else if (action === "remove") closeSheet(targetKey);
+        if (action === "add") dispatch({ type: ACTION.ADD_SHEET });
+        else if (action === "remove")
+          dispatch({ type: ACTION.CLOSE_SHEET, payload: targetKey });
       }}
       addIcon={
         <span>

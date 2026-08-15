@@ -15,6 +15,7 @@
 //! 在单元测试中直接调用。测试通过直接调用 `DbManager` 方法模拟命令内部流程，覆盖
 //! 关键字 / 正则 / 分页 / 非法正则 / 全表替换 / 快照写入 / 正则替换 / 行级搜索等场景。
 
+use crate::commands::processor::helpers::log_column_op;
 use serde::Serialize;
 
 // ---------------------------------------------------------------------------
@@ -201,20 +202,20 @@ pub fn replace_all(
     // 序列化 before/after 快照供撤销 / 重做。
     let before_json = serde_json::to_string(&before_cells).map_err(|e| e.to_string())?;
     let after_json = serde_json::to_string(&after_cells).map_err(|e| e.to_string())?;
-    db.log_operation_with_snapshot(
-        Some(sheet_id),
+    log_column_op(
+        &db,
+        sheet_id,
         "replace_all",
-        &serde_json::json!({
+        "(all)",
+        serde_json::json!({
             "from": from,
             "to": to,
             "useRegex": use_regex,
             "affected": affected
-        })
-        .to_string(),
+        }),
         Some(&before_json),
         &after_json,
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
     Ok(ReplaceResult { affected })
 }
 

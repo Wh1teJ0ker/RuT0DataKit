@@ -2,7 +2,7 @@
 //!
 //! T91 从 `db/mod.rs` 拆出；方法签名 / SQL / 测试逻辑保持不变。
 
-use super::{escape_like, Cell, DbManager, DbError, RegexSearchResult};
+use super::{escape_like, map_row_to_cell, Cell, DbManager, DbError, RegexSearchResult};
 use regex::Regex;
 use rusqlite::params;
 
@@ -23,7 +23,7 @@ impl DbManager {
         offset: u32,
         limit: u32,
     ) -> Result<Vec<Cell>, DbError> {
-        let conn = self.conn.lock().expect("db mutex poisoned");
+        let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT sheet_id, row_idx, col_idx, value FROM cells
              WHERE sheet_id = ?1 AND col_idx = ?2 AND row_idx > 0
@@ -32,14 +32,7 @@ impl DbManager {
         )?;
         let rows = stmt.query_map(
             params![sheet_id, col_idx as i64, limit as i64, offset as i64],
-            |r| {
-                Ok(Cell {
-                    sheet_id: r.get::<_, i64>(0)?,
-                    row_idx: r.get::<_, i64>(1)? as u32,
-                    col_idx: r.get::<_, i64>(2)? as u32,
-                    value: r.get::<_, Option<String>>(3)?,
-                })
-            },
+            map_row_to_cell,
         )?;
         let mut out = Vec::new();
         for row in rows {
@@ -61,15 +54,7 @@ impl DbManager {
         limit: u32,
     ) -> Result<Vec<Cell>, DbError> {
         let pattern = format!("%{}%", escape_like(keyword));
-        let conn = self.conn.lock().expect("db mutex poisoned");
-        let map_cell = |r: &rusqlite::Row<'_>| -> rusqlite::Result<Cell> {
-            Ok(Cell {
-                sheet_id: r.get::<_, i64>(0)?,
-                row_idx: r.get::<_, i64>(1)? as u32,
-                col_idx: r.get::<_, i64>(2)? as u32,
-                value: r.get::<_, Option<String>>(3)?,
-            })
-        };
+        let conn = self.conn();
         let mut out = Vec::new();
         if let Some(c) = col_idx {
             // col_idx 限定列搜索。SQL 固定，仅参数绑定。
@@ -82,7 +67,7 @@ impl DbManager {
             )?;
             let rows = stmt.query_map(
                 params![sheet_id, c as i64, pattern, limit as i64, offset as i64],
-                map_cell,
+                map_row_to_cell,
             )?;
             for row in rows {
                 out.push(row?);
@@ -98,7 +83,7 @@ impl DbManager {
             )?;
             let rows = stmt.query_map(
                 params![sheet_id, pattern, limit as i64, offset as i64],
-                map_cell,
+                map_row_to_cell,
             )?;
             for row in rows {
                 out.push(row?);
@@ -127,15 +112,7 @@ impl DbManager {
         // 而是用 `%` 匹配所有非空 value 行，再由 Rust regex 精确过滤。
         // 这样保证不漏；命中量受 sheet 数据量限制，由 regex 二次精确匹配。
         let like_pattern = "%".to_string();
-        let conn = self.conn.lock().expect("db mutex poisoned");
-        let map_cell = |r: &rusqlite::Row<'_>| -> rusqlite::Result<Cell> {
-            Ok(Cell {
-                sheet_id: r.get::<_, i64>(0)?,
-                row_idx: r.get::<_, i64>(1)? as u32,
-                col_idx: r.get::<_, i64>(2)? as u32,
-                value: r.get::<_, Option<String>>(3)?,
-            })
-        };
+        let conn = self.conn();
         let mut out: RegexSearchResult = Vec::new();
         if let Some(c) = col_idx {
             let mut stmt = conn.prepare(
@@ -144,7 +121,7 @@ impl DbManager {
                    AND value LIKE ?3 ESCAPE '\\'
                  ORDER BY row_idx ASC, col_idx ASC",
             )?;
-            let rows = stmt.query_map(params![sheet_id, c as i64, like_pattern], map_cell)?;
+            let rows = stmt.query_map(params![sheet_id, c as i64, like_pattern], map_row_to_cell)?;
             for row in rows {
                 let cell = row?;
                 if let Some(ref val) = cell.value {
@@ -162,7 +139,7 @@ impl DbManager {
                    AND value LIKE ?2 ESCAPE '\\'
                  ORDER BY row_idx ASC, col_idx ASC",
             )?;
-            let rows = stmt.query_map(params![sheet_id, like_pattern], map_cell)?;
+            let rows = stmt.query_map(params![sheet_id, like_pattern], map_row_to_cell)?;
             for row in rows {
                 let cell = row?;
                 if let Some(ref val) = cell.value {
@@ -189,7 +166,7 @@ impl DbManager {
         keyword: &str,
     ) -> Result<u32, DbError> {
         let pattern = format!("%{}%", escape_like(keyword));
-        let conn = self.conn.lock().expect("db mutex poisoned");
+        let conn = self.conn();
         let count: i64 = if let Some(c) = col_idx {
             conn.query_row(
                 "SELECT COUNT(*) FROM cells
@@ -225,7 +202,7 @@ impl DbManager {
         limit: u32,
     ) -> Result<Vec<u32>, DbError> {
         let pattern = format!("%{}%", escape_like(keyword));
-        let conn = self.conn.lock().expect("db mutex poisoned");
+        let conn = self.conn();
         let mut out = Vec::new();
         if let Some(c) = col_idx {
             let mut stmt = conn.prepare(
@@ -270,7 +247,7 @@ impl DbManager {
         keyword: &str,
     ) -> Result<u32, DbError> {
         let pattern = format!("%{}%", escape_like(keyword));
-        let conn = self.conn.lock().expect("db mutex poisoned");
+        let conn = self.conn();
         let count: i64 = if let Some(c) = col_idx {
             conn.query_row(
                 "SELECT COUNT(DISTINCT row_idx) FROM cells
@@ -362,7 +339,7 @@ impl DbManager {
     ) -> Result<Vec<u32>, DbError> {
         let re = Regex::new(pattern)
             .map_err(|e| DbError::Migration(format!("invalid regex `{}`: {}", pattern, e)))?;
-        let conn = self.conn.lock().expect("db mutex poisoned");
+        let conn = self.conn();
         let like_pattern = "%".to_string();
         let map_row = |r: &rusqlite::Row<'_>| -> rusqlite::Result<(u32, Option<String>)> {
             Ok((r.get::<_, i64>(0)? as u32, r.get::<_, Option<String>>(1)?))
@@ -407,7 +384,6 @@ impl DbManager {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::db::test_support;
 
     #[test]

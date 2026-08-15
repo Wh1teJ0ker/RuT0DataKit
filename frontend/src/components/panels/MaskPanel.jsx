@@ -1,15 +1,16 @@
 import { useEffect, useState } from "react";
 import { Button, Checkbox, Empty, Form, Input, Select, Space, message } from "antd";
-import { useAppContext } from "../../state";
+import { useAppContext, ACTION } from "../../state";
 import {
   maskColumn,
-  getSheetData,
-  listUndoableOperations,
   updateRuleParams,
   updateRuleTemplate,
 } from "../../tauri";
-import { PAGE_SIZE } from "../../constants";
+import { INVALID_TEXT } from "../../constants";
 import { useRules } from "../../hooks/useRules";
+import { useSheetOps } from "../../hooks/useSheetOps";
+import { useActiveSheet } from "../../hooks/useActiveSheet";
+import { normalizePhonePrefixes } from "../../utils/phonePrefix";
 import ColumnSelect from "../shared/ColumnSelect";
 import PhonePrefixSelect from "../shared/PhonePrefixSelect";
 import TemplateEditor from "../shared/TemplateEditor";
@@ -42,7 +43,9 @@ import {
 //     ColumnSelect / PhonePrefixSelect 替代重复 Select。脱敏刷新逻辑保留内联
 //     （需要 data.rows 做 applyRowStatuses，与通用 refreshActiveSheet 模式不同）。
 export default function MaskPanel() {
-  const { state, dispatch, applyRowStatuses } = useAppContext();
+  const { dispatch } = useAppContext();
+  const { sheet, headers } = useActiveSheet();
+  const { refreshActiveSheet } = useSheetOps(dispatch);
   const { rules: maskRules } = useRules("mask");
   const { rules: validateRules } = useRules("validate");
   const [form] = Form.useForm();
@@ -59,12 +62,10 @@ export default function MaskPanel() {
   // 未通过行写为 invalidText 占位（默认 "INVALID"）。
   const [validateEnabled, setValidateEnabled] = useState(false);
   const [validateRuleId, setValidateRuleId] = useState(null);
-  const [invalidText, setInvalidText] = useState("INVALID");
+  const [invalidText, setInvalidText] = useState(INVALID_TEXT);
   // phone-validate 行级前缀白名单（与 ValidatePanel 模式一致，tags 模式输入）。
   const [phonePrefixesInput, setPhonePrefixesInput] = useState([]);
 
-  const sheet = state.sheets.find((s) => s.id === state.activeSheetId);
-  const headers = sheet?.headers || [];
   const isSimpleMask = maskRuleId === "simple-mask";
   const isSegmentMask = maskRuleId === "segment-mask";
   const isTemplateMask = isSimpleMask || isSegmentMask;
@@ -135,9 +136,7 @@ export default function MaskPanel() {
       const vInvalidText = validateEnabled ? invalidText : null;
       const vPhonePrefixes =
         validateEnabled && vRuleId === "phone-validate"
-          ? (phonePrefixesInput || [])
-              .map((p) => String(p).trim())
-              .filter((p) => /^\d{3}$/.test(p))
+          ? normalizePhonePrefixes(phonePrefixesInput || [])
           : null;
       // paramsOverride 目前仅 generic-validate 等可后续扩展；本面板不暴露行级参数，
       // 透传 null（后端沿用 DB 规则默认 params）。
@@ -173,24 +172,8 @@ export default function MaskPanel() {
         );
       }
       const page = sheet.page || 1;
-      const data = await getSheetData(sheet.id, page, sheet.pageSize || PAGE_SIZE);
-      dispatch({
-        type: "SET_SHEET_DATA",
-        payload: { ...data, sheetId: sheet.id },
-      });
-      const rowStatuses = {};
-      (data.rows || []).forEach((_, i) => {
-        rowStatuses[`${sheet.id}-${page}-${i}`] = "masked";
-      });
-      applyRowStatuses({ sheetId: sheet.id, rowStatuses });
-      // 刷新撤销栈（脱敏是可撤销操作，不刷新会导致撤销/重做按钮失效）
-      try {
-        const ops = await listUndoableOperations(sheet.id);
-        dispatch({ type: "SET_UNDO_STACK", payload: ops });
-      } catch (e) {
-        // eslint-disable-next-line no-console
-        console.error("listUndoableOperations refresh failed:", e);
-      }
+      // 刷新当前页数据 + 行状态（masked）+ 撤销栈（useSheetOps 统一封装）
+      await refreshActiveSheet(sheet, "masked");
       message.success(`脱敏完成：${res.affected ?? 0} 行`);
     } catch (e) {
       // eslint-disable-next-line no-console
@@ -241,7 +224,7 @@ export default function MaskPanel() {
     }
     // v1.1.5 T85：同时重置先校验再脱敏开关与参数。
     setValidateEnabled(false);
-    setInvalidText("INVALID");
+    setInvalidText(INVALID_TEXT);
     setPhonePrefixesInput([]);
     if (validateRules.length > 0) {
       setValidateRuleId(validateRules[0].id);

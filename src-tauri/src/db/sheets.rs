@@ -21,7 +21,7 @@ impl DbManager {
         source_type: &str,
         row_count: u32,
     ) -> Result<i64, DbError> {
-        let conn = self.conn.lock().expect("db mutex poisoned");
+        let conn = self.conn();
         let now = now_rfc3339();
         conn.execute(
             "INSERT INTO sessions (name, source_path, source_type, row_count, created_at, updated_at)
@@ -33,7 +33,7 @@ impl DbManager {
 
     /// 创建 sheet，返回 `id`。
     pub fn create_sheet(&self, session_id: i64, name: &str, position: i32) -> Result<i64, DbError> {
-        let conn = self.conn.lock().expect("db mutex poisoned");
+        let conn = self.conn();
         let now = now_rfc3339();
         conn.execute(
             "INSERT INTO sheets (session_id, name, position, created_at)
@@ -45,7 +45,7 @@ impl DbManager {
 
     /// 列出全部会话摘要（按 `created_at` 降序）。
     pub fn list_sessions(&self) -> Result<Vec<SessionSummary>, DbError> {
-        let conn = self.conn.lock().expect("db mutex poisoned");
+        let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, name, source_type, row_count, created_at
              FROM sessions
@@ -69,7 +69,7 @@ impl DbManager {
 
     /// 取会话详情：摘要 + 关联 sheets（按 `position` 升序）。
     pub fn get_session(&self, session_id: i64) -> Result<SessionDetail, DbError> {
-        let conn = self.conn.lock().expect("db mutex poisoned");
+        let conn = self.conn();
         let session = conn.query_row(
             "SELECT id, name, source_type, row_count, created_at
              FROM sessions
@@ -110,7 +110,6 @@ impl DbManager {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::db::test_support;
 
     #[test]

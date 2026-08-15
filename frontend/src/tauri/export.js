@@ -1,6 +1,7 @@
 import { save } from "@tauri-apps/plugin-dialog";
 import { PAGE_SIZE } from "../constants";
 import { getSheetData } from "./sheet";
+import { toRowObjects } from "../utils/rows";
 
 /**
  * 公共文件保存：优先 Tauri save 对话框 + writeTextFile；回退浏览器 Blob 下载。
@@ -40,26 +41,9 @@ export async function saveTextFile(filename, content, mimeType, filters) {
 
 /**
  * 把后端 PageData.rows（`Array<Array<string|null>>`）转成 antd 行对象。
- * 与 state/reducer.js 的 SET_SHEET_DATA 构造一致：{ key, [header]: value|null, status }。
- * 抽成纯函数供 reducer 与导出共用，避免重复实现。
- * @param {Array<Array<string|null>>} rawRows  后端 PageData.rows
- * @param {string[]} headers  字段名顺序
- * @param {number} sheetId  用于生成稳定 key
- * @param {number} [page=1]  当前页码（仅用于 key 区分）
- * @param {number} [pageSize=PAGE_SIZE]  每页行数（v1.1.2：用于 _rowIdx 全局行号计算）
- * @returns {Array<object>} antd 行对象数组
+ * 实现已移至 `utils/rows.js`，此处从 utils re-export 保持 `import { toRowObjects } from "../tauri"` 路径不变。
  */
-export function toRowObjects(rawRows, headers, sheetId, page = 1, pageSize = PAGE_SIZE) {
-  const base = (page - 1) * pageSize;
-  return rawRows.map((row, i) => {
-    const obj = { key: `${sheetId}-${page}-${i}`, _rowIdx: base + i + 1 };
-    headers.forEach((h, col) => {
-      obj[h] = row[col] ?? null;
-    });
-    obj.status = "default";
-    return obj;
-  });
-}
+export { toRowObjects } from "../utils/rows";
 
 /**
  * 导出前一次性拉取 Sheet 全表数据（不依赖当前页 sheet.rows）。

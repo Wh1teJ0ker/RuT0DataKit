@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use sha1::Sha1;
 use sha2::Sha256;
 
+use crate::commands::processor::helpers::log_column_op;
 use crate::db::{Cell, DbManager};
 
 // ---------------------------------------------------------------------------
@@ -246,21 +247,20 @@ pub fn replace_in_column_inner(
     let before_json = serde_json::to_string(&before_cells).map_err(|e| e.to_string())?;
     let after_json = serde_json::to_string(&after_cells).map_err(|e| e.to_string())?;
 
-    db.log_operation_with_snapshot(
-        Some(sheet_id),
+    log_column_op(
+        db,
+        sheet_id,
         "replace_in_column",
-        &serde_json::json!({
-            "column": column,
+        column,
+        serde_json::json!({
             "from": from,
             "to": to,
             "useRegex": use_regex,
             "affected": affected
-        })
-        .to_string(),
+        }),
         Some(&before_json),
         &after_json,
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
 
     Ok(ReplaceResult { affected })
 }
@@ -321,23 +321,22 @@ pub fn base64_column_inner(
     let before_json = serde_json::to_string(&before_cells).map_err(|e| e.to_string())?;
     let after_json = serde_json::to_string(&after_cells).map_err(|e| e.to_string())?;
 
-    db.log_operation_with_snapshot(
-        Some(sheet_id),
+    log_column_op(
+        db,
+        sheet_id,
         "base64_column",
-        &serde_json::json!({
-            "column": column,
+        column,
+        serde_json::json!({
             "mode": match mode {
                 Base64Mode::Encode => "encode",
                 Base64Mode::Decode => "decode",
             },
             "affected": affected,
             "skipped": skipped
-        })
-        .to_string(),
+        }),
         Some(&before_json),
         &after_json,
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
 
     Ok(Base64Result { affected, skipped })
 }
@@ -446,11 +445,12 @@ pub fn hash_column_inner(
     let before_json = serde_json::to_string(&before_cells).map_err(|e| e.to_string())?;
     let after_json = serde_json::to_string(&after_cells).map_err(|e| e.to_string())?;
 
-    db.log_operation_with_snapshot(
-        Some(sheet_id),
+    log_column_op(
+        db,
+        sheet_id,
         "hash_column",
-        &serde_json::json!({
-            "column": column,
+        column,
+        serde_json::json!({
             "algorithm": match algorithm {
                 HashAlgorithm::MD5 => "md5",
                 HashAlgorithm::SHA1 => "sha1",
@@ -459,12 +459,10 @@ pub fn hash_column_inner(
             "case": case,
             "affected": affected,
             "skipped": skipped
-        })
-        .to_string(),
+        }),
         Some(&before_json),
         &after_json,
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
 
     Ok(HashResult { affected, skipped })
 }
@@ -517,23 +515,22 @@ pub fn transform_column_inner(
     let before_json = serde_json::to_string(&before_cells).map_err(|e| e.to_string())?;
     let after_json = serde_json::to_string(&after_cells).map_err(|e| e.to_string())?;
 
-    db.log_operation_with_snapshot(
-        Some(sheet_id),
+    log_column_op(
+        db,
+        sheet_id,
         "transform_column",
-        &serde_json::json!({
-            "column": column,
+        column,
+        serde_json::json!({
             "op": match op {
                 TransformOp::Uppercase => "uppercase",
                 TransformOp::Lowercase => "lowercase",
             },
             "affected": affected,
             "skipped": skipped,
-        })
-        .to_string(),
+        }),
         Some(&before_json),
         &after_json,
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
 
     Ok(Base64Result { affected, skipped })
 }

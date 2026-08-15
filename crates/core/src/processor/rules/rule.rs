@@ -87,7 +87,7 @@ pub struct Rule {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::template::{SegmentMask, SegmentTemplate, SimpleTemplate, TemplateParams};
+    use super::super::template::{SegmentTemplate, SimpleTemplate, TemplateParams};
     use super::super::extract_params::ExtractParams;
 
     /// 测试辅助：断言模板是 Simple 变体并返回内部 `&SimpleTemplate`。

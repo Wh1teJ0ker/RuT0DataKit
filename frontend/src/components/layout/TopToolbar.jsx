@@ -13,7 +13,8 @@ import {
 } from "@ant-design/icons";
 import { open } from "@tauri-apps/plugin-dialog";
 import { importFile } from "../../tauri";
-import { useAppContext } from "../../state";
+import { useAppContext, ACTION } from "../../state";
+import { useActiveSheet } from "../../hooks/useActiveSheet";
 import { useBreakpoint } from "../../hooks/useBreakpoint";
 import ExportModal from "../ExportModal";
 
@@ -29,12 +30,10 @@ const CAPABILITIES = [
 ];
 
 export default function TopToolbar({ onImport }) {
-  const { state, setActiveCapability, setView } = useAppContext();
+  const { state, dispatch } = useAppContext();
   const { activeCapability } = state;
   const { isCompact } = useBreakpoint();
-  const activeSheet = state.sheets.find(
-    (s) => s.id === state.activeSheetId
-  );
+  const { sheet: activeSheet } = useActiveSheet();
 
   const [importing, setImporting] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
@@ -131,7 +130,7 @@ export default function TopToolbar({ onImport }) {
             key={cap.id}
             icon={cap.icon}
             type={activeCapability === cap.id ? "primary" : "default"}
-            onClick={() => setActiveCapability(cap.id)}
+            onClick={() => dispatch({ type: ACTION.SET_ACTIVE_CAPABILITY, payload: cap.id })}
           >
             {!isCompact && cap.label}
           </Button>
@@ -143,7 +142,7 @@ export default function TopToolbar({ onImport }) {
       <Button
         type="text"
         icon={<SettingOutlined />}
-        onClick={() => setView("settings")}
+        onClick={() => dispatch({ type: ACTION.SET_VIEW, payload: "settings" })}
       />
 
       <ExportModal

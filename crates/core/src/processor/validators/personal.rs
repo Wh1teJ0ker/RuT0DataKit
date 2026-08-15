@@ -1,5 +1,7 @@
 //! 个人信息校验：手机号 / 用户名 / 性别。
 
+use crate::processor::validators::idcard::idcard_gender;
+
 /// 手机号前缀白名单校验。
 ///
 /// - `allowed` 空 → 不过滤前缀（任何开头都接受）。
@@ -78,6 +80,42 @@ pub fn is_valid_username(s: &str) -> bool {
 /// ```
 pub fn is_valid_sex(s: &str) -> bool {
     matches!(s.trim(), "男" | "女")
+}
+
+/// 性别值归一化（跨字段联合校验用）。
+///
+/// 去空格 + 小写后匹配：
+/// - `"男"` / `"male"` / `"m"` / `"1"` → `Some('男')`
+/// - `"女"` / `"female"` / `"f"` / `"2"` → `Some('女')`
+/// - 其他 → `None`（不可识别，跳过比对）
+///
+/// 与 [`is_valid_sex`] 的区别：`is_valid_sex` 对原值严格匹配「男」/「女」
+/// （行级校验），`normalize_gender` 接受别名并归一化（跨字段比对）。
+pub fn normalize_gender(s: &str) -> Option<char> {
+    let t = s.trim().to_lowercase();
+    match t.as_str() {
+        "男" | "male" | "m" | "1" => Some('男'),
+        "女" | "female" | "f" | "2" => Some('女'),
+        _ => None,
+    }
+}
+
+/// 校验身份证推断性别与性别列值是否一致（跨字段联合校验）。
+///
+/// - 身份证号无效或无法推断性别 → `None`（跳过比对）。
+/// - 性别列值无法归一化 → `None`（跳过比对）。
+/// - 两者均可推断但不一致 → `Some(不一致说明)`。
+/// - 一致 → `None`（无说明）。
+pub fn check_gender_consistency(idcard_val: &str, sex_col_val: &str) -> Option<String> {
+    let inferred = idcard_gender(idcard_val)?;
+    let norm = normalize_gender(sex_col_val)?;
+    if norm != inferred {
+        Some(format!(
+            "性别不一致: 身份证推断{inferred}，性别列{sex_col_val}"
+        ))
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]

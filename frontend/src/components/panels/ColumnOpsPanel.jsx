@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { Button, Divider, Form, Select, Typography, message } from "antd";
-import { useAppContext } from "../../state";
+import { useAppContext, ACTION } from "../../state";
 import { parseColumnAsJson, transformColumn } from "../../tauri";
 import { useSheetOps } from "../../hooks/useSheetOps";
+import { useActiveSheet } from "../../hooks/useActiveSheet";
 import ColumnSelect from "../shared/ColumnSelect";
 
 const { Title } = Typography;
@@ -13,15 +14,9 @@ const { Title } = Typography;
 // v1.1.5 T86 新增：列变换（大小写归一化）。
 // v1.2.0 T94：op-then-refresh 样板收敛到 useSheetOps，列 Select 收敛到 ColumnSelect。
 export default function ColumnOpsPanel() {
-  const { state, dispatch, addSheetFromParse } = useAppContext();
-  const { refreshActiveSheet, landNewSheet } = useSheetOps(dispatch, addSheetFromParse);
-  const [parseForm] = Form.useForm();
-  const [transformForm] = Form.useForm();
-  const [parsing, setParsing] = useState(false);
-  const [transforming, setTransforming] = useState(false);
-
-  const sheet = state.sheets.find((s) => s.id === state.activeSheetId);
-  const headers = sheet?.headers || [];
+  const { dispatch } = useAppContext();
+  const { refreshActiveSheet, landNewSheet } = useSheetOps(dispatch);
+  const { sheet, headers } = useActiveSheet();
 
   async function handleParse() {
     if (!sheet) {

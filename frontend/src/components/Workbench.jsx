@@ -3,7 +3,7 @@ import { Button, Empty, Layout, Space, message } from "antd";
 import { UndoOutlined, RedoOutlined } from "@ant-design/icons";
 import SheetTabs from "./SheetTabs";
 import DataTable from "./DataTable";
-import { useAppContext } from "../state";
+import { useAppContext, ACTION } from "../state";
 import {
   getSheetData,
   listUndoableOperations,
@@ -23,7 +23,7 @@ const { Content } = Layout;
 // v1.1.1：撤销/重做工具条；undoStack 由 useEffect 监听 activeSheetId 加载，
 // redoStack 在前端本地维护（T33 未提供 listRedoableOperations）。
 export default function Workbench({ setPage }) {
-  const { state, dispatch, setUndoStack } = useAppContext();
+  const { state, dispatch } = useAppContext();
   const { sheets, activeSheetId, undoStack } = state;
   const [redoStack, setRedoStack] = useState([]);
 
@@ -33,7 +33,7 @@ export default function Workbench({ setPage }) {
   // 监听 activeSheetId 变化加载 undoStack
   useEffect(() => {
     if (!activeSheetId) {
-      setUndoStack([]);
+      dispatch({ type: ACTION.SET_UNDO_STACK, payload: [] });
       setRedoStack([]);
       return;
     }
@@ -41,7 +41,7 @@ export default function Workbench({ setPage }) {
     listUndoableOperations(activeSheetId)
       .then((ops) => {
         if (!alive) return;
-        setUndoStack(ops || []);
+        dispatch({ type: ACTION.SET_UNDO_STACK, payload: ops || [] });
         // 切换 Sheet 时重置 redoStack（redo opId 仅在源 Sheet 有效）
         setRedoStack([]);
       })
@@ -52,7 +52,7 @@ export default function Workbench({ setPage }) {
     return () => {
       alive = false;
     };
-  }, [activeSheetId, setUndoStack]);
+  }, [activeSheetId, dispatch]);
 
   // 刷新当前页 + 刷新 undoStack（undo/redo 完成后调用）
   async function refreshSheetAndUndo() {
@@ -64,12 +64,12 @@ export default function Workbench({ setPage }) {
       activeSheet.pageSize || PAGE_SIZE
     );
     dispatch({
-      type: "SET_SHEET_DATA",
+      type: ACTION.SET_SHEET_DATA,
       payload: { ...data, sheetId: activeSheet.id },
     });
     try {
       const ops = await listUndoableOperations(activeSheet.id);
-      setUndoStack(ops || []);
+      dispatch({ type: ACTION.SET_UNDO_STACK, payload: ops || [] });
     } catch (e) {
       // eslint-disable-next-line no-console
       console.error("list_undoable_operations refresh failed:", e);

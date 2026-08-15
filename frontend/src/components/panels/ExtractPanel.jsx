@@ -1,9 +1,12 @@
 import { useMemo, useState } from "react";
 import { Button, Form, Select, Space, message } from "antd";
-import { useAppContext } from "../../state";
+import { useAppContext, ACTION } from "../../state";
+import { CELL_SIZE_LIMIT } from "../../constants";
 import { extractValidateToNewSheet } from "../../tauri";
 import { useRules } from "../../hooks/useRules";
 import { useSheetOps } from "../../hooks/useSheetOps";
+import { useActiveSheet } from "../../hooks/useActiveSheet";
+import { normalizePhonePrefixes } from "../../utils/phonePrefix";
 import ColumnSelect from "../shared/ColumnSelect";
 import PhonePrefixSelect from "../shared/PhonePrefixSelect";
 
@@ -19,15 +22,14 @@ import PhonePrefixSelect from "../shared/PhonePrefixSelect";
 // v1.2.0 T94：useRules 替代内联 listRules useEffect，landNewSheet 替代手动
 // getSheetData + dispatch，ColumnSelect / PhonePrefixSelect 替代重复 Select。
 export default function ExtractPanel() {
-  const { state, applyRowStatuses, dispatch, addSheetFromParse } = useAppContext();
+  const { dispatch } = useAppContext();
   const { rules } = useRules("extract", { patternOnly: true });
-  const { landNewSheet } = useSheetOps(dispatch, addSheetFromParse);
+  const { landNewSheet } = useSheetOps(dispatch);
+  const { sheet, headers } = useActiveSheet();
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
   const [extracting, setExtracting] = useState(false);
 
-  const sheet = state.sheets.find((s) => s.id === state.activeSheetId);
-  const headers = sheet?.headers || [];
   const rows = sheet?.rows || [];
 
   const ruleById = useMemo(
@@ -68,14 +70,13 @@ export default function ExtractPanel() {
       const flatHits = [];
       // 超大单元格防护：超过阈值的单元格跳过主线程同步正则，
       // 提示用户改用「提取并校验到新 Tab」（后端 Rust re.find_iter，不冻结前端）。
-      const EXTRACT_INPUT_LIMIT = 50000;
       let skippedLargeCells = 0;
       rows.forEach((r, i) => {
         const value = r[column];
         if (value == null || value === "") return;
         const input = String(value);
         // 大单元格防护：跳过主线程同步正则，避免冻结前端
-        if (input.length > EXTRACT_INPUT_LIMIT) {
+        if (input.length > CELL_SIZE_LIMIT) {
           skippedLargeCells += 1;
           return;
         }
@@ -109,7 +110,7 @@ export default function ExtractPanel() {
         rowStatuses[h.rowKey] = "hit";
       });
       if (Object.keys(rowStatuses).length > 0) {
-        applyRowStatuses({ sheetId: sheet.id, rowStatuses });
+        dispatch({ type: ACTION.APPLY_ROW_STATUSES, payload: { sheetId: sheet.id, rowStatuses } });
       }
       if (skippedLargeCells > 0) {
         message.warning(
@@ -152,9 +153,7 @@ export default function ExtractPanel() {
       : null;
     // T78：手机号前缀白名单仅在含 phone-extract 时使用。只保留三位纯数字。
     const phonePrefixes = isPhoneExtract
-      ? (form.getFieldValue("phonePrefixes") || []).filter((p) =>
-          /^\d{3}$/.test(String(p).trim())
-        )
+      ? normalizePhonePrefixes(form.getFieldValue("phonePrefixes") || [])
       : [];
     setExtracting(true);
     try {

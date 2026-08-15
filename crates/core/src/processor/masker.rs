@@ -280,14 +280,14 @@ mod tests {
 
     /// 构造 simple-mask 规则 + 指定模板（T54：整段脱敏规则持 Simple 模板）。
     fn simple_mask_with_template(tpl: TemplateParams) -> Rule {
-        let mut r = BuiltinRules::simple_mask_rule();
+        let mut r = BuiltinRules::get("simple-mask").unwrap();
         r.template = Some(tpl);
         r
     }
 
     /// 构造 segment-mask 规则 + 指定模板（T54：分段脱敏规则持 Segment 模板）。
     fn segment_mask_with_template(tpl: TemplateParams) -> Rule {
-        let mut r = BuiltinRules::segment_mask_rule();
+        let mut r = BuiltinRules::get("segment-mask").unwrap();
         r.template = Some(tpl);
         r
     }
@@ -389,7 +389,7 @@ mod tests {
     fn name_mask_rule_keeps_surname() {
         // 姓名脱敏：≥3 字符保留首尾，中间 * 替换；2 字符保留首字符末位 *。
         let m = SimpleMasker;
-        let rule = crate::processor::rules::BuiltinRules::name_mask_rule();
+        let rule = crate::processor::rules::BuiltinRules::get("name-mask").unwrap();
         assert_eq!(m.mask("张三", Some(&rule)).unwrap().output, "张*");
         assert_eq!(m.mask("张三丰", Some(&rule)).unwrap().output, "张*丰");
         assert_eq!(m.mask("欧阳修", Some(&rule)).unwrap().output, "欧*修");
@@ -404,7 +404,7 @@ mod tests {
     fn template_empty_passthrough() {
         // T49：simple-mask 持空 Simple 模板 → 不脱敏（透传）。
         let m = SimpleMasker;
-        let rule = BuiltinRules::simple_mask_rule();
+        let rule = BuiltinRules::get("simple-mask").unwrap();
         assert_eq!(
             m.mask("110101199001011234", Some(&rule)).unwrap().output,
             "110101199001011234"
@@ -527,7 +527,7 @@ mod tests {
     fn template_mask_char_in_preset_used() {
         // 预设内 mask_char 优先于默认 *：idcard_preset().with_mask_char('#')
         let m = SimpleMasker;
-        let mut rule = BuiltinRules::simple_mask_rule();
+        let mut rule = BuiltinRules::get("simple-mask").unwrap();
         rule.template = Some(idcard_preset().with_mask_char('#'));
         assert_eq!(
             m.mask("110101199001011234", Some(&rule)).unwrap().output,
@@ -539,7 +539,7 @@ mod tests {
     fn name_mask_no_template_unchanged() {
         // name-mask 无 template → 仍走旧逻辑（保留首尾各 1），向后兼容
         let m = SimpleMasker;
-        let rule = crate::processor::rules::BuiltinRules::name_mask_rule();
+        let rule = crate::processor::rules::BuiltinRules::get("name-mask").unwrap();
         assert!(rule.template.is_none());
         assert_eq!(m.mask("张三丰", Some(&rule)).unwrap().output, "张*丰");
         assert_eq!(
@@ -745,7 +745,7 @@ mod tests {
     fn segment_replacement_overrides_mask_char() {
         // replacement=# 优先于 template.mask_char
         let m = SimpleMasker;
-        let mut rule = BuiltinRules::segment_mask_rule();
+        let mut rule = BuiltinRules::get("segment-mask").unwrap();
         rule.template = Some(TemplateParams::Segment(
             SegmentTemplate::new("@")
                 .with_segment(0, 1, 1, 1)
