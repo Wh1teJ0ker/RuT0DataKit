@@ -11,7 +11,7 @@
 //! v1.1.3 T55：新增 `func_validator` 模块（函数式校验器：Luhn / IPv4 / IPv6 /
 //! 手机号前缀），供提取规则的 `validate_extracted` 严格兜底。T55b 拆分
 //! `ip-extract` 为 `ip4-extract` + `ip6-extract` 两条独立规则（删除 `IpFamily`）。
-//! T55c 新增 `idcard-extract` 规则：18 位身份证号召回 `\b\d{17}[\dXx]\b`，
+//! T55c 新增 `idcard-extract` 规则：18 位身份证号召回 `\b[1-9]\d{16}[\dXx]\b`（首位非零），
 //! 校验码严格校验（GB 11643-1999，加权求和 mod 11 查表），第 17 位性别推断
 //! 奇=男/偶=女。性别联合校验（比对用户在提取时指定的性别列）在
 //! `extract_validate_to_new_sheet_inner` 中进行——性别列是提取时参数而非规则

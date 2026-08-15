@@ -400,7 +400,7 @@ impl RuleRegistry {
 
     /// 身份证号提取内置规则（v1.1.3 T55c 新增）。
     ///
-    /// 提取正则 `\b\d{17}[\dXx]\b` 宽松召回 18 位身份证号（末位可为 X/x），
+    /// 提取正则 `\b[1-9]\d{16}[\dXx]\b` 宽松召回 18 位身份证号（首位非零，末位可为 X/x），
     /// 严格校验由 `func_validator::is_valid_idcard` 兜底（GB 11643-1999 校验码
     /// 算法：前 17 位乘系数 `[7,9,10,5,8,4,2,1,6,3,7,9,10,5,8,4,2]`，加权和
     /// mod 11 查表 `[1,0,X,9,8,7,6,5,4,3,2]` 得第 18 位校验码）。性别（第 17 位
@@ -413,7 +413,7 @@ impl RuleRegistry {
             name: "身份证号提取".into(),
             kind: RuleKind::Extract,
             field: None,
-            pattern: Some(r"\b\d{17}[\dXx]\b".into()),
+            pattern: Some(r"\b[1-9]\d{16}[\dXx]\b".into()),
             replacement: None,
             enabled: true,
             description: "提取 18 位身份证号，校验码 + 性别严格校验".into(),
@@ -782,7 +782,7 @@ mod tests {
         let r = RuleRegistry::idcard_extract_rule();
         assert_eq!(r.id, "idcard-extract");
         assert_eq!(r.kind, RuleKind::Extract);
-        assert!(r.pattern.is_some());
+        assert_eq!(r.pattern.as_deref(), Some(r"\b[1-9]\d{16}[\dXx]\b"));
         // T55c：params = IdCard
         let params = r.params.as_ref().expect("idcard-extract must have params");
         assert!(matches!(params, ExtractParams::IdCard));

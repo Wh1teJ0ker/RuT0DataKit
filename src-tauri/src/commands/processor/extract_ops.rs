@@ -176,6 +176,12 @@ pub fn extract_validate_to_new_sheet_inner(
         return Err("请至少选择一条提取规则".into());
     }
 
+    // 去重：同一规则 ID 只编译/执行一次，避免重复扫描导致结果翻倍。
+    let rule_ids: Vec<&String> = {
+        let mut seen = std::collections::HashSet::new();
+        rule_ids.iter().filter(|r| seen.insert(*r)).collect()
+    };
+
     let col_idx = db
         .find_col_idx(sheet_id, column)
         .map_err(|e| e.to_string())?
@@ -187,7 +193,7 @@ pub fn extract_validate_to_new_sheet_inner(
         regex::Regex,
         String,
     )> = Vec::with_capacity(rule_ids.len());
-    for rid in rule_ids {
+    for rid in &rule_ids {
         let rule = db
             .get_rule(rid)
             .map_err(|e| e.to_string())?
@@ -1718,6 +1724,66 @@ mod tests {
     }
 
     // ---- T56：批量多规则提取 ----
+
+    #[test]
+    fn extract_validate_idcard_leading_zero_not_recalled() {
+        // 正则 `\b[1-9]\d{16}[\dXx]\b` 首位非零：首位为 0 的身份证号不被召回。
+        // 01010519491231002X 首位为 0 → 不应出现在结果中。
+        let (_dir, db) = setup_db();
+        db.seed_builtin_rules().unwrap();
+        let values = [
+            "11010519491231002X", // 首位 1，有效
+            "01010519491231002X", // 首位 0，不应被召回
+        ];
+        let (session_id, sheet_id) = setup_extract_sheet(&db, &values);
+
+        let (_parse_result, rows) = extract_validate_to_new_sheet_inner(
+            &db,
+            sheet_id,
+            "raw",
+            &["idcard-extract".to_string()],
+            session_id,
+            None,
+            &[],
+        )
+        .unwrap();
+
+        // 只有首位为 1 的身份证号被召回，首位为 0 的被正则排除。
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].value, "11010519491231002X");
+    }
+
+    #[test]
+    fn extract_validate_duplicate_rule_ids_deduplicated() {
+        // 同一规则 ID 重复传入不应导致结果翻倍。
+        let (_dir, db) = setup_db();
+        db.seed_builtin_rules().unwrap();
+        let values = [
+            "11010519491231002X",
+            "110105194912310038",
+        ];
+        let (session_id, sheet_id) = setup_extract_sheet(&db, &values);
+
+        let (_parse_result, rows) = extract_validate_to_new_sheet_inner(
+            &db,
+            sheet_id,
+            "raw",
+            // 故意重复同一规则 ID
+            &[
+                "idcard-extract".to_string(),
+                "idcard-extract".to_string(),
+            ],
+            session_id,
+            None,
+            &[],
+        )
+        .unwrap();
+
+        // 去重后每条身份证号只出现一次，不会翻倍。
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].value, "11010519491231002X");
+        assert_eq!(rows[1].value, "110105194912310038");
+    }
 
     #[test]
     fn extract_validate_batch_multi_rules_to_new_sheet() {

@@ -50,7 +50,8 @@ export default function ExtractPanel() {
       return;
     }
     const column = form.getFieldValue("column");
-    const ruleIds = form.getFieldValue("ruleIds") || [];
+    // 去重：避免同一规则被重复执行导致行高亮重复计算。
+    const ruleIds = [...new Set(form.getFieldValue("ruleIds") || [])];
     if (!column) {
       message.warning("请选择要提取的列");
       return;
@@ -135,7 +136,8 @@ export default function ExtractPanel() {
       return;
     }
     const column = form.getFieldValue("column");
-    const ruleIds = form.getFieldValue("ruleIds") || [];
+    // 去重：避免同一规则被重复传给后端导致结果翻倍。
+    const ruleIds = [...new Set(form.getFieldValue("ruleIds") || [])];
     if (!column) {
       message.warning("请选择要提取的列");
       return;

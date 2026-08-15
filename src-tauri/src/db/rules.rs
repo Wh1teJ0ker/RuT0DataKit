@@ -251,6 +251,9 @@ impl DbManager {
         // （放宽召回，兼容 7xx 等非标准前缀）。老 DB 存的是旧正则，需精确替换。
         // 用 WHERE pattern = ? 精确匹配旧值，避免覆盖用户自定义的其他正则。
         self.migrate_phone_extract_pattern()?;
+        // idcard-extract 正则从 `\b\d{17}[\dXx]\b` 升级为 `\b[1-9]\d{16}[\dXx]\b`
+        // （首位非零，排除前导零的无效身份证号）。老 DB 存的是旧正则，需精确替换。
+        self.migrate_idcard_extract_pattern()?;
         // T50：清理 v1.1.3 T48 遗留的 4 条独立脱敏规则（T49 收敛为预设）。
         // T54：追加 general-mask（拆分为 simple-mask + segment-mask 后废弃）。
         self.cleanup_deprecated_rules()?;
@@ -268,6 +271,18 @@ impl DbManager {
         conn.execute(
             "UPDATE rules SET pattern = ?1 WHERE id = 'phone-extract' AND pattern = ?2",
             params![r"\b[1-9]\d{10}\b", r"\b1\d{10}\b"],
+        )?;
+        Ok(())
+    }
+
+    /// 迁移：idcard-extract 正则从 `\b\d{17}[\dXx]\b` 升级为 `\b[1-9]\d{16}[\dXx]\b`
+    /// （首位非零，排除前导零的无效身份证号）。与 `migrate_phone_extract_pattern`
+    /// 同理：用 `WHERE pattern = ?` 精确匹配旧值，不影响用户自定义正则。幂等。
+    fn migrate_idcard_extract_pattern(&self) -> Result<(), DbError> {
+        let conn = self.conn.lock().expect("db mutex poisoned");
+        conn.execute(
+            "UPDATE rules SET pattern = ?1 WHERE id = 'idcard-extract' AND pattern = ?2",
+            params![r"\b[1-9]\d{16}[\dXx]\b", r"\b\d{17}[\dXx]\b"],
         )?;
         Ok(())
     }

@@ -52,6 +52,18 @@ import { runInlineValidator } from "../../utils/inlineValidators";
 
 const { Title, Text } = Typography;
 
+// 内置提取规则的出厂正则（与 crates/core RuleRegistry 保持一致）。
+// 重置按钮恢复出厂值时使用，确保"重置"= 回到初始状态而非 DB 当前值。
+const BUILTIN_PATTERNS = {
+  "phone-extract": "\\b[1-9]\\d{10}\\b",
+  "idcard-extract": "\\b[1-9]\\d{16}[\\dXx]\\b",
+  "bankcard-extract": "\\b[1-9]\\d{12,18}\\b",
+  "ip4-extract": "\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b",
+  "ip6-extract": "(?:[0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}",
+  "name-extract": "[\\u4e00-\\u9fff]{2,4}",
+  "name-validate": "^[\\u4e00-\\u9fa5]{2,4}$",
+};
+
 // v1.1.0 规则管理面板（主区两栏布局）。
 // 左：规则列表，按 kind 标签分组（脱敏/校验/提取）；右：选中规则详情。
 // 内联测试：三种 kind 全部走前端内部输入 + 正则预览，不写 DB。
@@ -740,13 +752,9 @@ export default function RulesPanel() {
                           } else if (
                             selected.params?.validator === "phonePrefix"
                           ) {
-                            // v1.1.4 续轮 T71：phonePrefix 重置（extract/validate 共用）。
-                            setDraftPattern(selected.pattern ?? "");
-                            setDraftAllowedPrefixes(
-                              Array.isArray(selected.params.allowedPrefixes)
-                                ? selected.params.allowedPrefixes.slice()
-                                : []
-                            );
+                            // 重置 = 恢复出厂正则 + 空前缀列表（默认 1 开头）。
+                            setDraftPattern(BUILTIN_PATTERNS[selected.id] ?? "");
+                            setDraftAllowedPrefixes([]);
                           } else if (
                             selected.params?.validator === "generic"
                           ) {
@@ -755,7 +763,11 @@ export default function RulesPanel() {
                               normalizeGenericParams(selected.params)
                             );
                           } else {
-                            setDraftPattern(selected.pattern ?? "");
+                            // 提取规则（非 phonePrefix）重置为出厂正则；
+                            // 其他 validate 规则恢复 DB pattern。
+                            setDraftPattern(
+                              BUILTIN_PATTERNS[selected.id] ?? selected.pattern ?? ""
+                            );
                           }
                         }}
                       >
