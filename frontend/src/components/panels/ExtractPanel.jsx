@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Button, Form, List, Select, Space, Tag, Typography, message } from "antd";
+import { Button, Form, Select, Space, message } from "antd";
 import { useAppContext } from "../../state";
 import { extractValidateToNewSheet } from "../../tauri";
 import { useRules } from "../../hooks/useRules";
@@ -7,10 +7,8 @@ import { useSheetOps } from "../../hooks/useSheetOps";
 import ColumnSelect from "../shared/ColumnSelect";
 import PhonePrefixSelect from "../shared/PhonePrefixSelect";
 
-const { Text } = Typography;
-
 // v1.1.0 提取面板：选择列 + 多选提取规则 → 按规则 pattern 对当前页数据
-// 做正则提取 → 命中行高亮 hit + 命中列表。前端纯逻辑，不写 DB。
+// 做正则提取 → 命中行高亮 hit。前端纯逻辑，不写 DB。
 // v1.1.3 T55：新增「提取并校验到新 Tab」按钮 → 后端提取 + 函数式严格校验
 // （Luhn/IPv4/IPv6/手机前缀）→ 结果落到新 Tab。
 // v1.1.3 T55c：idcard-extract 规则支持性别联合校验——用户在提取时从当前 sheet
@@ -27,7 +25,6 @@ export default function ExtractPanel() {
   const [form] = Form.useForm();
   const [loading, setLoading] = useState(false);
   const [extracting, setExtracting] = useState(false);
-  const [hits, setHits] = useState([]);
 
   const sheet = state.sheets.find((s) => s.id === state.activeSheetId);
   const headers = sheet?.headers || [];
@@ -63,7 +60,6 @@ export default function ExtractPanel() {
       return;
     }
     setLoading(true);
-    setHits([]);
     try {
       const page = sheet.page || 1;
       const base = (page - 1) * (sheet.pageSize || 50);
@@ -114,7 +110,6 @@ export default function ExtractPanel() {
       if (Object.keys(rowStatuses).length > 0) {
         applyRowStatuses({ sheetId: sheet.id, rowStatuses });
       }
-      setHits(flatHits);
       if (skippedLargeCells > 0) {
         message.warning(
           `提取完成：${flatHits.length} 个命中；跳过 ${skippedLargeCells} 个超大单元格，请用「提取并校验到新 Tab」处理`
@@ -227,7 +222,6 @@ export default function ExtractPanel() {
               <Button
                 onClick={() => {
                   form.resetFields();
-                  setHits([]);
                 }}
               >
                 重置
@@ -243,29 +237,6 @@ export default function ExtractPanel() {
           </Space>
         </Form.Item>
       </Form>
-      {hits.length > 0 && (
-        <div style={{ marginTop: 8 }}>
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            提取结果（{hits.length} 项）：
-          </Text>
-          <List
-            size="small"
-            bordered
-            style={{ marginTop: 4, maxHeight: "40vh", overflow: "auto" }}
-            dataSource={hits}
-            renderItem={(h) => (
-              <List.Item style={{ padding: "4px 8px" }}>
-                <Tag color="blue" style={{ marginRight: 8 }}>
-                  {h.ruleName}
-                </Tag>
-                <Text style={{ fontSize: 12 }}>
-                  行 {h.rowIdx}：{h.value}
-                </Text>
-              </List.Item>
-            )}
-          />
-        </div>
-      )}
     </div>
   );
 }

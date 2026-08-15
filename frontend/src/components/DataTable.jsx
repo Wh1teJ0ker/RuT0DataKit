@@ -441,6 +441,11 @@ export default function DataTable({ sheet, onSetPage }) {
             </Text>
           )}
         </Space>
+        <Text type="secondary" style={{ fontSize: 12, whiteSpace: "nowrap" }}>
+          {isSearchMode
+            ? `命中 ${sheet.searchTotal ?? 0} / ${sheet.total ?? sheet.rows.length ?? 0} 行`
+            : `共 ${sheet.total ?? sheet.rows.length ?? 0} 行`}
+        </Text>
       </div>
       <DndContext
         sensors={sensors}
