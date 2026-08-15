@@ -1,8 +1,5 @@
 # RuT0DataKit v1.2.1
 
-> 发布日期：2026-08-15
-> QA 报告：[QA-审计报告.md](../../qa/versions/1.2.1/QA-审计报告.md)
-
 ## Update
 
 - **大 TXT 文件按行分块解析**：TxtReader 不再将整个文件塞入单一 cell，改用 `chunk_string` + `lines()` 分块，8.5 MB 单行 TXT 可正常分页浏览
@@ -15,29 +12,17 @@
 - **ExtractPanel 主线程同步冻结**：超大输入跳过 `[...matchAll(re)]` 同步正则，提示改用「提取并校验到新 Tab」
 - **文档漂移**：清除 `docs/02` + `docs/03` 中所有 `func_validator`/`extractor.rs`/`validate_column`/`extract_column` 过时引用
 
-## Downloads
+## 下载
 
 | 平台 | 文件 |
-|------|------|
-| macOS (Apple Silicon) | RuT0DataKit_1.2.1_aarch64.dmg |
-| macOS (Intel) | RuT0DataKit_1.2.1_x64.dmg |
+|---|---|
+| macOS arm64 | RuT0DataKit_1.2.1_aarch64.dmg |
+| macOS x64 | RuT0DataKit_1.2.1_x64.dmg |
 
-> 构建产物由 CI 自动生成并附签名。
-
-## 校验和
-
-见 [checksums.txt](https://github.com/...)
+每个安装包均附带 .sig 签名文件，供 updater 验签。
 
 ## 升级
 
-- **数据迁移**：SCHEMA_VERSION 不变（=5），升级无数据风险
-- **配置变更**：无新增/废弃配置项
-- **向后兼容**：所有 IPC 命令签名向后兼容，旧前端 JSON 无新字段时走默认值
+v1.2.0 用户可直接升级：DB schema 不变（`SCHEMA_VERSION=5`），无需数据迁移。所有 IPC 命令签名向后兼容，旧前端 JSON 无新字段时走默认值。
 
-## 已知问题
-
-- `ExportModal.jsx` 246 行（超目标 46 行），功能完整可维护，下一轮可进一步拆分
-- 前端 chunk > 500 kB（antd 整包打入单 chunk），非阻塞，下一轮可 manualChunks 优化
-- CTF `compare.py` 残留 ds2time 导出格式与 phone-extract 运行时前缀缺口，非版本阻塞项
-
-> 完整技术文档见 `docs/versions/1.2.1/`。
+完整技术文档见 docs/versions/1.2.1/。
