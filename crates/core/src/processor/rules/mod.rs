@@ -310,23 +310,24 @@ impl RuleRegistry {
         }
     }
 
-    /// 手机号提取内置规则（v1.1.3 T55）：11 位纯数字，首位 1。
+    /// 手机号提取内置规则（v1.1.3 T55）：11 位纯数字，首位非零。
     ///
-    /// 提取正则 `\b1\d{10}\b`（宽松召回，严格校验由 `func_validator` 的
-    /// `check_phone_prefix` 兜底）。`params = PhonePrefix{[]}` →
-    /// 空前缀列表 = 默认（正则已保证 1 开头，直接通过）。前端可在
-    /// RulesPanel 配置 `allowedPrefixes`（如 `["134","159"]`）→
-    /// 仅前 3 位在列表内的提取值才算有效。
+    /// 提取正则 `\b[1-9]\d{10}\b`（宽松召回，与 bankcard-extract 一致使用
+    /// `[1-9]` 首位而非 `1`，以兼容非标准前缀的测试数据）。严格校验由
+    /// `func_validator` 的 `check_phone_prefix` 兜底：空前缀列表 → 须 1 开头
+    /// （标准中国手机号）；非空 → 前 3 位必须在列表内（用户自定义范围）。
+    /// `params = PhonePrefix{[]}` → 空前缀列表 = 默认须 1 开头。前端可在
+    /// RulesPanel 配置 `allowedPrefixes`（如 `["799","786"]`）→ 放行非标准前缀。
     pub fn phone_extract_rule() -> Rule {
         Rule {
             id: "phone-extract".into(),
             name: "手机号提取".into(),
             kind: RuleKind::Extract,
             field: None,
-            pattern: Some(r"\b1\d{10}\b".into()),
+            pattern: Some(r"\b[1-9]\d{10}\b".into()),
             replacement: None,
             enabled: true,
-            description: "提取 11 位手机号（1 开头），可选前缀白名单校验".into(),
+            description: "提取 11 位手机号（默认 1 开头，可选前缀白名单校验）".into(),
             template: None,
             params: Some(ExtractParams::PhonePrefix {
                 allowed_prefixes: Vec::new(),
@@ -504,9 +505,9 @@ impl RuleRegistry {
 
     /// 手机号校验内置规则（v1.1.4 T67 新增）：`params = PhonePrefix{[]}`，
     /// 走 `validate_extracted` 的 PhonePrefix 分支 → `check_phone_prefix`。
-    /// 注意：PhonePrefix 分支只查前缀白名单，不检查 11 位/1 开头（这是提取规则
-    /// 的兜底语义）。整串严格校验（11 位 + 1 开头 + 纯数字）在 T68 新命令里
-    /// 直接调 `is_valid_phone`，不走 `validate_extracted` 的 PhonePrefix 分支。
+    /// 注意：PhonePrefix 分支只查前缀白名单，不检查 11 位（这是提取规则
+    /// 的兜底语义）。整串严格校验（11 位 + 纯数字 + 默认 1 开头 + 前缀白名单）在
+    /// T68 新命令里直接调 `is_valid_phone`，不走 `validate_extracted` 的 PhonePrefix 分支。
     pub fn phone_validate_rule() -> Rule {
         Rule {
             id: "phone-validate".into(),
@@ -516,7 +517,7 @@ impl RuleRegistry {
             pattern: None,
             replacement: None,
             enabled: true,
-            description: "校验 11 位手机号（1 开头），可选前缀白名单".into(),
+            description: "校验 11 位手机号（默认 1 开头，可选前缀白名单）".into(),
             template: None,
             params: Some(ExtractParams::PhonePrefix {
                 allowed_prefixes: Vec::new(),
@@ -730,7 +731,7 @@ mod tests {
         assert_eq!(r.id, "phone-extract");
         assert_eq!(r.kind, RuleKind::Extract);
         assert!(r.pattern.is_some());
-        // T55：params = PhonePrefix{[]}（空前缀列表 = 默认 1 开头）
+        // T55：params = PhonePrefix{[]}（空前缀列表 = 默认须 1 开头）
         let params = r.params.as_ref().expect("phone-extract must have params");
         match params {
             ExtractParams::PhonePrefix { allowed_prefixes } => {

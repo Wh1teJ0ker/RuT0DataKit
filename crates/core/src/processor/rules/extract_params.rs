@@ -28,9 +28,14 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "validator", rename_all = "camelCase")]
 pub enum ExtractParams {
-    /// 手机号前缀校验。`allowed_prefixes` 空 = 默认（提取正则已保证 1 开头，
-    /// 直接通过）；非空 = 提取值前 3 位必须在列表内。
-    PhonePrefix { allowed_prefixes: Vec<String> },
+    /// 手机号前缀校验。`allowed_prefixes` 空 = 默认（首位必须为 1，标准中国手机号）；
+    /// 非空 = 前 3 位必须在列表内（用户自定义前缀范围，不再强制 1 开头）。
+    #[serde(rename_all = "camelCase")]
+    PhonePrefix {
+        /// 向后兼容：旧 DB 存的是 snake_case `allowed_prefixes`，alias 让旧数据也能反序列化。
+        #[serde(alias = "allowed_prefixes")]
+        allowed_prefixes: Vec<String>,
+    },
     /// 银行卡 Luhn 严格校验（右起偶数位 ×2，>9 则数位和，总和 %10==0）。
     Luhn,
     /// IPv4 地址严格解析（4 段 0-255 + 禁前导零）。

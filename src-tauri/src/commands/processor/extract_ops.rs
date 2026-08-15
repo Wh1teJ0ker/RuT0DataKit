@@ -248,7 +248,7 @@ pub fn extract_validate_to_new_sheet_inner(
     //   插入 \n 会在拼接处制造 \b，使跨边界模式只匹配后半截。
     // - csv / xlsx / json 等：每行是独立记录 → 行间插入 \n 分隔符，为 \b
     //   提供自然边界，避免相邻纯数字行拼接后 \b 失效（如两个 11 位手机号
-    //   拼成 22 位数字串，\b1\d{10}\b 无法匹配）。
+    //   拼成 22 位数字串，\b[1-9]\d{10}\b 无法匹配）。
     let is_chunked_txt = db
         .get_session(session_id)
         .map(|d| d.session.source_type == "txt")
@@ -648,7 +648,7 @@ pub fn validate_rows_to_two_sheets_inner(
         if let Some(col) = phone_col {
             let v = cell_str(Some(col));
             if !is_valid_phone(&v, phone_prefixes) {
-                row_invalid_reasons.push(("phone".into(), "手机号须为 11 位、1 开头".into()));
+                row_invalid_reasons.push(("phone".into(), "手机号须为 11 位、默认 1 开头".into()));
             }
         }
         if let Some(col) = address_col {
@@ -855,7 +855,7 @@ pub struct MultiRuleValidation {
 ///
 /// 与 [`validate_rows_to_two_sheets_inner`]（固定 7 字段映射）不同，本函数
 /// 接收任意「列名 + 规则 id」组合，逐行逐规则分发校验：
-/// - `phone-validate` → 直接调 [`is_valid_phone`]（整串 11 位 + 1 开头 + 前缀白名单）
+/// - `phone-validate` → 直接调 [`is_valid_phone`]（整串 11 位 + 纯数字 + 默认 1 开头 + 前缀白名单）
 /// - `rule.params` 非空 → [`validate_extracted`]（函数式：Username/Sex/Birth/
 ///   IdCard/Address/PhonePrefix/Luhn/Ipv4/Ipv6 分发）
 /// - `rule.pattern` 非空 → 正则 `is_match`（如 name-validate）
@@ -994,7 +994,7 @@ pub fn validate_multi_rules_to_two_sheets_inner(
                     if ok {
                         String::new()
                     } else {
-                        "手机号须为 11 位、1 开头".into()
+                        "手机号须为 11 位、默认 1 开头".into()
                     },
                 )
             } else {
@@ -1303,9 +1303,10 @@ mod tests {
 
     #[test]
     fn extract_validate_phone_to_new_sheet() {
-        // 手机号：13412345678 / 15987654321 有效；1201234567a 无效（非纯数字）；
-        // 134123456 长度不足；134123456789 超长。正则 `\b1\d{10}\b` 只会召回
-        // 11 位纯数字串，故 1201234567a / 134123456 / 134123456789 不命中。
+        // 手机号：13412345678 / 15987654321 有效（默认须 1 开头 + 11 位）；
+        // 1201234567a 无效（非纯数字）；134123456 长度不足；134123456789 超长。
+        // 正则 `\b[1-9]\d{10}\b` 召回 11 位首位非零纯数字串，故 1201234567a /
+        // 134123456 / 134123456789 不命中。默认空前缀列表须 1 开头。
         let (_dir, db) = setup_db();
         db.seed_builtin_rules().unwrap();
         let values = ["13412345678", "15987654321", "1201234567a", "134123456"];
@@ -1322,7 +1323,7 @@ mod tests {
         )
         .unwrap();
 
-        // 2 个有效候选（正则只召回 11 位 1 开头纯数字）。
+        // 2 个有效候选（正则召回 11 位首位非零纯数字，默认须 1 开头）。
         assert_eq!(rows.len(), 2);
         assert!(rows.iter().all(|r| r.valid));
         assert_eq!(rows[0].value, "13412345678");
@@ -1330,7 +1331,7 @@ mod tests {
         assert_eq!(rows[0].type_label, "手机号");
         // skipped = 无候选的行数（2 行：1201234567a / 134123456）。
         assert_eq!(parse_result.skipped, 2);
-        // T56：新 Tab 只写有效候选，row_count = 有效行数 = 2。
+        // 新 Tab 只写有效候选，row_count = 有效行数 = 2。
         assert_eq!(parse_result.row_count, 2);
         assert_eq!(parse_result.headers.len(), 2);
         assert_eq!(parse_result.headers[0], "类型");
@@ -1350,9 +1351,53 @@ mod tests {
     }
 
     #[test]
+    fn extract_validate_phone_non_standard_prefix() {
+        // 非标准前缀（如 7xx）：默认空前缀列表会拒绝（须 1 开头），
+        // 须通过运行时前缀白名单放行。
+        let (_dir, db) = setup_db();
+        db.seed_builtin_rules().unwrap();
+        let values = ["79996258889", "78638972987", "13412345678"];
+        let (session_id, sheet_id) = setup_extract_sheet(&db, &values);
+
+        // 1) 默认空前缀列表：7x 号码被判无效（须 1 开头），仅 134 通过。
+        let (parse_result, rows) = extract_validate_to_new_sheet_inner(
+            &db,
+            sheet_id,
+            "raw",
+            &["phone-extract".to_string()],
+            session_id,
+            None,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(rows.len(), 3);
+        assert!(!rows[0].valid);  // 79996258889
+        assert!(!rows[1].valid);  // 78638972987
+        assert!(rows[2].valid);   // 13412345678
+        assert_eq!(parse_result.row_count, 1);
+
+        // 2) 运行时白名单 ["799","786"]：7x 号码放行，134 被拒。
+        let (parse_result2, rows2) = extract_validate_to_new_sheet_inner(
+            &db,
+            sheet_id,
+            "raw",
+            &["phone-extract".to_string()],
+            session_id,
+            None,
+            &["799".to_string(), "786".to_string()],
+        )
+        .unwrap();
+        assert_eq!(rows2.len(), 3);
+        assert!(rows2[0].valid);   // 79996258889
+        assert!(rows2[1].valid);   // 78638972987
+        assert!(!rows2[2].valid);  // 13412345678
+        assert_eq!(parse_result2.row_count, 2);
+    }
+
+    #[test]
     fn extract_validate_phone_with_prefix_filter() {
-        // T78：phone-extract 运行时前缀白名单覆盖。DB 规则 params.allowed_prefixes
-        // 为空（默认通过），运行时传 ["134"] → 仅 134 开头候选有效，其余判无效。
+        // phone-extract 运行时前缀白名单覆盖。DB 规则 params.allowed_prefixes
+        // 为空（默认须 1 开头），运行时传 ["134"] → 仅 134 开头候选有效，其余判无效。
         let (_dir, db) = setup_db();
         db.seed_builtin_rules().unwrap();
         let values = ["13412345678", "15987654321"];

@@ -130,19 +130,22 @@ pub fn is_valid_ipv6(s: &str) -> bool {
 
 /// 手机号前缀白名单校验。
 ///
-/// - `allowed` 空 → 默认通过（提取正则 `\b1\d{10}\b` 已保证 1 开头 + 11 位）。
-/// - `allowed` 非空 → 提取值前 3 位必须在列表内（大小写敏感，但前缀本就是数字）。
+/// - `allowed` 空 → 默认规则：首位必须为 1（标准中国手机号）。
+/// - `allowed` 非空 → 前 3 位必须在列表内，不再强制首位为 1（支持非标准
+///   前缀如 7xx）。用户可自定义前缀范围。
 ///
 /// # 示例
 /// ```
 /// use ruT0_data_kit_core::processor::func_validator::check_phone_prefix;
-/// assert!(check_phone_prefix("13412345678", &[]));                    // 空 = 默认通过
-/// assert!(check_phone_prefix("13412345678", &["134".into()]));        // 命中
+/// assert!(check_phone_prefix("13412345678", &[]));                    // 空 = 默认 1 开头
+/// assert!(!check_phone_prefix("23412345678", &[]));                   // 默认须 1 开头
+/// assert!(check_phone_prefix("13412345678", &["134".into()]));        // 命中白名单
 /// assert!(!check_phone_prefix("15912345678", &["134".into()]));       // 不命中
+/// assert!(check_phone_prefix("79912345678", &["799".into()]));        // 非标准前缀
 /// ```
 pub fn check_phone_prefix(s: &str, allowed: &[String]) -> bool {
     if allowed.is_empty() {
-        return true;
+        return s.starts_with('1');
     }
     allowed.iter().any(|p| s.starts_with(p.as_str()))
 }
@@ -385,10 +388,11 @@ pub fn is_valid_birth_format(s: &str, format: &str) -> bool {
     is_valid_birth(&digits)
 }
 
-/// 手机号校验：11 位、1 开头、纯 ASCII 数字；可选前缀白名单。
+/// 手机号校验：11 位、纯 ASCII 数字 + 前缀白名单。
 ///
-/// - `allowed` 空 → 仅检查 1 开头 + 11 位（默认通过，同 `phone-extract` 语义）。
-/// - `allowed` 非空 → 前 3 位必须在列表内（复用 [`check_phone_prefix`]）。
+/// - `allowed` 空 → 默认规则：首位必须为 1（标准中国手机号）+ 11 位 + 纯数字。
+/// - `allowed` 非空 → 前 3 位必须在列表内（复用 [`check_phone_prefix`]），
+///   不再强制首位为 1，以支持非标准前缀（如 7xx）。
 ///
 /// # 示例
 /// ```
@@ -396,13 +400,12 @@ pub fn is_valid_birth_format(s: &str, format: &str) -> bool {
 /// assert!(is_valid_phone("13412345678", &[]));
 /// assert!(is_valid_phone("13412345678", &["134".into()]));
 /// assert!(!is_valid_phone("13412345678", &["159".into()])); // 前缀不匹配
-/// assert!(!is_valid_phone("23412345678", &[]));             // 非 1 开头
+/// assert!(!is_valid_phone("23412345678", &[]));             // 默认须 1 开头
 /// assert!(!is_valid_phone("1341234567", &[]));              // 长度不足
 /// assert!(!is_valid_phone("1341234567a", &[]));             // 含非数字
 /// ```
 pub fn is_valid_phone(s: &str, allowed: &[String]) -> bool {
     s.len() == 11
-        && s.starts_with('1')
         && s.bytes().all(|b| b.is_ascii_digit())
         && check_phone_prefix(s, allowed)
 }
@@ -1152,7 +1155,7 @@ mod tests {
 
     #[test]
     fn phone_valid_samples() {
-        // 空前缀列表 → 仅检查 1 开头 + 11 位
+        // 空前缀列表 → 默认须 1 开头 + 11 位 + 纯数字
         assert!(is_valid_phone("13412345678", &[]));
         assert!(is_valid_phone("15987654321", &[]));
         assert!(is_valid_phone("19898765432", &[]));
@@ -1165,7 +1168,9 @@ mod tests {
     fn phone_invalid_samples() {
         // 前缀不匹配
         assert!(!is_valid_phone("13412345678", &["159".into()]));
-        // 非 1 开头
+        // 首位 0
+        assert!(!is_valid_phone("03412345678", &[]));
+        // 非 1 开头（默认须 1 开头）
         assert!(!is_valid_phone("23412345678", &[]));
         // 长度不足
         assert!(!is_valid_phone("1341234567", &[]));
@@ -1175,6 +1180,14 @@ mod tests {
         assert!(!is_valid_phone("1341234567a", &[]));
         // 空串
         assert!(!is_valid_phone("", &[]));
+    }
+
+    #[test]
+    fn phone_valid_non_standard_prefix() {
+        // 非标准前缀（如 7xx）：须通过白名单放行，空前缀列表会拒绝
+        assert!(!is_valid_phone("79996258889", &[]));              // 默认须 1 开头
+        assert!(is_valid_phone("79996258889", &["799".into()]));  // 白名单放行
+        assert!(is_valid_phone("78638972987", &["786".into()]));  // 白名单放行
     }
 
     #[test]
