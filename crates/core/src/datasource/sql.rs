@@ -44,6 +44,7 @@ impl SqlReader {
         let mut in_double = false;
         let mut in_line_comment = false;
         let mut in_block_comment = false;
+        let mut prev_was_star = false; // 块注释内前一个字符是否为 *
         // v1.2.2：MySQL backslash escape 支持。
         // MySQL 用 \', \", \\ 转义引号和反斜杠；SQLite 不识别 \ 转义。
         // 先用 prev_was_backslash 在切分时跳过被 \ 转义的引号（防止误判引号状态），
@@ -52,13 +53,13 @@ impl SqlReader {
 
         for ch in content.chars() {
             if in_block_comment {
-                if ch == '/' && current.ends_with('*') {
+                // 检测 */ 结束（不能再用 current.ends_with('*')，因为块注释内
+                // 不向 current 推字符）。用 prev_was_star 替代。
+                if ch == '/' && prev_was_star {
                     in_block_comment = false;
-                    current.pop(); // 去掉 '*'
+                    prev_was_star = false;
                 } else {
-                    if ch == '*' {
-                        current.push(ch);
-                    }
+                    prev_was_star = ch == '*';
                 }
                 prev_was_backslash = false;
                 continue;
@@ -287,9 +288,11 @@ fn extract_table_name(stmt: &str) -> Option<String> {
 fn sanitize_create_table(stmt: &str) -> String {
     let mut s = stmt.to_string();
 
-    // 1. 剥离 COMMENT '...'（单引号字符串，含转义）。trailing 空格由末尾
-    //    split_whitespace 清理；SQLite 容忍逗号前空格。
-    let comment_re = Regex::new(r"COMMENT\s+'[^']*'").unwrap();
+    // 1. 剥离 COMMENT 子句（列/表注释）。直接截断末尾表选项（ENGINE= 等）
+    //    比正则更可靠，因为 COMMENT 字符串内可能含转义引号导致正则匹配失败。
+    //    这里用正则处理 `COMMENT` 或 `COMMENT=` 后跟单引号字符串，支持
+    //    MySQL 转义引号（\'）。截断步骤（step 4）兜底处理末尾表选项。
+    let comment_re = Regex::new(r"(?i)COMMENT\s*[=]?\s*'(?:[^'\\]|\\.)*'").unwrap();
     s = comment_re.replace_all(&s, "").to_string();
 
     // 2. 剥离列级 CHARACTER SET <word> 和 COLLATE <word>。
