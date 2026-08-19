@@ -17,6 +17,10 @@ export default function ColumnOpsPanel() {
   const { dispatch } = useAppContext();
   const { refreshActiveSheet, landNewSheet } = useSheetOps(dispatch);
   const { sheet, headers } = useActiveSheet();
+  const [parseForm] = Form.useForm();
+  const [transformForm] = Form.useForm();
+  const [parsing, setParsing] = useState(false);
+  const [transforming, setTransforming] = useState(false);
 
   async function handleParse() {
     if (!sheet) {

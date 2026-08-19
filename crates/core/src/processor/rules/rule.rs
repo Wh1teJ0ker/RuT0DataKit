@@ -338,7 +338,7 @@ mod tests {
             ExtractParams::Username,
             ExtractParams::Sex,
             ExtractParams::Birth { formats: vec![] },
-            ExtractParams::Address,
+            ExtractParams::Address { min_hao: None, max_hao: None, min_shi: None, max_shi: None },
             ExtractParams::Email,
             ExtractParams::Generic {
                 allow_digits: true,
@@ -393,9 +393,27 @@ mod tests {
         })
         .unwrap()
         .contains("\"formats\""));
-        assert!(serde_json::to_string(&ExtractParams::Address)
-            .unwrap()
-            .contains("\"validator\":\"address\""));
+        assert!(serde_json::to_string(&ExtractParams::Address {
+            min_hao: None,
+            max_hao: None,
+            min_shi: None,
+            max_shi: None
+        })
+        .unwrap()
+        .contains("\"validator\":\"address\""));
+        // v1.2.2：Address 向后兼容 —— {"validator":"address"} 可反序列化为全 None
+        let addr_json: ExtractParams =
+            serde_json::from_str(r#"{"validator":"address"}"#).unwrap();
+        assert!(matches!(addr_json, ExtractParams::Address { .. }));
+        // v1.2.2：范围字段被序列化（camelCase）
+        assert!(serde_json::to_string(&ExtractParams::Address {
+            min_hao: Some(1),
+            max_hao: Some(1500),
+            min_shi: None,
+            max_shi: None
+        })
+        .unwrap()
+        .contains("\"minHao\":1"));
         // v1.1.5 T81：Email 变体 camelCase 标签
         assert!(serde_json::to_string(&ExtractParams::Email)
             .unwrap()

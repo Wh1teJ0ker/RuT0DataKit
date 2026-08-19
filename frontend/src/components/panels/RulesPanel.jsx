@@ -43,6 +43,10 @@ export default function RulesPanel() {
   const [draftAllowedPrefixes, setDraftAllowedPrefixes] = useState([]);
   const [draftAllowLeadingZero, setDraftAllowLeadingZero] = useState(false);
   const [draftGenericParams, setDraftGenericParams] = useState({ ...EMPTY_GENERIC_PARAMS });
+  const [draftBirthFormats, setDraftBirthFormats] = useState([]);
+  const [draftAddressParams, setDraftAddressParams] = useState({
+    minHao: null, maxHao: null, minShi: null, maxShi: null,
+  });
   const [saving, setSaving] = useState(false);
   const [testInput, setTestInput] = useState("");
   const [testResult, setTestResult] = useState(null);
@@ -111,6 +115,23 @@ export default function RulesPanel() {
       } else {
         setDraftGenericParams({ ...EMPTY_GENERIC_PARAMS });
       }
+      if (selected.params?.validator === "birth") {
+        setDraftBirthFormats(
+          Array.isArray(selected.params.formats) ? selected.params.formats.slice() : []
+        );
+      } else {
+        setDraftBirthFormats([]);
+      }
+      if (selected.params?.validator === "address") {
+        setDraftAddressParams({
+          minHao: selected.params.minHao ?? null,
+          maxHao: selected.params.maxHao ?? null,
+          minShi: selected.params.minShi ?? null,
+          maxShi: selected.params.maxShi ?? null,
+        });
+      } else {
+        setDraftAddressParams({ minHao: null, maxHao: null, minShi: null, maxShi: null });
+      }
       if (
         selected.params?.validator === "idcard" &&
         selected.kind === "extract"
@@ -162,6 +183,19 @@ export default function RulesPanel() {
           null,
           buildGenericParamsForRun(draftGenericParams)
         );
+      } else if (selected.params?.validator === "birth") {
+        await updateRuleExtractConfig(selected.id, null, {
+          validator: "birth",
+          formats: draftBirthFormats.slice(),
+        });
+      } else if (selected.params?.validator === "address") {
+        await updateRuleExtractConfig(selected.id, null, {
+          validator: "address",
+          minHao: draftAddressParams.minHao,
+          maxHao: draftAddressParams.maxHao,
+          minShi: draftAddressParams.minShi,
+          maxShi: draftAddressParams.maxShi,
+        });
       } else if (
         (selected.kind === "extract" || selected.kind === "validate") &&
         selected.params
@@ -215,7 +249,15 @@ export default function RulesPanel() {
           ? { ...selected.params, allowedPrefixes: draftAllowedPrefixes }
           : selected.params.validator === "generic"
             ? buildGenericParamsForRun(draftGenericParams)
-            : selected.params;
+            : selected.params.validator === "address"
+              ? {
+                  validator: "address",
+                  minHao: draftAddressParams.minHao,
+                  maxHao: draftAddressParams.maxHao,
+                  minShi: draftAddressParams.minShi,
+                  maxShi: draftAddressParams.maxShi,
+                }
+              : selected.params;
       const result = runInlineValidator(testInput, selected.params.validator, params);
       setTestResult({
         ok: true,
@@ -415,6 +457,10 @@ export default function RulesPanel() {
                   setDraftAllowLeadingZero={setDraftAllowLeadingZero}
                   draftGenericParams={draftGenericParams}
                   setDraftGenericParams={setDraftGenericParams}
+                  draftBirthFormats={draftBirthFormats}
+                  setDraftBirthFormats={setDraftBirthFormats}
+                  draftAddressParams={draftAddressParams}
+                  setDraftAddressParams={setDraftAddressParams}
                   saving={saving}
                   onSave={handleSaveParams}
                   onToggle={handleToggle}

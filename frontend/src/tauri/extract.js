@@ -16,6 +16,9 @@ import { invoke } from "@tauri-apps/api/core";
  * @param {string[]} [phonePrefixes]  T78：可选手机号前缀白名单（如 ["134","159"]），
  *   仅当选中的规则含 phone-extract 时使用。非空时覆盖 DB 规则 params.allowed_prefixes，
  *   仅前 3 位在列表内的候选才算有效；空数组则沿用 DB 规则默认（不过滤前缀）。非 phone 规则不受影响。
+ * @param {boolean} [idcardAllowLeadingZero=false]  v1.2.2：可选，仅当选中的规则含
+ *   idcard-extract 时使用。true → 临时用 \b\d{17}[\dXx]\b 覆盖 DB pattern（首位可为 0，
+ *   宽松召回），不持久化到 DB。false（默认）→ 沿用 DB pattern（首位非零）。
  * @returns {Promise<{newSheetId: number, headers: string[], rowCount: number, skipped: number}>}
  */
 export function extractValidateToNewSheet(
@@ -25,6 +28,7 @@ export function extractValidateToNewSheet(
   sessionId,
   genderCol = null,
   phonePrefixes = [],
+  idcardAllowLeadingZero = false,
 ) {
   return invoke("extract_validate_to_new_sheet", {
     sheetId,
@@ -33,5 +37,6 @@ export function extractValidateToNewSheet(
     sessionId,
     genderCol,
     phonePrefixes,
+    idcardAllowLeadingZero,
   });
 }

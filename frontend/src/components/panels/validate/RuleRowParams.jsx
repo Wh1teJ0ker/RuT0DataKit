@@ -1,6 +1,7 @@
 import { Checkbox, Input, InputNumber, Space, Form } from "antd";
 import ColumnSelect from "../../shared/ColumnSelect";
 import PhonePrefixSelect from "../../shared/PhonePrefixSelect";
+import { BIRTH_FORMATS } from "../rule/constants";
 
 // v1.1.5 T88：birth-validate 行级生日格式勾选。
 // 全不选 = 接受所有格式（默认，向后兼容）；勾选后仅校验勾选的格式。
@@ -112,6 +113,37 @@ export function RuleRowParams({ name, headers }) {
             >
               <Checkbox.Group options={BIRTH_FORMATS} />
             </Form.Item>
+          ) : null
+        }
+      </Form.Item>
+
+      {/* address-validate 行级号/室范围配置。 */}
+      <Form.Item
+        shouldUpdate={(prev, cur) =>
+          prev.rules?.[name]?.ruleId !== cur.rules?.[name]?.ruleId
+        }
+        noStyle
+      >
+        {({ getFieldValue }) =>
+          getFieldValue(["rules", name, "ruleId"]) === "address-validate" ? (
+            <Space direction="vertical" style={{ width: "100%", marginTop: 4 }}>
+              <Space>
+                <Form.Item name={[name, "minHao"]} label="「号」最小" noStyle>
+                  <InputNumber placeholder="不限" min={0} style={{ flex: 1, minWidth: 80 }} />
+                </Form.Item>
+                <Form.Item name={[name, "maxHao"]} label="最大" noStyle>
+                  <InputNumber placeholder="不限" min={0} style={{ flex: 1, minWidth: 80 }} />
+                </Form.Item>
+              </Space>
+              <Space>
+                <Form.Item name={[name, "minShi"]} label="「室」最小" noStyle>
+                  <InputNumber placeholder="不限" min={0} style={{ flex: 1, minWidth: 80 }} />
+                </Form.Item>
+                <Form.Item name={[name, "maxShi"]} label="最大" noStyle>
+                  <InputNumber placeholder="不限" min={0} style={{ flex: 1, minWidth: 80 }} />
+                </Form.Item>
+              </Space>
+            </Space>
           ) : null
         }
       </Form.Item>

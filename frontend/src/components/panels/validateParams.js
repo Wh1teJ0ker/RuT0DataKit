@@ -46,6 +46,6 @@ export const VALIDATE_HINTS = {
   "birth-validate": "出生日期：接受 20031223 / 2003-12-23 等格式，自动清理分隔符",
   "idcard-validate": "18 位身份证号（GB 11643-1999 校验码）；可勾选跨字段比对性别/出生日期",
   "phone-validate": "11 位手机号（1 开头）；可设置前缀白名单",
-  "address-validate": "地址结构化校验：中文 + 地址关键词（省/市/区/路/号/室等）",
+  "address-validate": "地址校验：全中文（无英文字母）+ 地址关键词；可选号/室数字范围",
   "name-validate": "姓名校验：2-4 位中文字符（正则规则）",
 };

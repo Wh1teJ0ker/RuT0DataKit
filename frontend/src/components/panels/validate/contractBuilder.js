@@ -39,6 +39,20 @@ export function buildMultiRules(ruleRows) {
       if (r.ruleId === "birth-validate" && r.birthFormats?.length) {
         item.paramsOverride = { validator: "birth", formats: r.birthFormats };
       }
+      // v1.2.2：address-validate 行附带 paramsOverride，任一范围字段非空时携带。
+      // 全留空 = 不限范围（默认，向后兼容），不传 paramsOverride，沿用 DB 默认。
+      if (
+        r.ruleId === "address-validate" &&
+        (r.minHao != null || r.maxHao != null || r.minShi != null || r.maxShi != null)
+      ) {
+        item.paramsOverride = {
+          validator: "address",
+          minHao: r.minHao ?? null,
+          maxHao: r.maxHao ?? null,
+          minShi: r.minShi ?? null,
+          maxShi: r.maxShi ?? null,
+        };
+      }
       return item;
     });
 }

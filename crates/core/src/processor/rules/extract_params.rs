@@ -74,11 +74,25 @@ pub enum ExtractParams {
         #[serde(default)]
         formats: Vec<String>,
     },
-    /// 地址：结构化校验（中文 ≥ 2 + 地址关键词）。
+    /// 地址：结构化校验（全中文无英文字母 + 地址关键词 + 可选号/室数字范围）。
     ///
     /// v1.1.4 T67 新增；T70 续轮放宽为结构化校验（原严格正则号1-1500+
-    /// 室101-999 已废弃）。用于 `address-validate` 函数式校验规则。
-    Address,
+    /// 室101-999 已废弃）。v1.2.2 改为 struct variant，携带可选号/室范围：
+    /// - `min_hao`/`max_hao` — `号` 前数字范围（`None` = 不限）
+    /// - `min_shi`/`max_shi` — `室` 前数字范围（`None` = 不限）
+    /// 全 `None` = 仅校验全中文 + 关键词（向后兼容旧 DB `{"validator":"address"}`）。
+    /// 用于 `address-validate` 函数式校验规则。
+    #[serde(rename_all = "camelCase")]
+    Address {
+        #[serde(default)]
+        min_hao: Option<u32>,
+        #[serde(default)]
+        max_hao: Option<u32>,
+        #[serde(default)]
+        min_shi: Option<u32>,
+        #[serde(default)]
+        max_shi: Option<u32>,
+    },
     /// 邮箱地址：结构化校验（local@domain，RFC 5321 简化）。
     ///
     /// v1.1.5 T81 新增。用于 `email-validate` 函数式校验规则（kind=Validate，

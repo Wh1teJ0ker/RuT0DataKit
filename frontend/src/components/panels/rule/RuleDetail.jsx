@@ -15,6 +15,8 @@ import { BUILTIN_PATTERNS, KIND_COLOR, KIND_LABEL, VALIDATE_LABELS } from "./con
 import PhonePrefixParams from "./params/PhonePrefixParams";
 import GenericParams from "./params/GenericParams";
 import IdcardParams from "./params/IdcardParams";
+import BirthParams from "./params/BirthParams";
+import AddressParams from "./params/AddressParams";
 import PatternParams from "./params/PatternParams";
 
 const { Text } = Typography;
@@ -37,6 +39,10 @@ export default function RuleDetail({
   setDraftAllowLeadingZero,
   draftGenericParams,
   setDraftGenericParams,
+  draftBirthFormats,
+  setDraftBirthFormats,
+  draftAddressParams,
+  setDraftAddressParams,
   saving,
   onSave,
   onToggle,
@@ -63,6 +69,19 @@ export default function RuleDetail({
     } else if (selected.params?.validator === "generic") {
       // v1.1.4 续轮 T71：generic-validate 重置 → 用 DB params 回填。
       setDraftGenericParams(normalizeGenericParams(selected.params));
+    } else if (selected.params?.validator === "birth") {
+      // v1.2.2：birth-validate 重置 → 用 DB params 回填。
+      setDraftBirthFormats(
+        Array.isArray(selected.params.formats) ? selected.params.formats.slice() : []
+      );
+    } else if (selected.params?.validator === "address") {
+      // v1.2.2：address-validate 重置 → 用 DB params 回填。
+      setDraftAddressParams({
+        minHao: selected.params.minHao ?? null,
+        maxHao: selected.params.maxHao ?? null,
+        minShi: selected.params.minShi ?? null,
+        maxShi: selected.params.maxShi ?? null,
+      });
     } else {
       // 提取规则（非 phonePrefix）重置为出厂正则；
       // 其他 validate 规则恢复 DB pattern。
@@ -128,6 +147,10 @@ export default function RuleDetail({
             setDraftAllowLeadingZero,
             draftGenericParams,
             setDraftGenericParams,
+            draftBirthFormats,
+            setDraftBirthFormats,
+            draftAddressParams,
+            setDraftAddressParams,
           })}
           <Space>
             <Button type="primary" loading={saving} onClick={onSave}>
@@ -158,6 +181,10 @@ function renderParams({
   setDraftAllowLeadingZero,
   draftGenericParams,
   setDraftGenericParams,
+  draftBirthFormats,
+  setDraftBirthFormats,
+  draftAddressParams,
+  setDraftAddressParams,
 }) {
   // mask 规则
   if (selected.kind === "mask") {
@@ -206,6 +233,24 @@ function renderParams({
         />
       );
     }
+    if (v === "birth") {
+      return (
+        <BirthParams
+          draftBirthFormats={draftBirthFormats}
+          setDraftBirthFormats={setDraftBirthFormats}
+          hint={VALIDATE_HINTS["birth-validate"] || ""}
+        />
+      );
+    }
+    if (v === "address") {
+      return (
+        <AddressParams
+          draftAddressParams={draftAddressParams}
+          setDraftAddressParams={setDraftAddressParams}
+          hint={VALIDATE_HINTS["address-validate"] || ""}
+        />
+      );
+    }
     if (v === "phonePrefix") {
       return (
         <PhonePrefixParams
@@ -226,7 +271,7 @@ function renderParams({
         />
       );
     }
-    // 其他 validator（luhn/ipv4/ipv6/username/sex/birth/address）
+    // 其他 validator（luhn/ipv4/ipv6/username/sex）
     return (
       <PatternParams
         selected={selected}

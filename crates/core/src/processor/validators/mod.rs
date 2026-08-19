@@ -147,11 +147,16 @@ pub fn validate_extracted_with_params(params: &ExtractParams, value: &str) -> (b
                 }
             }
         }
-        ExtractParams::Address => {
-            if is_valid_address(value) {
+        ExtractParams::Address {
+            min_hao,
+            max_hao,
+            min_shi,
+            max_shi,
+        } => {
+            if is_valid_address(value, *min_hao, *max_hao, *min_shi, *max_shi) {
                 (true, String::new())
             } else {
-                (false, "地址格式不符（须含中文+地址关键词）".to_string())
+                (false, "地址格式不符（须全中文+地址关键词+号/室范围）".to_string())
             }
         }
         // v1.1.5 T81：邮箱校验变体
@@ -362,7 +367,12 @@ mod tests {
     fn validate_extracted_address() {
         // T67 + T70：Address 变体 → is_valid_address（结构化校验）
         let mut rule = like_name_extract();
-        rule.params = Some(ExtractParams::Address);
+        rule.params = Some(ExtractParams::Address {
+            min_hao: None,
+            max_hao: None,
+            min_shi: None,
+            max_shi: None,
+        });
         // 有效
         let (ok, note) =
             validate_extracted(&rule, "内蒙古自治区呼和浩特市玉泉区大南街街道1340号540室");
@@ -385,6 +395,9 @@ mod tests {
         assert!(!ok);
         // 无效（2 CJK 但无地址关键词）
         let (ok, _) = validate_extracted(&rule, "张三");
+        assert!(!ok);
+        // v1.2.2：含英文字母 → 不通过
+        let (ok, _) = validate_extracted(&rule, "吉林省长春T朝阳区前进街道4342号1323室");
         assert!(!ok);
     }
 
@@ -476,8 +489,13 @@ mod tests {
 
     #[test]
     fn validate_extracted_with_params_address_structured() {
-        // T70：Address 分支 + 结构化校验
-        let params = ExtractParams::Address;
+        // T70：Address 分支 + 结构化校验（v1.2.2 增加号/室范围）
+        let params = ExtractParams::Address {
+            min_hao: None,
+            max_hao: None,
+            min_shi: None,
+            max_shi: None,
+        };
         // 有效
         let (ok, _) = validate_extracted_with_params(&params, "北京市朝阳区建国路88号");
         assert!(ok);
@@ -487,9 +505,32 @@ mod tests {
         // 无效（无中文）
         let (ok, note) = validate_extracted_with_params(&params, "hello world");
         assert!(!ok);
-        assert_eq!(note, "地址格式不符（须含中文+地址关键词）");
+        assert_eq!(note, "地址格式不符（须全中文+地址关键词+号/室范围）");
         // 无效（空串）
         let (ok, _) = validate_extracted_with_params(&params, "");
+        assert!(!ok);
+        // v1.2.2：含英文字母 → 不通过
+        let (ok, _) =
+            validate_extracted_with_params(&params, "内蒙古自治区呼和O特市托克托县古城镇1319号139室");
+        assert!(!ok);
+
+        // v1.2.2：号范围校验
+        let params_range = ExtractParams::Address {
+            min_hao: Some(1),
+            max_hao: Some(1500),
+            min_shi: Some(101),
+            max_shi: Some(999),
+        };
+        // 号/室都在范围内 → 通过
+        let (ok, _) =
+            validate_extracted_with_params(&params_range, "重庆市江津区几江街道260号228室");
+        assert!(ok);
+        // 号超出范围 → 不通过
+        let (ok, _) =
+            validate_extracted_with_params(&params_range, "天津市河西区下瓦房街道5189号375室");
+        assert!(!ok);
+        // 室超出范围 → 不通过
+        let (ok, _) = validate_extracted_with_params(&params_range, "北京市朝阳区1号1000室");
         assert!(!ok);
     }
 

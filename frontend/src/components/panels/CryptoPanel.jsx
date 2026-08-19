@@ -21,6 +21,9 @@ export default function CryptoPanel() {
   const { dispatch } = useAppContext();
   const { refreshActiveSheet } = useSheetOps(dispatch);
   const { sheet, headers } = useActiveSheet();
+  const [form] = Form.useForm();
+  const [running, setRunning] = useState(false);
+  const [hashCase, setHashCase] = useState("lower");
 
   async function handleExecute() {
     if (!sheet) {

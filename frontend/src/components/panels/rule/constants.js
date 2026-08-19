@@ -30,3 +30,13 @@ export const VALIDATE_LABELS = {
 export const KIND_LABEL = { mask: "脱敏", validate: "校验", extract: "提取" };
 export const KIND_COLOR = { mask: "orange", validate: "red", extract: "blue" };
 export const KIND_ORDER = ["mask", "validate", "extract"];
+
+// v1.2.2：出生日期格式常量（与后端 crates/core datetime.rs 支持的 4 种格式对齐）。
+// RulesPanel BirthParams + ValidatePanel RuleRowParams 共用。
+// 全不选 = 接受所有格式（向后兼容）。
+export const BIRTH_FORMATS = [
+  { label: "yyyymmdd", value: "yyyymmdd" },
+  { label: "yyyy-mm-dd", value: "yyyy-mm-dd" },
+  { label: "yyyy/mm/dd", value: "yyyy/mm/dd" },
+  { label: "yyyy.mm.dd", value: "yyyy.mm.dd" },
+];

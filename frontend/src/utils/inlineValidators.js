@@ -178,13 +178,18 @@ function validateBirth(s) {
 }
 
 /**
- * 地址校验：4-200 字符，CJK >= 2，含地址关键词。
+ * 地址校验：4-200 字符，CJK >= 2，含地址关键词，无英文字母，
+ * 可选号/室数字范围（minHao/maxHao/minShi/maxShi 为 null = 不限）。
  */
-function validateAddress(s) {
+function validateAddress(s, params) {
   const trimmed = (s || "").trim();
   const charCount = [...trimmed].length;
   if (charCount < 4 || charCount > 200) {
     return { passed: false, message: "不通过：长度须在 4-200 字符" };
+  }
+  // v1.2.2：全中文（不含英文字母）。
+  if (/[a-zA-Z]/.test(trimmed)) {
+    return { passed: false, message: "不通过：地址含英文字母（须全中文）" };
   }
   let cjkCount = 0;
   for (const ch of trimmed) {
@@ -197,6 +202,31 @@ function validateAddress(s) {
   const hasKeyword = ADDR_KEYWORDS.some((kw) => trimmed.includes(kw));
   if (!hasKeyword) {
     return { passed: false, message: "不通过：缺少地址关键词（省/市/区/路/号等）" };
+  }
+  // v1.2.2：可选号/室范围校验。
+  const haoMatch = trimmed.match(/(\d+)号/);
+  if (haoMatch) {
+    const haoNum = Number(haoMatch[1]);
+    const minHao = params?.minHao ?? null;
+    const maxHao = params?.maxHao ?? null;
+    if (minHao != null && haoNum < minHao) {
+      return { passed: false, message: `不通过：「号」${haoNum} < 最小 ${minHao}` };
+    }
+    if (maxHao != null && haoNum > maxHao) {
+      return { passed: false, message: `不通过：「号」${haoNum} > 最大 ${maxHao}` };
+    }
+  }
+  const shiMatch = trimmed.match(/(\d+)室/);
+  if (shiMatch) {
+    const shiNum = Number(shiMatch[1]);
+    const minShi = params?.minShi ?? null;
+    const maxShi = params?.maxShi ?? null;
+    if (minShi != null && shiNum < minShi) {
+      return { passed: false, message: `不通过：「室」${shiNum} < 最小 ${minShi}` };
+    }
+    if (maxShi != null && shiNum > maxShi) {
+      return { passed: false, message: `不通过：「室」${shiNum} > 最大 ${maxShi}` };
+    }
   }
   return { passed: true, message: "通过：合法地址" };
 }
@@ -301,7 +331,7 @@ const VALIDATORS = {
   username: validateUsername,
   sex: validateSex,
   birth: validateBirth,
-  address: validateAddress,
+  address: (s, params) => validateAddress(s, params),
   generic: validateGeneric,
   email: validateEmail,
   // phonePrefix 和 phone 都走 validatePhone。

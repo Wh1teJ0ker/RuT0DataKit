@@ -48,6 +48,10 @@ use crate::db::{Cell, DbManager};
 ///
 /// 新 Tab 只含**有效候选**（`valid==true`），无效候选不写入但仍在返回的
 /// `Vec<ExtractValidateRow>` 中保留供测试断言。
+///
+/// `idcard_allow_leading_zero`（v1.2.2）：仅对 `idcard-extract` 规则生效。
+/// `true` → 临时用 `\b\d{17}[\dXx]\b` 覆盖 DB pattern（首位可为 0，宽松召回），
+/// 不持久化到 DB。语义与 `phone_prefixes` 平行：运行时临时覆盖。
 pub fn extract_validate_to_new_sheet_inner(
     db: &DbManager,
     sheet_id: i64,
@@ -56,6 +60,7 @@ pub fn extract_validate_to_new_sheet_inner(
     session_id: i64,
     gender_col_idx: Option<u32>,
     phone_prefixes: &[String],
+    idcard_allow_leading_zero: bool,
 ) -> Result<(ParseResult, Vec<ExtractValidateRow>), String> {
     if rule_ids.is_empty() {
         return Err("请至少选择一条提取规则".into());
@@ -83,10 +88,17 @@ pub fn extract_validate_to_new_sheet_inner(
             .get_rule(rid)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("规则 `{rid}` 不存在"))?;
-        let pattern_str = rule
-            .pattern
-            .as_deref()
-            .ok_or_else(|| format!("规则 `{rid}` 未配置提取正则（pattern 为空）"))?;
+        // v1.2.2：idcard_allow_leading_zero=true 时，临时用宽松正则覆盖 DB
+        // pattern（首位可为 0），不持久化到 DB。与 phone_prefixes 语义平行。
+        let is_idcard_rule =
+            matches!(rule.params.as_ref(), Some(ExtractParams::IdCard));
+        let pattern_str = if is_idcard_rule && idcard_allow_leading_zero {
+            r"\b\d{17}[\dXx]\b"
+        } else {
+            rule.pattern
+                .as_deref()
+                .ok_or_else(|| format!("规则 `{rid}` 未配置提取正则（pattern 为空）"))?
+        };
         let re = regex::Regex::new(pattern_str).map_err(|e| format!("正则编译失败: {e}"))?;
         // 类型标签 = 规则名去掉「提取」后缀；结果为空时用原名兜底。
         let label = rule.name.trim_end_matches("提取");
@@ -282,6 +294,10 @@ pub fn extract_validate_to_new_sheet_inner(
 /// `phone_prefixes`（T78）：手机号前缀白名单，仅当选中的规则含 `phone-extract`
 /// 时使用。非空 → 覆盖 DB 规则 params 的 allowed_prefixes（运行时临时覆盖，不
 /// 持久化）；空 → 回落 DB 规则 params。
+///
+/// `idcard_allow_leading_zero`（v1.2.2）：仅对 `idcard-extract` 规则生效。
+/// `true` → 临时用 `\b\d{17}[\dXx]\b` 覆盖 DB pattern（首位可为 0，宽松召回），
+/// 不持久化到 DB。`false` → 用 DB pattern（默认首位非零）。
 #[tauri::command]
 pub fn extract_validate_to_new_sheet(
     sheet_id: i64,
@@ -290,6 +306,7 @@ pub fn extract_validate_to_new_sheet(
     session_id: i64,
     gender_col: Option<String>,
     phone_prefixes: Vec<String>,
+    idcard_allow_leading_zero: Option<bool>,
     db: tauri::State<'_, DbManager>,
 ) -> Result<ParseResult, String> {
     if rule_ids.is_empty() {
@@ -312,6 +329,7 @@ pub fn extract_validate_to_new_sheet(
         session_id,
         gender_col_idx,
         &phone_prefixes,
+        idcard_allow_leading_zero.unwrap_or(false),
     )?;
     Ok(parse_result)
 }
@@ -700,6 +718,7 @@ mod tests {
             session_id,
             None,
             &[],
+            false,
         )
         .unwrap();
 
@@ -748,6 +767,7 @@ mod tests {
             session_id,
             None,
             &[],
+            false,
         )
         .unwrap();
         assert_eq!(rows.len(), 3);
@@ -765,6 +785,7 @@ mod tests {
             session_id,
             None,
             &["799".to_string(), "786".to_string()],
+            false,
         )
         .unwrap();
         assert_eq!(rows2.len(), 3);
@@ -791,6 +812,7 @@ mod tests {
             session_id,
             None,
             &["134".to_string()],
+            false,
         )
         .unwrap();
 
@@ -821,6 +843,7 @@ mod tests {
             session_id,
             None,
             &[],
+            false,
         )
         .unwrap();
 
@@ -858,6 +881,7 @@ mod tests {
             session_id,
             None,
             &[],
+            false,
         )
         .unwrap();
 
@@ -889,6 +913,7 @@ mod tests {
             session_id,
             None,
             &[],
+            false,
         )
         .unwrap();
 
@@ -916,6 +941,7 @@ mod tests {
             session_id,
             None,
             &[],
+            false,
         )
         .unwrap();
 
@@ -947,6 +973,7 @@ mod tests {
             session_id,
             None,
             &[],
+            false,
         )
         .unwrap();
 
@@ -972,6 +999,7 @@ mod tests {
             session_id,
             None,
             &[],
+            false,
         )
         .unwrap_err();
         assert!(err.contains("不存在"));
@@ -990,6 +1018,7 @@ mod tests {
             session_id,
             None,
             &[],
+            false,
         )
         .unwrap_err();
         assert!(err.contains("不存在"));
@@ -1002,7 +1031,7 @@ mod tests {
         db.seed_builtin_rules().unwrap();
         let (session_id, sheet_id) = setup_extract_sheet(&db, &["192.168.1.1"]);
         let err =
-            extract_validate_to_new_sheet_inner(&db, sheet_id, "raw", &[], session_id, None, &[])
+            extract_validate_to_new_sheet_inner(&db, sheet_id, "raw", &[], session_id, None, &[], false)
                 .unwrap_err();
         assert!(err.contains("至少选择一条"));
     }
@@ -1032,6 +1061,7 @@ mod tests {
             session_id,
             None, // 无性别列
             &[],
+            false,
         )
         .unwrap();
 
@@ -1076,6 +1106,7 @@ mod tests {
             session_id,
             Some(1), // gender 列 col_idx=1
             &[],
+            false,
         )
         .unwrap();
 
@@ -1119,12 +1150,43 @@ mod tests {
             session_id,
             None,
             &[],
+            false,
         )
         .unwrap();
 
         // 只有首位为 1 的身份证号被召回，首位为 0 的被正则排除。
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].value, "11010519491231002X");
+    }
+
+    #[test]
+    fn extract_validate_idcard_leading_zero_runtime_override() {
+        // v1.2.2：idcard_allow_leading_zero=true 时，临时用宽松正则
+        // \b\d{17}[\dXx]\b 覆盖 DB pattern，首位为 0 的身份证号也能被召回。
+        let (_dir, db) = setup_db();
+        db.seed_builtin_rules().unwrap();
+        let values = [
+            "11010519491231002X", // 首位 1，有效
+            "01010519491231002X", // 首位 0，宽松正则可召回；校验码仍需通过
+        ];
+        let (session_id, sheet_id) = setup_extract_sheet(&db, &values);
+
+        let (_parse_result, rows) = extract_validate_to_new_sheet_inner(
+            &db,
+            sheet_id,
+            "raw",
+            &["idcard-extract".to_string()],
+            session_id,
+            None,
+            &[],
+            true, // idcard_allow_leading_zero=true → 宽松正则
+        )
+        .unwrap();
+
+        // 首位为 0 的身份证号也被召回（校验码 X 仍通过 is_valid_idcard）。
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].value, "11010519491231002X");
+        assert_eq!(rows[1].value, "01010519491231002X");
     }
 
     #[test]
@@ -1150,6 +1212,7 @@ mod tests {
             session_id,
             None,
             &[],
+            false,
         )
         .unwrap();
 
@@ -1186,6 +1249,7 @@ mod tests {
             session_id,
             None,
             &[],
+            false,
         )
         .unwrap();
 

@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Button, Form, Select, Space, message } from "antd";
+import { Button, Form, Select, Space, Switch, message } from "antd";
 import { useAppContext, ACTION } from "../../state";
 import { CELL_SIZE_LIMIT } from "../../constants";
 import { extractValidateToNewSheet } from "../../tauri";
@@ -83,9 +83,17 @@ export default function ExtractPanel() {
         ruleIds.forEach((rid) => {
           const rule = ruleById[rid];
           if (!rule || !rule.pattern) return;
+          // v1.2.2：idcard + allowLeadingZero → 宽松正则（首位可为 0）
+          let pattern = rule.pattern;
+          if (
+            rule.params?.validator === "idcard" &&
+            form.getFieldValue("idcardAllowLeadingZero")
+          ) {
+            pattern = "\\b\\d{17}[\\dXx]\\b";
+          }
           let re;
           try {
-            re = new RegExp(rule.pattern, "g");
+            re = new RegExp(pattern, "g");
           } catch (e) {
             // eslint-disable-next-line no-console
             console.error("bad regex:", rule.pattern, e);
@@ -155,6 +163,10 @@ export default function ExtractPanel() {
     const phonePrefixes = isPhoneExtract
       ? normalizePhonePrefixes(form.getFieldValue("phonePrefixes") || [])
       : [];
+    // v1.2.2：idcard 首位为 0 开关仅在含 idcard-extract 时使用。
+    const idcardAllowLeadingZero = isIdcardExtract
+      ? !!form.getFieldValue("idcardAllowLeadingZero")
+      : false;
     setExtracting(true);
     try {
       const res = await extractValidateToNewSheet(
@@ -163,7 +175,8 @@ export default function ExtractPanel() {
         ruleIds,
         sheet.sessionId,
         genderCol,
-        phonePrefixes
+        phonePrefixes,
+        idcardAllowLeadingZero
       );
       await landNewSheet(res, `${column}_提取`, column, sheet.sessionId);
       message.success(
@@ -193,17 +206,27 @@ export default function ExtractPanel() {
           />
         </Form.Item>
         {isIdcardExtract && (
-          <Form.Item
-            label="性别列（联合校验）"
-            name="genderCol"
-            extra="比对身份证推断性别与该列，矛盾判无效"
-          >
-            <ColumnSelect
-              headers={headers}
-              placeholder="选择性别列"
-              allowClear
-            />
-          </Form.Item>
+          <>
+            <Form.Item
+              label="性别列（联合校验）"
+              name="genderCol"
+              extra="比对身份证推断性别与该列，矛盾判无效"
+            >
+              <ColumnSelect
+                headers={headers}
+                placeholder="选择性别列"
+                allowClear
+              />
+            </Form.Item>
+            <Form.Item
+              label="允许首位为 0"
+              name="idcardAllowLeadingZero"
+              valuePropName="checked"
+              extra="开启后用宽松正则，可提取首位为 0 的身份证号"
+            >
+              <Switch size="small" />
+            </Form.Item>
+          </>
         )}
         {isPhoneExtract && (
           <Form.Item
