@@ -326,4 +326,30 @@ mod tests {
             "提示可操作: {err}"
         );
     }
+
+    /// 本机有 tshark 时跑；CI 跳过。
+    #[test]
+    #[ignore = "本机 tshark 读取，CI 无 tshark/无样本时跳过"]
+    fn read_fixture_pcap() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("tests")
+            .join("base")
+            .join("base.pcap");
+        if !path.exists() {
+            return;
+        }
+        let reqs = PcapReader::new().read(&path).expect("read pcap");
+        assert!(!reqs.is_empty(), "fixture pcap 应有 HTTP 请求");
+        let first = &reqs[0];
+        assert!(!first.frame_no.is_empty(), "frame_no 非空");
+        assert!(
+            first.method.contains("GET") || first.method.contains("POST"),
+            "method 是 GET/POST: {}",
+            first.method
+        );
+        assert!(!first.host.is_empty(), "host 非空");
+        assert!(!first.uri.is_empty(), "uri 非空");
+    }
 }
