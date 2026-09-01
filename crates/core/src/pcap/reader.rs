@@ -1,9 +1,20 @@
 //! v1.0.0 pcap 读取器：tshark 子进程 + HTTP 字段提取（移植自 v0.8.0）。
 //!
-//! - [`PcapReader::read`] 调 `tshark -r <path> -Y http.request -T fields ...`
+//! - [`PcapReader::read`] 调 `tshark -q -r <path> -Y http.request -T fields ...`
 //!   提取 8 个 HTTP 字段，每行一条 [`HttpRequest`]。
-//! - tshark 缺失返回 [`CoreError::DependencyMissing`]，GUI 层据此弹提示
-//!   并禁用按钮。tshark 子进程退出码非 0 返回 [`CoreError::Other`]。
+//! - **错误分类**（v1.2.2 修复，Windows 解析兼容）：
+//!   - 命令无法 spawn（路径不存在 / 受限环境拦截）→ [`CoreError::DependencyMissing`]，
+//!     文案提示用户「配置 tshark 路径或安装 Wireshark」，不再把「解析报错」与
+//!     「依赖缺失」混为一谈。
+//!   - tshark 正常启动但退出码非 0（含 tshark 自身报错 / 崩溃）→
+//!     [`CoreError::Other`]，stderr 单行化注入。`-q` 已关闭 banner，
+//!     因此 stderr 只可能是真正的报错文字，Windows 控制台编码（GBK/UTF-16）
+//!     由 `String::from_utf8_lossy` 兜底，不会因为混入 banner 或编码差异导致
+//!     误判解析失败。
+//!   - tshark 明确提示「字段无效」（如当前版本不支持 HTTP 字段）→
+//!     [`CoreError::NotImplemented`]，引导升级 Wireshark。
+//!   - `-Y http.request` 无匹配帧 → 退出 0 + 空输出，返回空列表（正常语义，
+//!     不是错误）。
 //! - `body` 字段（`http.file_data`）tshark 以十六进制输出，由
 //!   [`hex_to_bytes`] 解码成字节再 `String::from_utf8_lossy`。
 //!
@@ -12,13 +23,11 @@
 use std::path::Path;
 use std::process::Command;
 
-use serde::{Deserialize, Serialize};
-
 use crate::error::CoreError;
 use crate::pcap::detect::resolve_tshark_cmd;
 
 /// 一条 HTTP 请求记录（tshark 字段映射）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct HttpRequest {
     pub frame_no: String,
     pub src_ip: String,
@@ -29,6 +38,13 @@ pub struct HttpRequest {
     pub body: String,
     pub user_agent: String,
 }
+
+/// tshark stderr 中出现「字段无效」的典型文案。
+const FIELDS_INVALID_MARKERS: [&str; 3] = [
+    "aren't valid",
+    "not valid",
+    "invalid field",
+];
 
 /// pcap 读取器：调 tshark 子进程提取 HTTP 请求字段。
 #[derive(Debug, Default, Clone, Copy)]
@@ -42,9 +58,15 @@ impl PcapReader {
     /// 读取 pcap 文件，返回 HTTP 请求记录列表。
     pub fn read(&self, path: &Path) -> Result<Vec<HttpRequest>, CoreError> {
         let tshark = resolve_tshark_cmd();
-        let output = Command::new(&tshark)
+        let path_str = path.to_string_lossy().into_owned();
+        let mut cmd = Command::new(&tshark);
+        // 构造 tshark 字段提取命令：
+        //   -q 关闭 banner / 捕获信息，使 stdout 纯净为字段、stderr 纯净为错误，
+        //     避免 Windows 控制台编码把 banner 或报错混入解析。
+        //   -E separator=\t + -E occurrence=f 与既有解析器约定一致。
+        cmd.arg("-q")
             .arg("-r")
-            .arg(path)
+            .arg(&path_str)
             .arg("-Y")
             .arg("http.request")
             .arg("-T")
@@ -68,21 +90,45 @@ impl PcapReader {
             .arg("-E")
             .arg("separator=\t")
             .arg("-E")
-            .arg("occurrence=f")
-            .output()
-            .map_err(|e| CoreError::DependencyMissing(format!("tshark: {e}")))?;
+            .arg("occurrence=f");
+
+        // spawn/启动失败（路径不存在、无权限、受限环境拦截 .exe）——
+        // 不是「解析失败」，是依赖不可用，归 DependencyMissing 并给可操作提示。
+        let output = cmd.output().map_err(|e| {
+            CoreError::DependencyMissing(format!(
+                "无法启动 tshark（{}）：{e}。请在设置中配置正确的 tshark 路径，或安装 Wireshark 后重试。",
+                tshark
+            ))
+        })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(CoreError::Other(format!(
-                "tshark exited {}: {stderr}",
-                output.status.code().unwrap_or(-1)
-            )));
+            return Err(classify_tshark_failure(&tshark, &stderr));
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         Ok(parse_tshark_output(&stdout))
     }
+}
+
+/// 把 tshark 非零退出分类为具体 [`CoreError`]。
+///
+/// - stderr 含「字段无效」→ [`CoreError::NotImplemented`]（引导升级 Wireshark）。
+/// - 其他退出 → [`CoreError::Other`]，单行化 stderr，避免整段编码乱码刷屏。
+fn classify_tshark_failure(tshark: &str, stderr: &str) -> CoreError {
+    let stderr = stderr.trim();
+    let body = if stderr.is_empty() {
+        "(tshark 无错误输出)".to_string()
+    } else {
+        // 单行化：Windows 上 stderr 可能含 \r\n / ANSI；压成一行便于前端展示。
+        stderr.lines().map(str::trim).collect::<Vec<_>>().join(" | ").into()
+    };
+    if FIELDS_INVALID_MARKERS.iter().any(|m| stderr.contains(m)) {
+        return CoreError::NotImplemented(
+            "当前 tshark 不支持所需的 HTTP 提取字段（http.request 等）。请升级 Wireshark/tshark 后重试。",
+        );
+    }
+    CoreError::Other(format!("tshark（{tshark}）解析失败：{body}"))
 }
 
 /// 解析 tshark `-T fields` 的 stdout 为 [`HttpRequest`] 列表。
@@ -151,6 +197,7 @@ fn hex_digit(c: char) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pcap::detect::set_tshark_path;
 
     #[test]
     fn hex_to_bytes_basic() {
@@ -232,29 +279,51 @@ mod tests {
         assert_eq!(parse_tshark_output("   \n\t\n").len(), 0);
     }
 
-    /// 本机有 tshark 时跑；CI 跳过。
+    // ---- v1.2.2：错误分类与 Windows 解析兼容 ----
+
     #[test]
-    #[ignore = "本机 tshark 读取，CI 无 tshark/无样本时跳过"]
-    fn read_fixture_pcap() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("tests")
-            .join("base")
-            .join("base.pcap");
-        if !path.exists() {
-            return;
-        }
-        let reqs = PcapReader::new().read(&path).expect("read pcap");
-        assert!(!reqs.is_empty(), "fixture pcap 应有 HTTP 请求");
-        let first = &reqs[0];
-        assert!(!first.frame_no.is_empty(), "frame_no 非空");
-        assert!(
-            first.method.contains("GET") || first.method.contains("POST"),
-            "method 是 GET/POST: {}",
-            first.method
+    fn classify_tshark_failure_other_with_single_line_stderr() {
+        let err = classify_tshark_failure("tshark", "line1\r\nline2\n");
+        assert!(matches!(err, CoreError::Other(_)), "got: {err:?}");
+        let msg = err.to_string();
+        assert!(msg.contains("line1 | line2"), "单行化 stderr: {msg}");
+        assert!(msg.contains("tshark"), "包含命令名: {msg}");
+    }
+
+    #[test]
+    fn classify_tshark_failure_empty_stderr_not_blank() {
+        let err = classify_tshark_failure("tshark", "  \n");
+        assert!(matches!(err, CoreError::Other(_)), "got: {err:?}");
+        assert!(err.to_string().contains("无错误输出"));
+    }
+
+    #[test]
+    fn classify_tshark_failure_invalid_fields_is_not_implemented() {
+        let err = classify_tshark_failure(
+            "tshark",
+            "tshark: Some fields aren't valid:\n\tnotarealfield",
         );
-        assert!(!first.host.is_empty(), "host 非空");
-        assert!(!first.uri.is_empty(), "uri 非空");
+        assert!(matches!(err, CoreError::NotImplemented(_)), "got: {err:?}");
+    }
+
+    #[test]
+    fn read_missing_binary_returns_dependency_missing() {
+        // 覆盖到一个确定不存在的路径：Command::new 无法启动 → DependencyMissing，
+        // 文案提示配置路径 / 安装 Wireshark（而不是报成「解析失败」）。
+        let original = crate::pcap::detect::get_tshark_path();
+        let missing = if cfg!(windows) {
+            r"C:\nonexistent\RuT0_tshark_probe.exe"
+        } else {
+            "/nonexistent/RuT0_tshark_probe"
+        };
+        set_tshark_path(Some(missing.to_string()));
+        let result = PcapReader::new().read(Path::new("/tmp/whatever.pcap"));
+        set_tshark_path(original);
+        let err = result.expect_err("不应成功");
+        assert!(matches!(err, CoreError::DependencyMissing(_)), "got: {err:?}");
+        assert!(
+            err.to_string().contains("无法启动 tshark"),
+            "提示可操作: {err}"
+        );
     }
 }

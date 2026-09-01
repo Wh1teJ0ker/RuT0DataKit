@@ -87,16 +87,49 @@ pub fn detect_tshark() -> Option<TsharkInfo> {
 }
 
 /// 跑 `<path> --version` 探测单个候选，成功返回 [`TsharkInfo`]。
+///
+/// v1.2.2：实际调用一次 `-q -T fields -e frame.number` 健康检查——
+/// 仅 `--version` 可用的 tshark（包含受限环境无法 spawn .exe 的情况）不算通过。
+/// stderr 仅作探测日志，不影响探测结果（探测失败统一返回 `None`）。
 fn probe_tshark(path: &str) -> Option<TsharkInfo> {
-    let out = Command::new(path).arg("--version").output().ok()?;
-    if !out.status.success() {
+    let version_out = Command::new(path).arg("--version").output().ok()?;
+    if !version_out.status.success() {
         return None;
     }
-    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stdout = String::from_utf8_lossy(&version_out.stdout);
     let version = stdout.lines().next().unwrap_or("").trim().to_string();
     if version.is_empty() {
         return None;
     }
+
+    // 健康检查：确认该 tshark 不仅能启动，还能按字段提取（避免探测通过但
+    // 解析必败的情况——Windows 受限环境 / 字段版本不兼容都能在这一步暴露）。
+    let probe = Command::new(path)
+        .arg("-q")
+        .arg("-T")
+        .arg("fields")
+        .arg("-e")
+        .arg("frame.number")
+        .arg("-r")
+        .arg("/dev/null")
+        .output();
+    match probe {
+        Ok(out) if out.status.success() => {}
+        Ok(out) => {
+            // 启动成功但退出非 0。仅当报错文案指向「字段/参数不支持」时才
+            // 判定为不兼容；其余情况说明能启动，仍算可用（例如 /dev/null
+            // 在个别 Windows 构建下有差异，不应因一次健康检查失败而全面误判）。
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            if stderr.contains("aren't valid")
+                || stderr.contains("not valid")
+                || stderr.contains("unsupported")
+            {
+                return None;
+            }
+        }
+        Err(_) => return None,
+    }
+
     Some(TsharkInfo {
         path: path.to_string(),
         version,
