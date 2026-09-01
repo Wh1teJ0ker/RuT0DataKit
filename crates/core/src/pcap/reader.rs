@@ -21,10 +21,9 @@
 //! 全本地处理，tshark 仅在用户本机执行，不上传 pcap/规则/样本。
 
 use std::path::Path;
-use std::process::Command;
 
 use crate::error::CoreError;
-use crate::pcap::detect::resolve_tshark_cmd;
+use crate::pcap::detect::{build_tshark_command, resolve_tshark_cmd};
 
 /// 一条 HTTP 请求记录（tshark 字段映射）。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -59,7 +58,7 @@ impl PcapReader {
     pub fn read(&self, path: &Path) -> Result<Vec<HttpRequest>, CoreError> {
         let tshark = resolve_tshark_cmd();
         let path_str = path.to_string_lossy().into_owned();
-        let mut cmd = Command::new(&tshark);
+        let mut cmd = build_tshark_command(&tshark);
         // 构造 tshark 字段提取命令：
         //   -q 关闭 banner / 捕获信息，使 stdout 纯净为字段、stderr 纯净为错误，
         //     避免 Windows 控制台编码把 banner 或报错混入解析。

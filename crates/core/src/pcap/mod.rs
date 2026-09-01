@@ -10,7 +10,7 @@ pub mod detect;
 pub mod reader;
 
 pub use detect::{
-    candidate_paths, detect_tshark, get_tshark_path, resolve_tshark_cmd, set_tshark_path,
-    TsharkInfo,
+    build_tshark_command, candidate_paths, detect_tshark, get_tshark_path, resolve_tshark_cmd,
+    set_tshark_path, TsharkInfo,
 };
 pub use reader::{HttpRequest, PcapReader};

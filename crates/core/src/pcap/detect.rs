@@ -8,7 +8,14 @@
 //!   安装到 `C:\Program Files\Wireshark\` 但不加入 PATH，导致
 //!   `Command::new("tshark")` spawn 失败、导入直接报 DependencyMissing。
 //! - [`detect_tshark`]：按优先级探测候选路径，跑 `<path> --version`
-//!   退出 0 + 字段提取健康检查。候选列表覆盖 macOS / Linux / Windows 三平台。
+//!   退出 0 即视为可用。候选列表覆盖 macOS / Linux / Windows 三平台。
+//! - v1.2.2 修复：探测不再跑 `-r NUL` 健康检查——Windows 上 `tshark -r NUL`
+//!   因 NUL 非合法 pcap 报错退出非 0，stderr 含「not valid」被误判为字段
+//!   不兼容，导致有效 tshark 被探测拒绝。字段兼容性改由实际 pcap 解析时
+//!   的 [`classify_tshark_failure`](crate::pcap::reader) 兜底。
+//! - v1.2.2 修复：所有 tshark 子进程通过 [`build_tshark_command`] 构造，
+//!   Windows 上设 `CREATE_NO_WINDOW` 标志，避免 GUI 应用 spawn CLI 子进程
+//!   弹控制台窗口。
 //!
 //! 全本地探测，不调用网络；不上传任何信息（满足 docs/00 §6「不外发数据」）。
 
@@ -16,6 +23,35 @@ use std::process::Command;
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
+
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
+/// Windows `CREATE_NO_WINDOW` 进程创建标志值。
+///
+/// GUI 应用（`windows_subsystem = "windows"`）spawn 子进程时，
+/// 默认会弹一个控制台窗口（即使子进程是 CLI 工具如 tshark）。
+/// 设此标志后子进程不分配控制台，避免窗口闪烁，也不干扰 stdout/stderr 管道。
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+/// 构造 tshark 子进程 [`Command`]，带 Windows 平台的 `CREATE_NO_WINDOW` 标志。
+///
+/// 所有 tshark 调用（探测 + 实际 pcap 解析）都应通过此函数构造 Command，
+/// 保证 Windows 上 GUI 应用 spawn CLI 子进程不弹控制台窗口。
+/// Unix 上直接返回 `Command::new(path)`，无额外行为。
+pub fn build_tshark_command(path: &str) -> Command {
+    #[cfg(windows)]
+    {
+        let mut cmd = Command::new(path);
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        cmd
+    }
+    #[cfg(not(windows))]
+    {
+        Command::new(path)
+    }
+}
 
 /// 进程级 tshark 覆盖路径。`None` 表示回退到自动探测。
 static TSHARK_OVERRIDE: Mutex<Option<String>> = Mutex::new(None);
@@ -128,11 +164,20 @@ pub fn detect_tshark() -> Option<TsharkInfo> {
 
 /// 跑 `<path> --version` 探测单个候选，成功返回 [`TsharkInfo`]。
 ///
-/// v1.2.2：实际调用一次 `-q -T fields -e frame.number` 健康检查——
-/// 仅 `--version` 可用的 tshark（包含受限环境无法 spawn .exe 的情况）不算通过。
-/// stderr 仅作探测日志，不影响探测结果（探测失败统一返回 `None`）。
+/// v1.2.2：仅检查 `--version` 退出 0 + 首行非空。此前额外跑一次
+/// `-q -T fields -e frame.number -r <null>` 健康检查，但 Windows 上
+/// `tshark -r NUL` 因 NUL 不是合法 pcap 会导致 tshark 报错退出非 0，
+/// 且部分版本 stderr 含「not valid」字样被误判为「字段不兼容」，
+/// 使探测对有效 tshark 返回 `None` → 设置页「自动检测」失败、
+/// 用户手动选了路径但因 `resolve_tshark_cmd` 走探测缓存也受影响。
+///
+/// 字段兼容性由实际 pcap 解析时的 [`classify_tshark_failure`](crate::pcap::reader)
+/// 兜底（stderr 含 `aren't valid` → `NotImplemented`），探测阶段不再拦截。
 fn probe_tshark(path: &str) -> Option<TsharkInfo> {
-    let version_out = Command::new(path).arg("--version").output().ok()?;
+    let version_out = build_tshark_command(path)
+        .arg("--version")
+        .output()
+        .ok()?;
     if !version_out.status.success() {
         return None;
     }
@@ -140,36 +185,6 @@ fn probe_tshark(path: &str) -> Option<TsharkInfo> {
     let version = stdout.lines().next().unwrap_or("").trim().to_string();
     if version.is_empty() {
         return None;
-    }
-
-    // 健康检查：确认该 tshark 不仅能启动，还能按字段提取（避免探测通过但
-    // 解析必败的情况——Windows 受限环境 / 字段版本不兼容都能在这一步暴露）。
-    // 用平台对应的空输入：Unix 用 /dev/null，Windows 用 NUL（C:\NUL 也可以）。
-    let null_path = if cfg!(windows) { "NUL" } else { "/dev/null" };
-    let probe = Command::new(path)
-        .arg("-q")
-        .arg("-T")
-        .arg("fields")
-        .arg("-e")
-        .arg("frame.number")
-        .arg("-r")
-        .arg(null_path)
-        .output();
-    match probe {
-        Ok(out) if out.status.success() => {}
-        Ok(out) => {
-            // 启动成功但退出非 0。仅当报错文案指向「字段/参数不支持」时才
-            // 判定为不兼容；其余情况说明能启动，仍算可用（例如 /dev/null
-            // 在个别 Windows 构建下有差异，不应因一次健康检查失败而全面误判）。
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            if stderr.contains("aren't valid")
-                || stderr.contains("not valid")
-                || stderr.contains("unsupported")
-            {
-                return None;
-            }
-        }
-        Err(_) => return None,
     }
 
     Some(TsharkInfo {
