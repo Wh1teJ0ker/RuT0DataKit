@@ -1,10 +1,14 @@
 //! v1.0.0 tshark 多平台自动探测 + 路径覆盖（移植自 v0.8.0）。
 //!
 //! - 进程级全局覆盖路径（`Mutex<Option<String>>`）+ getter/setter。
-//!   `PcapReader::read` 调 [`resolve_tshark_cmd`] 拿实际命令，覆盖为 None
-//!   时回退到 PATH 中的 `tshark`。
-//! - [`detect_tshark`]：按优先级探测候选路径，跑 `<path> --version` 退出 0
-//!   即视为可用。候选列表覆盖 macOS / Linux / Windows 三平台。
+//!   `PcapReader::read` 调 [`resolve_tshark_cmd`] 拿实际命令。
+//! - v1.2.2：[`resolve_tshark_cmd`] 在覆盖为 None 时**自动探测**
+//!   （[`detect_tshark`]），并缓存探测结果（进程生命周期内）。
+//!   这解决了 Windows 上 tshark 不在 PATH 的问题——Wireshark 默认
+//!   安装到 `C:\Program Files\Wireshark\` 但不加入 PATH，导致
+//!   `Command::new("tshark")` spawn 失败、导入直接报 DependencyMissing。
+//! - [`detect_tshark`]：按优先级探测候选路径，跑 `<path> --version`
+//!   退出 0 + 字段提取健康检查。候选列表覆盖 macOS / Linux / Windows 三平台。
 //!
 //! 全本地探测，不调用网络；不上传任何信息（满足 docs/00 §6「不外发数据」）。
 
@@ -13,8 +17,13 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
-/// 进程级 tshark 覆盖路径。`None` 表示回退到 PATH 中的 `tshark`。
+/// 进程级 tshark 覆盖路径。`None` 表示回退到自动探测。
 static TSHARK_OVERRIDE: Mutex<Option<String>> = Mutex::new(None);
+
+/// 自动探测缓存。`None` = 尚未探测；`Some(path)` = 探测结果（可能是
+/// 实际路径，也可能是 `"tshark"` 字面量表示探测失败、回退 PATH）。
+/// `set_tshark_path` 改变覆盖时清空缓存，使下次 `resolve_tshark_cmd` 重新探测。
+static TSHARK_CACHE: Mutex<Option<String>> = Mutex::new(None);
 
 /// 检测到的 tshark 信息。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -25,12 +34,18 @@ pub struct TsharkInfo {
     pub version: String,
 }
 
-/// 设置 tshark 覆盖路径。`None` 清除覆盖，回退到 PATH 中的 `tshark`。
+/// 设置 tshark 覆盖路径。`None` 清除覆盖，回退到自动探测。
+///
+/// 改变覆盖时清空探测缓存，使下次 [`resolve_tshark_cmd`] 重新探测。
 pub fn set_tshark_path(path: Option<String>) {
     // Mutex 中毒仅在持锁线程 panic 且未恢复时发生，此时静默丢弃覆盖值
     // 优于让整个应用 panic。
     if let Ok(mut guard) = TSHARK_OVERRIDE.lock() {
         *guard = path.filter(|s| !s.trim().is_empty());
+    }
+    // 清空缓存：覆盖变了，旧探测结果不再有效。
+    if let Ok(mut cache) = TSHARK_CACHE.lock() {
+        *cache = None;
     }
 }
 
@@ -39,9 +54,34 @@ pub fn get_tshark_path() -> Option<String> {
     TSHARK_OVERRIDE.lock().map(|g| g.clone()).unwrap_or(None)
 }
 
-/// 解析实际要调用的 tshark 命令：覆盖路径优先，否则字面量 `tshark`。
+/// 解析实际要调用的 tshark 命令。
+///
+/// 优先级：
+/// 1. 用户显式覆盖路径（`set_tshark_path(Some(path))` / settings.json）
+/// 2. 自动探测结果（`detect_tshark`），进程生命周期内缓存
+/// 3. 探测失败时回退字面量 `"tshark"`（走 PATH，作为最后兜底）
+///
+/// v1.2.2 之前：覆盖为 None 时直接回退 `"tshark"` 字面量，在 Windows 上
+/// Wireshark 不加入 PATH 导致 spawn 失败 → 导入报 DependencyMissing。
+/// 现在：覆盖为 None 时调 [`detect_tshark`] 自动探测候选路径（含
+/// `C:\Program Files\Wireshark\tshark.exe`），探测成功则缓存并使用。
 pub fn resolve_tshark_cmd() -> String {
-    get_tshark_path().unwrap_or_else(|| "tshark".to_string())
+    // 1. 用户显式覆盖优先。
+    if let Some(p) = get_tshark_path() {
+        return p;
+    }
+    // 2. 查缓存，避免每次导入都重新探测。
+    if let Ok(cache) = TSHARK_CACHE.lock() {
+        if let Some(ref cached) = *cache {
+            return cached.clone();
+        }
+    }
+    // 3. 自动探测。
+    let detected = detect_tshark().map(|info| info.path).unwrap_or_else(|| "tshark".to_string());
+    if let Ok(mut cache) = TSHARK_CACHE.lock() {
+        *cache = Some(detected.clone());
+    }
+    detected
 }
 
 /// 多平台 tshark 候选路径（macOS / Linux / Windows）。
@@ -104,6 +144,8 @@ fn probe_tshark(path: &str) -> Option<TsharkInfo> {
 
     // 健康检查：确认该 tshark 不仅能启动，还能按字段提取（避免探测通过但
     // 解析必败的情况——Windows 受限环境 / 字段版本不兼容都能在这一步暴露）。
+    // 用平台对应的空输入：Unix 用 /dev/null，Windows 用 NUL（C:\NUL 也可以）。
+    let null_path = if cfg!(windows) { "NUL" } else { "/dev/null" };
     let probe = Command::new(path)
         .arg("-q")
         .arg("-T")
@@ -111,7 +153,7 @@ fn probe_tshark(path: &str) -> Option<TsharkInfo> {
         .arg("-e")
         .arg("frame.number")
         .arg("-r")
-        .arg("/dev/null")
+        .arg(null_path)
         .output();
     match probe {
         Ok(out) if out.status.success() => {}
@@ -192,12 +234,32 @@ mod tests {
     }
 
     #[test]
-    fn resolve_tshark_cmd_falls_back_to_literal() {
+    fn resolve_tshark_cmd_falls_back_when_no_override() {
+        // 覆盖为 None 时：自动探测 → 本机无 tshark → 回退 "tshark" 字面量。
+        // （CI 环境无 tshark，detect_tshark() 返回 None，缓存为 "tshark"。）
         let original = get_tshark_path();
         set_tshark_path(None);
-        assert_eq!(resolve_tshark_cmd(), "tshark");
+        let resolved = resolve_tshark_cmd();
+        // 探测结果被缓存，应该是合法的非空字符串。
+        assert!(!resolved.is_empty(), "resolve 不应返回空串: {resolved}");
         set_tshark_path(Some("/opt/homebrew/bin/tshark".to_string()));
+        // 显式覆盖优先于缓存。
         assert_eq!(resolve_tshark_cmd(), "/opt/homebrew/bin/tshark");
+        set_tshark_path(original);
+    }
+
+    #[test]
+    fn set_tshark_path_clears_cache() {
+        let original = get_tshark_path();
+        // 第一次 resolve 填充缓存
+        set_tshark_path(None);
+        let _ = resolve_tshark_cmd();
+        // 设置覆盖应清空缓存
+        set_tshark_path(Some("/tmp/fake_tshark".to_string()));
+        assert_eq!(resolve_tshark_cmd(), "/tmp/fake_tshark");
+        // 清除覆盖也应清空缓存
+        set_tshark_path(None);
+        let _ = resolve_tshark_cmd();
         set_tshark_path(original);
     }
 
